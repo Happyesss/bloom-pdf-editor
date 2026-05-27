@@ -50,11 +50,13 @@ export default function EditorLayout() {
 
       if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
         e.preventDefault();
-        store.undo();
+        const entry = store.undo();
+        if (entry) store.setPageOverlay(entry.pageIndex, entry.json);
       }
       if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.shiftKey && e.key === 'z'))) {
         e.preventDefault();
-        store.redo();
+        const entry = store.redo();
+        if (entry) store.setPageOverlay(entry.pageIndex, entry.json);
       }
       if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
         e.preventDefault();

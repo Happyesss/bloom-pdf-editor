@@ -57,18 +57,25 @@ export default function PageCanvas({
       const page = await pdf.getPage(pageIndex + 1);
       if (cancelled) return;
 
-      const viewport = page.getViewport({ scale });
+      // Render at device pixel ratio for crisp text on retina/HiDPI displays
+      const dpr = typeof window !== 'undefined' ? (window.devicePixelRatio || 1) : 1;
+      const cssViewport = page.getViewport({ scale });
+      const renderViewport = page.getViewport({ scale: scale * dpr });
       const canvas = pdfCanvasRef.current;
       if (!canvas) return;
 
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
-      setDimensions({ width: viewport.width, height: viewport.height });
+      // Physical pixels (sharp rendering)
+      canvas.width = Math.floor(renderViewport.width);
+      canvas.height = Math.floor(renderViewport.height);
+      // CSS display size (correct layout size)
+      canvas.style.width = `${Math.floor(cssViewport.width)}px`;
+      canvas.style.height = `${Math.floor(cssViewport.height)}px`;
+      setDimensions({ width: Math.floor(cssViewport.width), height: Math.floor(cssViewport.height) });
 
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
-      await page.render({ canvas, canvasContext: ctx, viewport }).promise;
+      await page.render({ canvas, canvasContext: ctx, viewport: renderViewport }).promise;
     }
 
     renderPage().catch(console.error);
@@ -120,6 +127,18 @@ export default function PageCanvas({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dimensions]);
+
+  // ─── Disable Fabric container pointer events in editText mode ──────────────
+  useEffect(() => {
+    const fc = fabricRef.current;
+    if (!fc) return;
+    // Fabric wraps the canvas in a .canvas-container div; that div also intercepts
+    // pointer events and must be disabled when the text edit layer is active.
+    const wrapper = (fc as unknown as { wrapperEl?: HTMLElement }).wrapperEl;
+    if (wrapper) {
+      wrapper.style.pointerEvents = activeTool === 'editText' ? 'none' : '';
+    }
+  }, [activeTool]);
 
   // ─── Sync overlayJson from store into fabric (external changes, undo/redo) ─
   useEffect(() => {

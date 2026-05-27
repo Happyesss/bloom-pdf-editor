@@ -262,14 +262,15 @@ export default function TextEditLayer({
               background: isSelected && !isBeingEdited
                 ? 'rgba(59,130,246,0.08)'
                 : 'transparent',
-              border: isSelected && !isBeingEdited
+              // Use individual border sides — never mix shorthand + longhand
+              borderTop: isSelected && !isBeingEdited ? '1.5px dashed #2563eb' : 'none',
+              borderLeft: isSelected && !isBeingEdited ? '1.5px dashed #2563eb' : 'none',
+              borderRight: isSelected && !isBeingEdited ? '1.5px dashed #2563eb' : 'none',
+              borderBottom: isSelected && !isBeingEdited
                 ? '1.5px dashed #2563eb'
-                : editMode && hasEdit && !isBeingEdited
-                ? '0 none'
-                : 'none',
-              borderBottom: hasEdit && !isBeingEdited
+                : hasEdit && !isBeingEdited
                 ? '2px dotted #2563eb'
-                : undefined,
+                : 'none',
               borderRadius: 2,
               boxSizing: 'border-box',
               zIndex: 2,

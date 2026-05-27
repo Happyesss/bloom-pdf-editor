@@ -41,6 +41,14 @@ export default function PageCanvas({
   const startPointRef = useRef<{ x: number; y: number } | null>(null);
   const activeShapeRef = useRef<fabric.Object | null>(null);
   const lastOverlayRef = useRef<string>('');
+  // Keeps the current activeTool available inside effects without being a dep
+  const activeToolRef = useRef<ToolType>(activeTool);
+  activeToolRef.current = activeTool;
+  // ── Local undo/redo history (per-page canvas state snapshots) ──────────
+  const localHistoryRef = useRef<string[]>([]);
+  const localHistoryIndexRef = useRef<number>(-1);
+  // Prevents saveOverlay from recording a history entry during restoration
+  const isRestoringRef = useRef(false);
 
   // ─── Render PDF page onto the background canvas ───────────────────────────
   useEffect(() => {
@@ -64,13 +72,14 @@ export default function PageCanvas({
       const canvas = pdfCanvasRef.current;
       if (!canvas) return;
 
-      // Physical pixels (sharp rendering)
+      // Physical pixels (sharp rendering at DPR scale)
       canvas.width = Math.floor(renderViewport.width);
       canvas.height = Math.floor(renderViewport.height);
-      // CSS display size (correct layout size)
-      canvas.style.width = `${Math.floor(cssViewport.width)}px`;
-      canvas.style.height = `${Math.floor(cssViewport.height)}px`;
-      setDimensions({ width: Math.floor(cssViewport.width), height: Math.floor(cssViewport.height) });
+      // CSS display size — keep exact floats so dimensions state is unchanged
+      // relative to before, preventing unnecessary Fabric canvas recreation
+      canvas.style.width = `${cssViewport.width}px`;
+      canvas.style.height = `${cssViewport.height}px`;
+      setDimensions({ width: cssViewport.width, height: cssViewport.height });
 
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
@@ -100,6 +109,12 @@ export default function PageCanvas({
 
     fabricRef.current = fc;
 
+    // Apply current activeTool's pointer-events to the wrapper Fabric just created
+    const wrapper = fabricCanvasRef.current?.parentElement;
+    if (wrapper) {
+      wrapper.style.pointerEvents = activeToolRef.current === 'editText' ? 'none' : 'auto';
+    }
+
     // Restore overlay if exists
     if (overlayJson) {
       try {
@@ -108,10 +123,18 @@ export default function PageCanvas({
       } catch {}
     }
 
-    // Object modified → save
+    // Object modified → save + push to local history
     const saveOverlay = () => {
+      if (isRestoringRef.current) return;
       const json = JSON.stringify(fc.toJSON());
       if (json !== lastOverlayRef.current) {
+        // Build history: truncate any redo tail, then append new entry
+        const prev = lastOverlayRef.current;
+        const sliced = localHistoryRef.current.slice(0, localHistoryIndexRef.current + 1);
+        if (sliced.length === 0) sliced.push(prev); // always keep the before-state
+        sliced.push(json);
+        localHistoryRef.current = sliced;
+        localHistoryIndexRef.current = sliced.length - 1;
         lastOverlayRef.current = json;
         onOverlayChange(pageIndex, json);
       }
@@ -129,28 +152,90 @@ export default function PageCanvas({
   }, [dimensions]);
 
   // ─── Disable Fabric container pointer events in editText mode ──────────────
+  // Use fabricCanvasRef.current.parentElement (the wrapper Fabric creates) instead
+  // of wrapperEl (internal Fabric API, not reliably accessible in v7).
   useEffect(() => {
-    const fc = fabricRef.current;
-    if (!fc) return;
-    // Fabric wraps the canvas in a .canvas-container div; that div also intercepts
-    // pointer events and must be disabled when the text edit layer is active.
-    const wrapper = (fc as unknown as { wrapperEl?: HTMLElement }).wrapperEl;
-    if (wrapper) {
-      wrapper.style.pointerEvents = activeTool === 'editText' ? 'none' : '';
-    }
+    const wrapper = fabricCanvasRef.current?.parentElement;
+    if (!wrapper) return;
+    wrapper.style.pointerEvents = activeTool === 'editText' ? 'none' : 'auto';
   }, [activeTool]);
 
-  // ─── Sync overlayJson from store into fabric (external changes, undo/redo) ─
+  // ─── Sync overlayJson from store into fabric (external changes only) ──────
   useEffect(() => {
     const fc = fabricRef.current;
     if (!fc || !overlayJson) return;
     if (overlayJson === lastOverlayRef.current) return;
+    isRestoringRef.current = true;
     try {
       const parsed = JSON.parse(overlayJson);
-      fc.loadFromJSON(parsed, () => fc.renderAll());
+      fc.loadFromJSON(parsed, () => {
+        fc.renderAll();
+        isRestoringRef.current = false;
+      });
       lastOverlayRef.current = overlayJson;
-    } catch {}
+    } catch {
+      isRestoringRef.current = false;
+    }
   }, [overlayJson]);
+
+  // ─── Local undo / redo via custom DOM events ──────────────────────────────
+  useEffect(() => {
+    if (!isCurrentPage) return;
+
+    const applyState = (json: string) => {
+      const fc = fabricRef.current;
+      if (!fc) return;
+      isRestoringRef.current = true;
+      try {
+        const parsed = JSON.parse(json || '{"objects":[]}');
+        fc.loadFromJSON(parsed, () => {
+          fc.renderAll();
+          isRestoringRef.current = false;
+          lastOverlayRef.current = json;
+          onOverlayChange(pageIndex, json);
+        });
+      } catch {
+        isRestoringRef.current = false;
+      }
+    };
+
+    const doUndo = () => {
+      const idx = localHistoryIndexRef.current;
+      if (idx <= 0) return;
+      localHistoryIndexRef.current = idx - 1;
+      applyState(localHistoryRef.current[localHistoryIndexRef.current]);
+    };
+
+    const doRedo = () => {
+      const idx = localHistoryIndexRef.current;
+      if (idx >= localHistoryRef.current.length - 1) return;
+      localHistoryIndexRef.current = idx + 1;
+      applyState(localHistoryRef.current[localHistoryIndexRef.current]);
+    };
+
+    const doDelete = () => {
+      const fc = fabricRef.current;
+      if (!fc) return;
+      const active = fc.getActiveObjects();
+      if (active.length === 0) return;
+      fc.remove(...active);
+      fc.discardActiveObject();
+      fc.renderAll();
+      const json = JSON.stringify(fc.toJSON());
+      lastOverlayRef.current = json;
+      onOverlayChange(pageIndex, json);
+    };
+
+    window.addEventListener('pdf-editor:undo', doUndo);
+    window.addEventListener('pdf-editor:redo', doRedo);
+    window.addEventListener('pdf-editor:delete-selection', doDelete);
+    return () => {
+      window.removeEventListener('pdf-editor:undo', doUndo);
+      window.removeEventListener('pdf-editor:redo', doRedo);
+      window.removeEventListener('pdf-editor:delete-selection', doDelete);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isCurrentPage, pageIndex, onOverlayChange]);
 
   // ─── Tool → Fabric mode ──────────────────────────────────────────────────
   useEffect(() => {
@@ -168,6 +253,9 @@ export default function PageCanvas({
       fc.defaultCursor = 'default';
       return;
     }
+
+    // Text edit layer handles everything — Fabric does nothing
+    if (activeTool === 'editText') return;
 
     if (activeTool === 'draw' || activeTool === 'eraser') {
       fc.isDrawingMode = true;
@@ -489,14 +577,17 @@ export default function PageCanvas({
       if (e.key === 'Delete' || e.key === 'Backspace') {
         const fc = fabricRef.current;
         if (!fc) return;
-        const active = fc.getActiveObject();
-        if (active && !(active as fabric.Textbox).isEditing) {
-          fc.remove(active);
-          fc.renderAll();
-          const json = JSON.stringify(fc.toJSON());
-          lastOverlayRef.current = json;
-          onOverlayChange(pageIndex, json);
-        }
+        // Don't delete when a Fabric Textbox is in text-edit mode
+        const activeObj = fc.getActiveObject();
+        if (activeObj && (activeObj as fabric.Textbox).isEditing) return;
+        const active = fc.getActiveObjects();
+        if (active.length === 0) return;
+        fc.remove(...active);
+        fc.discardActiveObject();
+        fc.renderAll();
+        const json = JSON.stringify(fc.toJSON());
+        lastOverlayRef.current = json;
+        onOverlayChange(pageIndex, json);
       }
     };
     window.addEventListener('keydown', handler);

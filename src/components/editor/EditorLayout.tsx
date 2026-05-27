@@ -50,13 +50,11 @@ export default function EditorLayout() {
 
       if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
         e.preventDefault();
-        const entry = store.undo();
-        if (entry) store.setPageOverlay(entry.pageIndex, entry.json);
+        window.dispatchEvent(new CustomEvent('pdf-editor:undo'));
       }
       if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.shiftKey && e.key === 'z'))) {
         e.preventDefault();
-        const entry = store.redo();
-        if (entry) store.setPageOverlay(entry.pageIndex, entry.json);
+        window.dispatchEvent(new CustomEvent('pdf-editor:redo'));
       }
       if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
         e.preventDefault();
@@ -205,8 +203,9 @@ export default function EditorLayout() {
         onToolChange={store.setActiveTool}
         onToolOptionChange={store.setToolOption}
         onZoomChange={store.setZoom}
-        onUndo={store.undo}
-        onRedo={store.redo}
+        onUndo={() => window.dispatchEvent(new CustomEvent('pdf-editor:undo'))}
+        onRedo={() => window.dispatchEvent(new CustomEvent('pdf-editor:redo'))}
+        onDeleteSelected={() => window.dispatchEvent(new CustomEvent('pdf-editor:delete-selection'))}
         onSearch={() => store.setSearchOpen(true)}
         onWatermark={() => store.setWatermarkDialogOpen(true)}
         onExport={() => store.setExportDialogOpen(true)}

@@ -4,7 +4,7 @@ import { cn } from '@/lib/utils';
 import type { ToolType, ToolOptions } from '@/types/editor';
 import {
   MousePointer2, Type, Pen, Highlighter, Minus, Square, Circle,
-  Image, PenLine, Trash2, ZoomIn, ZoomOut, RotateCcw, Download,
+  Image, PenLine, Trash2, Eraser, ZoomIn, ZoomOut, RotateCcw, Download,
   Search, Stamp, Droplets, FileStack, Undo2, Redo2,
   Underline, Strikethrough, ArrowRight, MessageSquare, FileEdit,
 } from 'lucide-react';
@@ -21,6 +21,7 @@ interface ToolbarProps {
   onZoomChange: (zoom: number) => void;
   onUndo: () => void;
   onRedo: () => void;
+  onDeleteSelected: () => void;
   onSearch: () => void;
   onWatermark: () => void;
   onExport: () => void;
@@ -70,6 +71,7 @@ export default function Toolbar({
   onZoomChange,
   onUndo,
   onRedo,
+  onDeleteSelected,
   onSearch,
   onWatermark,
   onExport,
@@ -89,6 +91,7 @@ export default function Toolbar({
       {/* History */}
       <ToolBtn icon={<Undo2 size={16} />} label="Undo (Ctrl+Z)" disabled={!canUndo} onClick={onUndo} />
       <ToolBtn icon={<Redo2 size={16} />} label="Redo (Ctrl+Y)" disabled={!canRedo} onClick={onRedo} />
+      <ToolBtn icon={<Trash2 size={15} />} label="Delete Selected Object (Del)" onClick={onDeleteSelected} />
 
       <Divider />
 
@@ -113,7 +116,7 @@ export default function Toolbar({
       <ToolBtn icon={<MousePointer2 size={16} />} label="Select (V)" active={activeTool === 'select'} onClick={() => onToolChange('select')} />
       <ToolBtn icon={<Type size={16} />} label="Add Text (T)" active={activeTool === 'text'} onClick={() => onToolChange('text')} />
       <ToolBtn icon={<Pen size={16} />} label="Draw (D)" active={activeTool === 'draw'} onClick={() => onToolChange('draw')} />
-      <ToolBtn icon={<Trash2 size={14} />} label="Eraser (E)" active={activeTool === 'eraser'} onClick={() => onToolChange('eraser')} />
+      <ToolBtn icon={<Eraser size={14} />} label="Eraser (E)" active={activeTool === 'eraser'} onClick={() => onToolChange('eraser')} />
 
       <Divider />
 

@@ -140,6 +140,12 @@ export default function TextEditLayer({
   const [editingId, setEditingId] = useState<string | null>(null);
   // The ONE always-mounted contentEditable div — never toggled on existing nodes
   const editorRef = useRef<HTMLDivElement>(null);
+  // Refs so the populate-effect only re-runs on editingId change, not on every
+  // textEdits/blocks update (which would overwrite the user's in-progress typing)
+  const textEditsRef = useRef<Record<string, string>>(textEdits);
+  const blocksRef = useRef<TextBlock[]>(blocks);
+  useEffect(() => { textEditsRef.current = textEdits; }, [textEdits]);
+  useEffect(() => { blocksRef.current = blocks; }, [blocks]);
 
   useEffect(() => {
     if (!editMode) {
@@ -172,16 +178,17 @@ export default function TextEditLayer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pdfBytes, pageIndex, scale]);
 
-  // When editingId changes, populate and focus the single editor div
+  // When editingId changes, populate and focus the single editor div.
+  // Deps: only editingId — textEdits/blocks are read via refs so they don't
+  // accidentally overwrite the user's in-progress typed content.
   useEffect(() => {
+    if (!editingId) return;
     const el = editorRef.current;
     if (!el) return;
-    if (!editingId) return;
-    const block = blocks.find((b) => b.id === editingId);
+    const block = blocksRef.current.find((b) => b.id === editingId);
     if (!block) return;
-    const text =
-      textEdits[editingId] !== undefined ? textEdits[editingId] : block.str;
-    el.innerText = text;
+    const savedText = textEditsRef.current[editingId];
+    el.innerText = savedText !== undefined ? savedText : block.str;
     el.focus();
     try {
       const range = document.createRange();
@@ -193,7 +200,8 @@ export default function TextEditLayer({
     } catch {
       // ignore
     }
-  }, [editingId, blocks, textEdits]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingId]); // ← intentionally excludes textEdits/blocks
 
   const handleZoneClick = useCallback(
     (id: string, e: React.MouseEvent) => {
@@ -240,6 +248,38 @@ export default function TextEditLayer({
       className="absolute inset-0 pointer-events-none"
       style={{ width: pageWidth, height: pageHeight }}
     >
+      {/* ── Saved text edit overlays (always visible, cover original PDF text) ── */}
+      {blocks.map((block) => {
+        const editedText = textEdits[block.id];
+        // Don't show overlay while the editor div is active for this block
+        if (editedText === undefined || editingId === block.id) return null;
+        return (
+          <div
+            key={`savedEdit-${block.id}`}
+            style={{
+              position: 'absolute',
+              left: block.left - 2,
+              top: block.top - 1,
+              minWidth: block.width + 4,
+              height: block.height + 2,
+              fontSize: block.fontSize,
+              lineHeight: `${block.height + 2}px`,
+              fontFamily: block.fontFamily,
+              color: '#111111',
+              background: 'white',
+              whiteSpace: 'pre',
+              overflow: 'visible',
+              pointerEvents: 'none',
+              zIndex: 1,
+              padding: '0 2px',
+              boxSizing: 'border-box',
+            }}
+          >
+            {editedText}
+          </div>
+        );
+      })}
+
       {/* ── Plain (non-editable) hit zones ──────────────────────────── */}
       {blocks.map((block) => {
         const isSelected = selectedId === block.id;

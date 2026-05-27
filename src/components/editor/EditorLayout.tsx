@@ -29,6 +29,7 @@ export default function EditorLayout() {
     activeTool,
     toolOptions,
     pageOverlays,
+    textEdits,
     undoStack,
     redoStack,
     zoom,
@@ -165,8 +166,8 @@ export default function EditorLayout() {
     // Small delay to allow canvases to emit their updated snapshots
     await new Promise((r) => setTimeout(r, 300));
 
-    return exportPdfWithOverlays(pdfBytes, pageOverlays);
-  }, [pdfBytes, pageOverlays]);
+    return exportPdfWithOverlays(pdfBytes, pageOverlays, textEdits);
+  }, [pdfBytes, pageOverlays, textEdits]);
 
   // ── Page manager apply ───────────────────────────────────────────────────
   const handlePageManagerApply = useCallback(
@@ -243,9 +244,11 @@ export default function EditorLayout() {
                 activeTool={activeTool}
                 toolOptions={toolOptions}
                 overlayJson={pageOverlays[i]?.json}
+                textEdits={textEdits[i] ?? {}}
                 isCurrentPage={currentPage === i + 1}
                 onOverlayChange={handleOverlayChange}
                 onHistoryPush={handleHistoryPush}
+                onTextEdit={store.setTextEdit}
               />
             </div>
           ))}

@@ -1,5 +1,6 @@
 export type ToolType =
   | 'select'
+  | 'editText'   // ← Adobe "Edit PDF" inline text mode
   | 'text'
   | 'draw'
   | 'highlight'

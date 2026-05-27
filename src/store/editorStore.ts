@@ -11,6 +11,10 @@ interface EditorState {
   // Canvas overlays keyed by 0-based page index
   pageOverlays: Record<number, PageOverlay>;
 
+  // ── TRUE INLINE TEXT EDITS (Adobe "Edit PDF" mode) ──
+  // pageIndex → blockId → edited text
+  textEdits: Record<number, Record<string, string>>;
+
   // Active tool
   activeTool: ToolType;
   toolOptions: ToolOptions;
@@ -35,6 +39,7 @@ interface EditorState {
   setActiveTool: (tool: ToolType) => void;
   setToolOption: <K extends keyof ToolOptions>(key: K, value: ToolOptions[K]) => void;
   setPageOverlay: (pageIndex: number, json: string) => void;
+  setTextEdit: (pageIndex: number, blockId: string, text: string) => void;
   pushHistory: (entry: HistoryEntry) => void;
   undo: () => HistoryEntry | undefined;
   redo: () => HistoryEntry | undefined;
@@ -66,6 +71,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   pageCount: 0,
   currentPage: 1,
   pageOverlays: {},
+  textEdits: {},
   activeTool: 'select',
   toolOptions: defaultToolOptions,
   undoStack: [],
@@ -80,7 +86,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   pageManagerOpen: false,
 
   setPdfFile: (file, bytes, pageCount) =>
-    set({ pdfFile: file, pdfBytes: bytes, pageCount, currentPage: 1, pageOverlays: {}, undoStack: [], redoStack: [] }),
+    set({ pdfFile: file, pdfBytes: bytes, pageCount, currentPage: 1, pageOverlays: {}, textEdits: {}, undoStack: [], redoStack: [] }),
 
   setCurrentPage: (page) => set({ currentPage: page }),
 
@@ -91,6 +97,17 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   setPageOverlay: (pageIndex, json) =>
     set((state) => ({ pageOverlays: { ...state.pageOverlays, [pageIndex]: { json } } })),
+
+  setTextEdit: (pageIndex, blockId, text) =>
+    set((state) => ({
+      textEdits: {
+        ...state.textEdits,
+        [pageIndex]: {
+          ...(state.textEdits[pageIndex] ?? {}),
+          [blockId]: text,
+        },
+      },
+    })),
 
   pushHistory: (entry) =>
     set((state) => ({
@@ -136,6 +153,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       pageCount: 0,
       currentPage: 1,
       pageOverlays: {},
+      textEdits: {},
       activeTool: 'select',
       toolOptions: defaultToolOptions,
       undoStack: [],
@@ -143,4 +161,4 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       zoom: 1,
       searchOpen: false,
     }),
-}));
+}));;

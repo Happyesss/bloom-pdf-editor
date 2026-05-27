@@ -6,7 +6,7 @@ import {
   MousePointer2, Type, Pen, Highlighter, Minus, Square, Circle,
   Image, PenLine, Trash2, ZoomIn, ZoomOut, RotateCcw, Download,
   Search, Stamp, Droplets, FileStack, Undo2, Redo2,
-  Underline, Strikethrough, ArrowRight, MessageSquare,
+  Underline, Strikethrough, ArrowRight, MessageSquare, FileEdit,
 } from 'lucide-react';
 
 interface ToolbarProps {
@@ -89,6 +89,23 @@ export default function Toolbar({
       {/* History */}
       <ToolBtn icon={<Undo2 size={16} />} label="Undo (Ctrl+Z)" disabled={!canUndo} onClick={onUndo} />
       <ToolBtn icon={<Redo2 size={16} />} label="Redo (Ctrl+Y)" disabled={!canRedo} onClick={onRedo} />
+
+      <Divider />
+
+      {/* ── Edit PDF mode (Adobe-style inline text editing) ── */}
+      <button
+        title="Edit PDF Text — click any text to edit it in-place"
+        onClick={() => onToolChange(activeTool === 'editText' ? 'select' : 'editText')}
+        className={cn(
+          'flex items-center gap-1.5 px-2.5 h-9 rounded-lg text-xs font-semibold transition-all',
+          activeTool === 'editText'
+            ? 'bg-amber-500 text-white shadow-lg shadow-amber-500/40 ring-2 ring-amber-400'
+            : 'text-amber-400 border border-amber-500/40 hover:bg-amber-500/10'
+        )}
+      >
+        <FileEdit size={15} />
+        <span className="hidden sm:inline">Edit PDF</span>
+      </button>
 
       <Divider />
 

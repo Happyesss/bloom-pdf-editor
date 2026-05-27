@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import * as fabric from 'fabric';
 import type { ToolType, ToolOptions } from '@/types/editor';
+import TextEditLayer from './TextEditLayer';
 
 interface PageCanvasProps {
   pageIndex: number;       // 0-based
@@ -11,9 +12,11 @@ interface PageCanvasProps {
   activeTool: ToolType;
   toolOptions: ToolOptions;
   overlayJson?: string;
+  textEdits: Record<string, string>;  // blockId → edited text
   isCurrentPage: boolean;
   onOverlayChange: (pageIndex: number, json: string) => void;
   onHistoryPush: (pageIndex: number, json: string) => void;
+  onTextEdit: (pageIndex: number, blockId: string, text: string) => void;
 }
 
 export default function PageCanvas({
@@ -23,9 +26,11 @@ export default function PageCanvas({
   activeTool,
   toolOptions,
   overlayJson,
+  textEdits,
   isCurrentPage,
   onOverlayChange,
   onHistoryPush,
+  onTextEdit,
 }: PageCanvasProps) {
   const pdfCanvasRef = useRef<HTMLCanvasElement>(null);
   const fabricCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -481,10 +486,29 @@ export default function PageCanvas({
 
   return (
     <div ref={containerRef} className="relative shadow-2xl" style={{ width: dimensions.width, height: dimensions.height }}>
-      {/* PDF page rendered in background */}
+      {/* Layer 1 — PDF page rendered as read-only canvas */}
       <canvas ref={pdfCanvasRef} className="absolute top-0 left-0" />
-      {/* Fabric.js interactive overlay */}
-      <canvas ref={fabricCanvasRef} className="absolute top-0 left-0" />
+
+      {/* Layer 2 — Editable text spans from PDF text content (Adobe "Edit PDF" mode) */}
+      {dimensions.width > 0 && (
+        <TextEditLayer
+          pageIndex={pageIndex}
+          pdfBytes={pdfBytes}
+          scale={scale}
+          pageWidth={dimensions.width}
+          pageHeight={dimensions.height}
+          editMode={activeTool === 'editText'}
+          textEdits={textEdits}
+          onTextEdit={(blockId, text) => onTextEdit(pageIndex, blockId, text)}
+        />
+      )}
+
+      {/* Layer 3 — Fabric.js annotation / drawing canvas (disabled in editText mode) */}
+      <canvas
+        ref={fabricCanvasRef}
+        className="absolute top-0 left-0"
+        style={{ pointerEvents: activeTool === 'editText' ? 'none' : 'all' }}
+      />
     </div>
   );
 }

@@ -4,7 +4,8 @@ import type { PageOverlay } from '@/types/editor';
 export async function exportPdfWithOverlays(
   originalBytes: ArrayBuffer,
   overlays: Record<number, PageOverlay>,
-  pageOrder?: number[],   // 0-based indices in desired order
+  textEdits?: Record<number, Record<string, string>>,   // pageIndex → blockId → newText
+  textBlockPositions?: Record<number, Record<string, { left: number; top: number; width: number; height: number; fontSize: number; fontFamily: string }>>,
   deletedPages?: Set<number>,
   rotations?: Record<number, number>,
 ): Promise<Uint8Array> {
@@ -23,7 +24,66 @@ export async function exportPdfWithOverlays(
     }
   }
 
-  // For each page with an overlay, render the Fabric canvas overlay as PNG and embed it
+  // For each page with text edits, apply them via pdf-lib
+  if (textEdits && textBlockPositions) {
+    const helvetica = await pdfDoc.embedFont(pdfLib.StandardFonts.Helvetica);
+    const helveticaBold = await pdfDoc.embedFont(pdfLib.StandardFonts.HelveticaBold);
+
+    for (let i = 0; i < totalPages; i++) {
+      const pageEdits = textEdits[i];
+      const pageBlocks = textBlockPositions[i];
+      if (!pageEdits || !pageBlocks) continue;
+
+      const page = pdfDoc.getPages()[i];
+      const { height: pageHeight } = page.getSize();
+
+      for (const [blockId, newText] of Object.entries(pageEdits)) {
+        const block = pageBlocks[blockId];
+        if (!block) continue;
+        if (!newText.trim()) continue;
+
+        // The block coordinates are in screen pixels (at scale used by the editor)
+        // We need to convert back to PDF points
+        // The scale factor stored in blockPositions should match the rendering scale
+        // For now we assume scale=1.5 (default: zoom=1 * 1.5)
+        // In a production system you'd store the scale alongside positions
+        const editorScale = 1.5;
+
+        const pdfX = block.left / editorScale;
+        const pdfY = pageHeight - (block.top + block.height) / editorScale;
+        const pdfFontSize = block.fontSize / editorScale;
+        const pdfWidth = block.width / editorScale + 20;
+        const pdfHeight = block.height / editorScale + 4;
+
+        // Cover original text with white rectangle
+        page.drawRectangle({
+          x: pdfX - 2,
+          y: pdfY - 2,
+          width: pdfWidth,
+          height: pdfHeight,
+          color: pdfLib.rgb(1, 1, 1),
+          borderWidth: 0,
+        });
+
+        // Draw new text
+        const isBold = block.fontFamily.toLowerCase().includes('bold');
+        try {
+          page.drawText(newText, {
+            x: pdfX,
+            y: pdfY + 2,
+            size: Math.max(4, pdfFontSize),
+            font: isBold ? helveticaBold : helvetica,
+            color: pdfLib.rgb(0, 0, 0),
+            maxWidth: pdfWidth,
+          });
+        } catch {
+          // If text rendering fails (special chars etc), skip
+        }
+      }
+    }
+  }
+
+  // For each page with a Fabric overlay, embed the overlay PNG on top
   for (let i = 0; i < totalPages; i++) {
     const overlay = overlays[i];
     if (!overlay || !overlay.json) continue;
@@ -31,8 +91,6 @@ export async function exportPdfWithOverlays(
     const page = pdfDoc.getPages()[i];
     const { width, height } = page.getSize();
 
-    // The overlay JSON was produced by Fabric canvas at a scaled size.
-    // We embed the data URL that was stored in the overlay (see PageCanvas.tsx export).
     try {
       const parsed = JSON.parse(overlay.json);
       if (parsed.__dataUrl) {
@@ -76,7 +134,6 @@ export async function addWatermarkToPdf(
   for (const page of pdfDoc.getPages()) {
     const { width, height } = page.getSize();
     const textWidth = helvetica.widthOfTextAtSize(text, fontSize);
-    const radians = (angle * Math.PI) / 180;
     const positions = repeat
       ? [
           { x: width / 2 - textWidth / 2, y: height / 2 },

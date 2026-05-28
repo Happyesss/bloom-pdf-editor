@@ -37,9 +37,11 @@ export async function exportPdfWithOverlays(
       const page = pdfDoc.getPages()[i];
       const { height: pageHeight } = page.getSize();
 
-      for (const [blockId, newText] of Object.entries(pageEdits)) {
+      for (const [blockId, rawText] of Object.entries(pageEdits)) {
         const block = pageBlocks[blockId];
         if (!block) continue;
+        // textEdits now stores HTML (with <b>/<i> tags) — strip to plain text for PDF
+        const newText = rawText.replace(/<[^>]+>/g, '');
         if (!newText.trim()) continue;
 
         // The block coordinates are in screen pixels (at scale used by the editor)

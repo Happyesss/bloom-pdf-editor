@@ -33,25 +33,35 @@ interface ToolbarProps {
 interface ToolButtonProps {
   icon: React.ReactNode;
   label: string;
+  description?: string;
   active?: boolean;
   disabled?: boolean;
   onClick: () => void;
 }
 
-function ToolBtn({ icon, label, active, disabled, onClick }: ToolButtonProps) {
+function ToolBtn({ icon, label, description, active, disabled, onClick }: ToolButtonProps) {
   return (
-    <button
-      title={label}
-      disabled={disabled}
-      onClick={onClick}
-      className={cn(
-        'flex flex-col items-center justify-center w-10 h-10 rounded-lg transition-all text-xs gap-0.5',
-        active ? 'bg-blue-500 text-white shadow-lg shadow-blue-500/30' : 'text-zinc-300 hover:bg-zinc-700 hover:text-white',
-        disabled ? 'opacity-30 cursor-not-allowed pointer-events-none' : 'cursor-pointer'
-      )}
-    >
-      {icon}
-    </button>
+    <div className="relative group/tb">
+      <button
+        disabled={disabled}
+        onClick={onClick}
+        className={cn(
+          'flex flex-col items-center justify-center w-10 h-10 rounded-lg transition-all text-xs gap-0.5',
+          active ? 'bg-blue-500 text-white shadow-lg shadow-blue-500/30' : 'text-zinc-300 hover:bg-zinc-700 hover:text-white',
+          disabled ? 'opacity-30 cursor-not-allowed pointer-events-none' : 'cursor-pointer'
+        )}
+      >
+        {icon}
+      </button>
+      {/* Custom hover tooltip */}
+      <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 opacity-0 group-hover/tb:opacity-100 transition-opacity duration-150 pointer-events-none z-[100] flex flex-col items-center">
+        <div className="bg-zinc-900 border border-zinc-700 rounded-lg px-2.5 py-1.5 shadow-2xl text-center max-w-[180px]">
+          <div className="text-xs font-semibold text-white whitespace-nowrap">{label}</div>
+          {description && <div className="text-[10px] text-zinc-400 mt-0.5 whitespace-nowrap">{description}</div>}
+        </div>
+        <div className="w-2.5 h-2.5 bg-zinc-900 border-r border-b border-zinc-700 rotate-45 -mt-[5px]" />
+      </div>
+    </div>
   );
 }
 
@@ -89,9 +99,18 @@ export default function Toolbar({
       <Divider />
 
       {/* History */}
-      <ToolBtn icon={<Undo2 size={16} />} label="Undo (Ctrl+Z)" disabled={!canUndo} onClick={onUndo} />
-      <ToolBtn icon={<Redo2 size={16} />} label="Redo (Ctrl+Y)" disabled={!canRedo} onClick={onRedo} />
-      <ToolBtn icon={<Trash2 size={15} />} label="Delete Selected Object (Del)" onClick={onDeleteSelected} />
+      <ToolBtn icon={<Undo2 size={16} />} label="Undo" description="Undo last action (Ctrl+Z)" disabled={!canUndo} onClick={onUndo} />
+      <ToolBtn icon={<Redo2 size={16} />} label="Redo" description="Redo last undone action (Ctrl+Y)" disabled={!canRedo} onClick={onRedo} />
+
+      {/* Delete — full button (high-discoverability per UX audit) */}
+      <button
+        onClick={onDeleteSelected}
+        title="Delete selected object (Del)"
+        className="flex items-center gap-1.5 h-9 px-2.5 rounded-lg text-xs font-medium text-red-300 hover:text-white hover:bg-red-500/80 transition-colors"
+      >
+        <Trash2 size={14} />
+        <span className="hidden md:inline">Delete</span>
+      </button>
 
       <Divider />
 
@@ -113,33 +132,69 @@ export default function Toolbar({
       <Divider />
 
       {/* Selection & Drawing */}
-      <ToolBtn icon={<MousePointer2 size={16} />} label="Select (V)" active={activeTool === 'select'} onClick={() => onToolChange('select')} />
-      <ToolBtn icon={<Type size={16} />} label="Add Text (T)" active={activeTool === 'text'} onClick={() => onToolChange('text')} />
-      <ToolBtn icon={<Pen size={16} />} label="Draw (D)" active={activeTool === 'draw'} onClick={() => onToolChange('draw')} />
-      <ToolBtn icon={<Eraser size={14} />} label="Eraser (E)" active={activeTool === 'eraser'} onClick={() => onToolChange('eraser')} />
+      <ToolBtn icon={<MousePointer2 size={16} />} label="Select" description="Select & move objects (V)" active={activeTool === 'select'} onClick={() => onToolChange('select')} />
+      <ToolBtn icon={<Type size={16} />} label="Add Text" description="Insert a text box (T)" active={activeTool === 'text'} onClick={() => onToolChange('text')} />
+      <ToolBtn icon={<Pen size={16} />} label="Draw" description="Freehand drawing (D)" active={activeTool === 'draw'} onClick={() => onToolChange('draw')} />
+      <ToolBtn icon={<Eraser size={14} />} label="Eraser" description="Erase drawn marks (E)" active={activeTool === 'eraser'} onClick={() => onToolChange('eraser')} />
 
       <Divider />
 
       {/* Shapes */}
-      <ToolBtn icon={<Square size={16} />} label="Rectangle" active={activeTool === 'rectangle'} onClick={() => onToolChange('rectangle')} />
-      <ToolBtn icon={<Circle size={16} />} label="Ellipse" active={activeTool === 'ellipse'} onClick={() => onToolChange('ellipse')} />
-      <ToolBtn icon={<Minus size={16} />} label="Line" active={activeTool === 'line'} onClick={() => onToolChange('line')} />
-      <ToolBtn icon={<ArrowRight size={16} />} label="Arrow" active={activeTool === 'arrow'} onClick={() => onToolChange('arrow')} />
+      <ToolBtn icon={<Square size={16} />} label="Rectangle" description="Draw a rectangle shape" active={activeTool === 'rectangle'} onClick={() => onToolChange('rectangle')} />
+      <ToolBtn icon={<Circle size={16} />} label="Ellipse" description="Draw an ellipse / circle" active={activeTool === 'ellipse'} onClick={() => onToolChange('ellipse')} />
+      <ToolBtn icon={<Minus size={16} />} label="Line" description="Draw a straight line" active={activeTool === 'line'} onClick={() => onToolChange('line')} />
+      <ToolBtn icon={<ArrowRight size={16} />} label="Arrow" description="Draw an arrow" active={activeTool === 'arrow'} onClick={() => onToolChange('arrow')} />
 
       <Divider />
 
       {/* Annotations */}
-      <ToolBtn icon={<Highlighter size={16} />} label="Highlight (H)" active={activeTool === 'highlight'} onClick={() => onToolChange('highlight')} />
-      <ToolBtn icon={<Underline size={16} />} label="Underline" active={activeTool === 'underline'} onClick={() => onToolChange('underline')} />
-      <ToolBtn icon={<Strikethrough size={16} />} label="Strikethrough" active={activeTool === 'strikethrough'} onClick={() => onToolChange('strikethrough')} />
-      <ToolBtn icon={<MessageSquare size={14} />} label="Comment" active={activeTool === 'comment'} onClick={() => onToolChange('comment')} />
+      <ToolBtn icon={<Highlighter size={16} />} label="Highlight" description="Highlight text (H)" active={activeTool === 'highlight'} onClick={() => onToolChange('highlight')} />
+      <ToolBtn icon={<Underline size={16} />} label="Underline" description="Draw an underline" active={activeTool === 'underline'} onClick={() => onToolChange('underline')} />
+      <ToolBtn icon={<Strikethrough size={16} />} label="Strikethrough" description="Draw a strikethrough" active={activeTool === 'strikethrough'} onClick={() => onToolChange('strikethrough')} />
+      <ToolBtn icon={<MessageSquare size={14} />} label="Comment" description="Add a sticky comment note" active={activeTool === 'comment'} onClick={() => onToolChange('comment')} />
 
       <Divider />
 
       {/* Advanced */}
-      <ToolBtn icon={<PenLine size={16} />} label="Signature (S)" active={activeTool === 'signature'} onClick={onSignature} />
-      <ToolBtn icon={<Image size={16} />} label="Insert Image" onClick={onImageInsert} />
-      <ToolBtn icon={<Stamp size={16} />} label="Redact" active={activeTool === 'redact'} onClick={() => onToolChange('redact')} />
+      <ToolBtn icon={<PenLine size={16} />} label="Signature" description="Draw or insert a signature (S)" active={activeTool === 'signature'} onClick={onSignature} />
+      <ToolBtn icon={<Image size={16} />} label="Insert Image" description="Add an image to the page" onClick={onImageInsert} />
+      <ToolBtn icon={<Trash2 size={15} />} label="Redact" description="Black-out / redact an area" active={activeTool === 'redact'} onClick={() => onToolChange('redact')} />
+
+      {/* Stamp tool with picker */}
+      <div className="relative">
+        <ToolBtn
+          icon={<Stamp size={16} />}
+          label="Stamp"
+          description="Place a pre-set stamp on the page"
+          active={activeTool === 'stamp'}
+          onClick={() => onToolChange(activeTool === 'stamp' ? 'select' : 'stamp')}
+        />
+        {activeTool === 'stamp' && (
+          <div className="absolute top-full left-0 mt-1 bg-zinc-800 border border-zinc-700 rounded-xl p-2 z-50 shadow-2xl grid grid-cols-2 gap-1 min-w-[172px]">
+            <div className="col-span-2 text-[10px] text-zinc-500 font-semibold uppercase px-1 pb-0.5">Choose stamp</div>
+            {([
+              { id: 'APPROVED', label: 'Approved', color: '#16a34a' },
+              { id: 'REJECTED', label: 'Rejected', color: '#dc2626' },
+              { id: 'DRAFT', label: 'Draft', color: '#9ca3af' },
+              { id: 'CONFIDENTIAL', label: 'Confidential', color: '#dc2626' },
+              { id: 'VOID', label: 'Void', color: '#dc2626' },
+              { id: 'PAID', label: 'Paid', color: '#16a34a' },
+            ] as { id: string; label: string; color: string }[]).map((s) => (
+              <button
+                key={s.id}
+                onClick={() => onToolOptionChange('stampType', s.id as ToolOptions['stampType'])}
+                style={{ borderColor: (toolOptions.stampType ?? 'APPROVED') === s.id ? s.color : undefined, color: s.color }}
+                className={cn(
+                  'px-2 py-1 text-[11px] rounded-lg border font-bold transition-colors hover:opacity-80',
+                  (toolOptions.stampType ?? 'APPROVED') === s.id
+                    ? 'bg-zinc-700'
+                    : 'border-zinc-600 bg-transparent hover:bg-zinc-700'
+                )}
+              >{s.label}</button>
+            ))}
+          </div>
+        )}
+      </div>
 
       <Divider />
 
@@ -199,18 +254,18 @@ export default function Toolbar({
 
       {/* Zoom */}
       <div className="flex items-center gap-1">
-        <ToolBtn icon={<ZoomOut size={16} />} label="Zoom Out" onClick={() => onZoomChange(Math.max(0.25, zoom - 0.25))} />
+        <ToolBtn icon={<ZoomOut size={16} />} label="Zoom Out" description="Decrease zoom level" onClick={() => onZoomChange(Math.max(0.25, zoom - 0.25))} />
         <span className="text-xs text-zinc-400 w-12 text-center">{Math.round(zoom * 100)}%</span>
-        <ToolBtn icon={<ZoomIn size={16} />} label="Zoom In" onClick={() => onZoomChange(Math.min(3, zoom + 0.25))} />
-        <ToolBtn icon={<RotateCcw size={14} />} label="Reset Zoom" onClick={() => onZoomChange(1)} />
+        <ToolBtn icon={<ZoomIn size={16} />} label="Zoom In" description="Increase zoom level" onClick={() => onZoomChange(Math.min(3, zoom + 0.25))} />
+        <ToolBtn icon={<RotateCcw size={14} />} label="Reset Zoom" description="Reset to 100%" onClick={() => onZoomChange(1)} />
       </div>
 
       <Divider />
 
       {/* Document actions */}
-      <ToolBtn icon={<Search size={16} />} label="Search & Replace (Ctrl+F)" onClick={onSearch} />
-      <ToolBtn icon={<FileStack size={16} />} label="Page Manager" onClick={onPageManager} />
-      <ToolBtn icon={<Droplets size={16} />} label="Watermark" onClick={onWatermark} />
+      <ToolBtn icon={<Search size={16} />} label="Search" description="Find text in document (Ctrl+F)" onClick={onSearch} />
+      <ToolBtn icon={<FileStack size={16} />} label="Page Manager" description="Reorder, rotate or delete pages" onClick={onPageManager} />
+      <ToolBtn icon={<Droplets size={16} />} label="Watermark" description="Add a watermark to all pages" onClick={onWatermark} />
 
       <Divider />
 

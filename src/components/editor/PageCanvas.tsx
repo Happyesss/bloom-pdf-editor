@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import * as fabric from 'fabric';
+import { Trash2 } from 'lucide-react';
 import type { ToolType, ToolOptions } from '@/types/editor';
 import TextEditLayer from './TextEditLayer';
 
@@ -17,6 +18,7 @@ interface PageCanvasProps {
   onOverlayChange: (pageIndex: number, json: string) => void;
   onHistoryPush: (pageIndex: number, json: string) => void;
   onTextEdit: (pageIndex: number, blockId: string, text: string) => void;
+  onHistoryChange?: (canUndo: boolean, canRedo: boolean) => void;
 }
 
 export default function PageCanvas({
@@ -31,12 +33,15 @@ export default function PageCanvas({
   onOverlayChange,
   onHistoryPush,
   onTextEdit,
+  onHistoryChange,
 }: PageCanvasProps) {
   const pdfCanvasRef = useRef<HTMLCanvasElement>(null);
   const fabricCanvasRef = useRef<HTMLCanvasElement>(null);
   const fabricRef = useRef<fabric.Canvas | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
+  // Bounding box of currently-selected Fabric object (drives floating delete btn)
+  const [selectionBounds, setSelectionBounds] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   const isDrawingRef = useRef(false);
   const startPointRef = useRef<{ x: number; y: number } | null>(null);
   const activeShapeRef = useRef<fabric.Object | null>(null);
@@ -44,6 +49,15 @@ export default function PageCanvas({
   // Keeps the current activeTool available inside effects without being a dep
   const activeToolRef = useRef<ToolType>(activeTool);
   activeToolRef.current = activeTool;
+  // Keep onHistoryChange available inside effects without triggering re-runs
+  const onHistoryChangeRef = useRef(onHistoryChange);
+  onHistoryChangeRef.current = onHistoryChange;
+  // Reports current local history state to parent (enables toolbar buttons)
+  const reportHistory = () => {
+    const idx = localHistoryIndexRef.current;
+    const len = localHistoryRef.current.length;
+    onHistoryChangeRef.current?.(idx > 0, idx < len - 1);
+  };
   // ── Local undo/redo history (per-page canvas state snapshots) ──────────
   const localHistoryRef = useRef<string[]>([]);
   const localHistoryIndexRef = useRef<number>(-1);
@@ -137,12 +151,29 @@ export default function PageCanvas({
         localHistoryIndexRef.current = sliced.length - 1;
         lastOverlayRef.current = json;
         onOverlayChange(pageIndex, json);
+        reportHistory();
       }
     };
 
     fc.on('object:modified', saveOverlay);
     fc.on('object:added', saveOverlay);
     fc.on('object:removed', saveOverlay);
+
+    // Track selection for the floating delete button
+    const updateSel = () => {
+      const active = fc.getActiveObject();
+      if (active) {
+        const br = active.getBoundingRect();
+        setSelectionBounds({ left: br.left, top: br.top, width: br.width, height: br.height });
+      } else {
+        setSelectionBounds(null);
+      }
+    };
+    fc.on('selection:created', updateSel);
+    fc.on('selection:updated', updateSel);
+    fc.on('object:moving', updateSel);
+    fc.on('object:scaling', updateSel);
+    fc.on('selection:cleared', () => setSelectionBounds(null));
 
     return () => {
       fc.dispose();
@@ -204,6 +235,7 @@ export default function PageCanvas({
       if (idx <= 0) return;
       localHistoryIndexRef.current = idx - 1;
       applyState(localHistoryRef.current[localHistoryIndexRef.current]);
+      reportHistory();
     };
 
     const doRedo = () => {
@@ -211,6 +243,7 @@ export default function PageCanvas({
       if (idx >= localHistoryRef.current.length - 1) return;
       localHistoryIndexRef.current = idx + 1;
       applyState(localHistoryRef.current[localHistoryIndexRef.current]);
+      reportHistory();
     };
 
     const doDelete = () => {
@@ -307,6 +340,57 @@ export default function PageCanvas({
       fc.defaultCursor = 'crosshair';
       fc.selection = false;
       setupRectDraw(fc, '#000000', 0, '#000000');
+      return;
+    }
+
+    if (activeTool === 'stamp') {
+      fc.defaultCursor = 'crosshair';
+      fc.selection = false;
+      const stampDefs: Record<string, { color: string }> = {
+        APPROVED:     { color: '#16a34a' },
+        REJECTED:     { color: '#dc2626' },
+        DRAFT:        { color: '#9ca3af' },
+        CONFIDENTIAL: { color: '#dc2626' },
+        VOID:         { color: '#dc2626' },
+        PAID:         { color: '#16a34a' },
+      };
+      const stampType = toolOptions.stampType ?? 'APPROVED';
+      const def = stampDefs[stampType] ?? stampDefs.APPROVED;
+      fc.on('mouse:down', (e) => {
+        const ptr = e.scenePoint;
+        const stampRect = new fabric.Rect({
+          left: 0, top: 0,
+          width: 130, height: 42,
+          fill: 'transparent',
+          stroke: def.color,
+          strokeWidth: 3,
+          rx: 5, ry: 5,
+          selectable: false,
+        });
+        const stampText = new fabric.Textbox(stampType, {
+          left: 8, top: 9,
+          width: 114,
+          fontSize: 18,
+          fontWeight: 'bold',
+          fontFamily: 'Arial',
+          fill: def.color,
+          opacity: 0.85,
+          textAlign: 'center',
+          selectable: false,
+        });
+        const group = new fabric.Group([stampRect, stampText], {
+          left: ptr.x,
+          top: ptr.y,
+          selectable: true,
+          angle: -15,
+        });
+        fc.add(group);
+        fc.setActiveObject(group);
+        fc.renderAll();
+        const json = JSON.stringify(fc.toJSON());
+        lastOverlayRef.current = json;
+        onOverlayChange(pageIndex, json);
+      });
       return;
     }
 
@@ -619,6 +703,37 @@ export default function PageCanvas({
         className="absolute top-0 left-0"
         style={{ pointerEvents: activeTool === 'editText' ? 'none' : 'all' }}
       />
+
+      {/* Floating delete button — appears when a Fabric object is selected */}
+      {selectionBounds && activeTool !== 'editText' && (
+        <button
+          title="Delete selected object"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const fc = fabricRef.current;
+            if (!fc) return;
+            const active = fc.getActiveObjects();
+            if (active.length === 0) return;
+            fc.remove(...active);
+            fc.discardActiveObject();
+            fc.renderAll();
+            const json = JSON.stringify(fc.toJSON());
+            lastOverlayRef.current = json;
+            onOverlayChange(pageIndex, json);
+            setSelectionBounds(null);
+          }}
+          style={{
+            position: 'absolute',
+            left: selectionBounds.left + selectionBounds.width - 4,
+            top: Math.max(0, selectionBounds.top - 14),
+            zIndex: 30,
+          }}
+          className="w-7 h-7 bg-red-500 hover:bg-red-600 text-white rounded-full flex items-center justify-center shadow-lg transition-colors"
+        >
+          <Trash2 size={13} />
+        </button>
+      )}
     </div>
   );
 }

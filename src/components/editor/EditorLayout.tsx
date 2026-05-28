@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import * as fabric from 'fabric';
 import { useEditorStore } from '@/store/editorStore';
 import Toolbar from './Toolbar';
@@ -20,6 +20,13 @@ export default function EditorLayout() {
   const imageInputRef = useRef<HTMLInputElement>(null);
   // Track per-page fabric canvas refs for signature/image insertion
   const canvasRefs = useRef<Record<number, fabric.Canvas>>({});
+  // Undo/redo availability reported by the current page's PageCanvas
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
+  const handleHistoryChange = useCallback((u: boolean, r: boolean) => {
+    setCanUndo(u);
+    setCanRedo(r);
+  }, []);
 
   const {
     pdfFile,
@@ -30,8 +37,6 @@ export default function EditorLayout() {
     toolOptions,
     pageOverlays,
     textEdits,
-    undoStack,
-    redoStack,
     zoom,
     sidebarOpen,
     signatureDialogOpen,
@@ -66,6 +71,10 @@ export default function EditorLayout() {
       if (e.key === 'e' || e.key === 'E') store.setActiveTool('eraser');
       if (e.key === 'h' || e.key === 'H') store.setActiveTool('highlight');
       if (e.key === 's' || e.key === 'S') store.setSignatureDialogOpen(true);
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent('pdf-editor:delete-selection'));
+      }
       if (e.key === 'Escape') {
         store.setSearchOpen(false);
         store.setSignatureDialogOpen(false);
@@ -197,8 +206,8 @@ export default function EditorLayout() {
         activeTool={activeTool}
         toolOptions={toolOptions}
         zoom={zoom}
-        canUndo={undoStack.length > 0}
-        canRedo={redoStack.length > 0}
+        canUndo={canUndo}
+        canRedo={canRedo}
         fileName={pdfFile.name}
         onToolChange={store.setActiveTool}
         onToolOptionChange={store.setToolOption}
@@ -250,6 +259,7 @@ export default function EditorLayout() {
                 onOverlayChange={handleOverlayChange}
                 onHistoryPush={handleHistoryPush}
                 onTextEdit={store.setTextEdit}
+                onHistoryChange={currentPage === i + 1 ? handleHistoryChange : undefined}
               />
             </div>
           ))}

@@ -13,6 +13,7 @@ export type ToolType =
   | 'image'
   | 'signature'
   | 'redact'
+  | 'stamp'
   | 'eraser'
   | 'comment';
 
@@ -25,6 +26,7 @@ export interface ToolOptions {
   fontBold: boolean;
   fontItalic: boolean;
   opacity: number;
+  stampType: string; // active stamp for the stamp tool
 }
 
 export interface PageOverlay {

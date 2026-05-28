@@ -1,18 +1,22 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
+import { Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useEditorStore } from '@/store/editorStore';
 
 interface ThumbnailProps {
   pdfBytes: ArrayBuffer;
   pageIndex: number;
   isActive: boolean;
   pageNumber: number;
+  canDelete: boolean;
   onClick: () => void;
+  onDelete: () => void;
 }
 
-function PageThumbnail({ pdfBytes, pageIndex, isActive, pageNumber, onClick }: ThumbnailProps) {
+function PageThumbnail({ pdfBytes, pageIndex, isActive, pageNumber, canDelete, onClick, onDelete }: ThumbnailProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -37,18 +41,36 @@ function PageThumbnail({ pdfBytes, pageIndex, isActive, pageNumber, onClick }: T
   }, [pdfBytes, pageIndex]);
 
   return (
-    <button
-      onClick={onClick}
+    <div
       className={cn(
-        'flex flex-col items-center gap-1.5 p-2 rounded-lg transition-all cursor-pointer w-full',
+        'group relative flex flex-col items-center gap-1.5 p-2 rounded-lg transition-all w-full',
         isActive ? 'bg-blue-500/20 ring-2 ring-blue-500' : 'hover:bg-zinc-700/50'
       )}
     >
-      <div className="bg-white rounded overflow-hidden shadow">
-        <canvas ref={canvasRef} className="block" />
-      </div>
-      <span className="text-xs text-zinc-400">{pageNumber}</span>
-    </button>
+      <button
+        onClick={onClick}
+        className="flex flex-col items-center gap-1.5 cursor-pointer w-full"
+      >
+        <div className="bg-white rounded overflow-hidden shadow">
+          <canvas ref={canvasRef} className="block" />
+        </div>
+        <span className="text-xs text-zinc-400">{pageNumber}</span>
+      </button>
+
+      {canDelete && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            if (confirm(`Delete page ${pageNumber}? This cannot be undone.`)) onDelete();
+          }}
+          title={`Delete page ${pageNumber}`}
+          aria-label={`Delete page ${pageNumber}`}
+          className="absolute top-1.5 right-1.5 w-6 h-6 rounded-md bg-red-500/90 hover:bg-red-500 text-white opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center shadow-lg"
+        >
+          <Trash2 size={12} />
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -60,6 +82,8 @@ interface SidebarProps {
 }
 
 export default function Sidebar({ pdfBytes, pageCount, currentPage, onPageSelect }: SidebarProps) {
+  const deletePage = useEditorStore((s) => s.deletePage);
+
   return (
     <div className="w-36 flex-shrink-0 bg-zinc-900 border-r border-zinc-700 overflow-y-auto flex flex-col gap-1 p-2">
       <p className="text-xs text-zinc-500 font-medium px-1 py-1 sticky top-0 bg-zinc-900 z-10">
@@ -67,12 +91,14 @@ export default function Sidebar({ pdfBytes, pageCount, currentPage, onPageSelect
       </p>
       {Array.from({ length: pageCount }, (_, i) => (
         <PageThumbnail
-          key={i}
+          key={`${pageCount}-${i}`}
           pdfBytes={pdfBytes}
           pageIndex={i}
           pageNumber={i + 1}
           isActive={currentPage === i + 1}
+          canDelete={pageCount > 1}
           onClick={() => onPageSelect(i + 1)}
+          onDelete={() => deletePage(i)}
         />
       ))}
     </div>

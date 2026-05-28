@@ -8,6 +8,7 @@ import type { TextItem } from 'pdfjs-dist/types/src/display/api';
 export interface TextBlock {
   id: string;
   str: string;
+  htmlStr: string;   // HTML with <b>/<i> tags preserving per-item formatting
   left: number;
   top: number;
   width: number;
@@ -15,12 +16,42 @@ export interface TextBlock {
   fontSize: number;
   fontFamily: string;
   angle: number;
+  bold: boolean;
+  italic: boolean;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function transformPoint(m: number[], x: number, y: number): [number, number] {
   return [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]];
+}
+
+function detectBold(pdfName: string): boolean {
+  return /bold/i.test(pdfName);
+}
+
+function detectItalic(pdfName: string): boolean {
+  return /(italic|oblique)/i.test(pdfName);
+}
+
+/**
+ * If a saved value is plain text (no bold/italic tags) but the original
+ * block had HTML formatting, restore the formatting for the original portion.
+ * Handles old plain-text saves made before the HTML-based save was implemented.
+ */
+function reattachFormatting(savedHtml: string, blockStr: string, htmlStr: string): string {
+  // Already has formatting — use as-is
+  if (/<(b|i|strong|em)(\s[^>]*)?>/i.test(savedHtml)) return savedHtml;
+  // Block has no rich formatting — nothing to restore
+  if (!/<(b|i|strong|em)(\s[^>]*)?>/i.test(htmlStr)) return savedHtml;
+  // Plain-text save that starts with the original block content
+  const trimOrig = blockStr.trim();
+  const trimSaved = savedHtml.trim();
+  if (trimSaved.startsWith(trimOrig)) {
+    const suffix = savedHtml.slice(savedHtml.indexOf(trimOrig) + trimOrig.length);
+    return htmlStr + suffix;
+  }
+  return savedHtml;
 }
 
 function parseFontName(pdfName: string): string {
@@ -96,9 +127,38 @@ function buildTextBlocks(
   return groups.map((group, gi): TextBlock => {
     const first = group[0];
     const last = group[group.length - 1];
+
+    // Build plain text AND HTML simultaneously, inserting spaces where gaps exist
+    let combinedStr = '';
+    let htmlStr = '';
+    for (let i = 0; i < group.length; i++) {
+      const curr = group[i];
+      // Insert a space when a significant gap exists (space item was filtered out)
+      if (i > 0) {
+        const prev = group[i - 1];
+        const gap = curr.sx - (prev.sx + prev.fontW);
+        if (gap > prev.fontH * 0.15 && !combinedStr.endsWith(' ') && !curr.it.str.startsWith(' ')) {
+          combinedStr += ' ';
+          htmlStr += ' ';
+        }
+      }
+      const bold = detectBold(curr.it.fontName ?? '');
+      const italic = detectItalic(curr.it.fontName ?? '');
+      const escaped = curr.it.str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+      combinedStr += curr.it.str;
+      if (bold && italic) htmlStr += `<b><i>${escaped}</i></b>`;
+      else if (bold)   htmlStr += `<b>${escaped}</b>`;
+      else if (italic) htmlStr += `<i>${escaped}</i>`;
+      else             htmlStr += escaped;
+    }
+
     return {
       id: `${pageIndex}-${gi}`,
-      str: group.map((g) => g.it.str).join(''),
+      str: combinedStr,
+      htmlStr,
       left: Math.min(...group.map((g) => g.sx)),
       top: first.sy - first.fontH,
       width: Math.max(last.sx + last.fontW - Math.min(...group.map((g) => g.sx)), first.fontH * 0.5),
@@ -106,11 +166,16 @@ function buildTextBlocks(
       fontSize: first.fontH,
       fontFamily: parseFontName(first.it.fontName),
       angle: first.angle,
+      bold: detectBold(first.it.fontName ?? ''),
+      italic: detectItalic(first.it.fontName ?? ''),
     };
   });
 }
 
-// ─── Component ────────────────────────────────────────────────────────────────
+// Strip HTML tags to plain text (used when passing to PDF export)
+export function htmlToPlainText(html: string): string {
+  return html.replace(/<[^>]+>/g, '');
+}
 
 interface TextEditLayerProps {
   pageIndex: number;
@@ -187,8 +252,12 @@ export default function TextEditLayer({
     if (!el) return;
     const block = blocksRef.current.find((b) => b.id === editingId);
     if (!block) return;
-    const savedText = textEditsRef.current[editingId];
-    el.innerText = savedText !== undefined ? savedText : block.str;
+    const savedHtml = textEditsRef.current[editingId];
+    // Reattach formatting if the saved value is a plain-text copy of the original
+    const loadHtml = savedHtml !== undefined
+      ? reattachFormatting(savedHtml, block.str, block.htmlStr)
+      : block.htmlStr;
+    el.innerHTML = loadHtml;
     el.focus();
     try {
       const range = document.createRange();
@@ -229,8 +298,28 @@ export default function TextEditLayer({
 
   const handleEditorBlur = useCallback(() => {
     if (!editingId || !editorRef.current) return;
-    const text = editorRef.current.innerText ?? '';
-    onTextEdit(editingId, text);
+    // Sanitize: strip browser-added div/span wrappers while keeping <b>/<i>
+    const raw = editorRef.current.innerHTML ?? '';
+    const cleaned = raw
+      .replace(/<div>/gi, '<br>')
+      .replace(/<\/div>/gi, '')
+      .replace(/<span[^>]*>/gi, '')
+      .replace(/<\/span>/gi, '')
+      // Normalize browser's bold/italic wrappers to short tags
+      .replace(/<strong>/gi, '<b>').replace(/<\/strong>/gi, '</b>')
+      .replace(/<em>/gi, '<i>').replace(/<\/em>/gi, '</i>');
+    // Don't save unless the user actually changed the text.
+    // Compare plain-text content (HTML-stripped) against the original block str.
+    const block = blocksRef.current.find((b) => b.id === editingId);
+    const plainEdited = cleaned.replace(/<[^>]+>/g, '').trim();
+    const plainOriginal = (block?.str ?? '').trim();
+    const hadPreviousSave = textEditsRef.current[editingId] !== undefined;
+    if (!hadPreviousSave && plainEdited === plainOriginal) {
+      // User opened the block but didn't change anything — don't create an overlay
+      setEditingId(null);
+      return;
+    }
+    onTextEdit(editingId, cleaned);
     setEditingId(null);
   }, [editingId, onTextEdit]);
 
@@ -253,9 +342,16 @@ export default function TextEditLayer({
         const editedText = textEdits[block.id];
         // Don't show overlay while the editor div is active for this block
         if (editedText === undefined || editingId === block.id) return null;
+        // Skip overlay when the saved text is identical to the original (ghost save)
+        const savedPlain = editedText.replace(/<[^>]+>/g, '').trim();
+        if (savedPlain === block.str.trim()) return null;
+        // Restore bold/italic from original htmlStr if the saved value was plain text
+        const displayHtml = reattachFormatting(editedText, block.str, block.htmlStr);
         return (
           <div
             key={`savedEdit-${block.id}`}
+            // eslint-disable-next-line react/no-danger
+            dangerouslySetInnerHTML={{ __html: displayHtml }}
             style={{
               position: 'absolute',
               left: block.left - 2,
@@ -274,9 +370,7 @@ export default function TextEditLayer({
               padding: '0 2px',
               boxSizing: 'border-box',
             }}
-          >
-            {editedText}
-          </div>
+          />
         );
       })}
 
@@ -350,6 +444,53 @@ export default function TextEditLayer({
         </div>
       ))}
 
+      {/* ── Floating mini formatting bar (appears above the active editor) ── */}
+      {editingBlock && (
+        <div
+          style={{
+            position: 'absolute',
+            left: editingBlock.left - 2,
+            top: Math.max(4, editingBlock.top - 40),
+            zIndex: 25,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 2,
+            background: '#1e293b',
+            border: '1px solid #334155',
+            borderRadius: 6,
+            padding: '3px 5px',
+            boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
+            pointerEvents: 'all',
+            userSelect: 'none',
+          }}
+        >
+          <button
+            onMouseDown={(e) => { e.preventDefault(); document.execCommand('bold'); }}
+            className="w-7 h-7 rounded font-bold text-sm text-zinc-300 hover:bg-zinc-700 hover:text-white transition-colors flex items-center justify-center"
+            title="Bold (Ctrl+B)"
+          >B</button>
+          <button
+            onMouseDown={(e) => { e.preventDefault(); document.execCommand('italic'); }}
+            className="w-7 h-7 rounded italic text-sm text-zinc-300 hover:bg-zinc-700 hover:text-white transition-colors flex items-center justify-center"
+            title="Italic (Ctrl+I)"
+          >I</button>
+          <button
+            onMouseDown={(e) => { e.preventDefault(); document.execCommand('underline'); }}
+            className="w-7 h-7 rounded underline text-sm text-zinc-300 hover:bg-zinc-700 hover:text-white transition-colors flex items-center justify-center"
+            title="Underline (Ctrl+U)"
+          >U</button>
+          <div style={{ width: 1, height: 18, background: '#475569', margin: '0 2px' }} />
+          <button
+            onMouseDown={(e) => {
+              e.preventDefault();
+              document.execCommand('removeFormat');
+            }}
+            className="px-1.5 h-7 rounded text-xs text-zinc-400 hover:bg-zinc-700 hover:text-white transition-colors flex items-center justify-center"
+            title="Clear formatting"
+          >Clear</button>
+        </div>
+      )}
+
       {/* ── Single always-mounted contentEditable div ─────────────── */}
       {/* NEVER toggle contentEditable on an existing node — that crashes React */}
       <div
@@ -368,6 +509,7 @@ export default function TextEditLayer({
           fontSize: editingBlock?.fontSize ?? 14,
           lineHeight: editingBlock ? `${editingBlock.height}px` : '1',
           fontFamily: editingBlock?.fontFamily ?? 'Arial, sans-serif',
+          // fontWeight/fontStyle intentionally omitted — <b>/<i> tags in innerHTML handle it
           transform:
             editingBlock && editingBlock.angle !== 0
               ? `rotate(${editingBlock.angle}deg)`

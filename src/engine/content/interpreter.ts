@@ -24,6 +24,7 @@ import {
 } from '../types';
 import type { PDFPageInfo } from '../types';
 import { resolveRef, getResource } from '../parser/parser';
+import { getStandardFont } from '../fonts/standard14';
 
 // ─── Graphics State ─────────────────────────────────────────────────────────
 
@@ -734,7 +735,14 @@ function showTextString(
     }
 
     // Get glyph width (in 1/1000 units of font size)
-    const glyphWidth1000 = font?.widths.get(charCode) ?? font?.defaultWidth ?? 600;
+    let glyphWidth1000 = font?.widths.get(charCode);
+    if (glyphWidth1000 === undefined && unicode && font?.widths) {
+      // If widths were populated from TTF cmap, they are keyed by Unicode, not charCode/CID
+      const unicodeCodePoint = unicode.charCodeAt(0);
+      glyphWidth1000 = font.widths.get(unicodeCodePoint);
+    }
+    glyphWidth1000 = glyphWidth1000 ?? font?.defaultWidth ?? 600;
+
     const glyphWidth = (glyphWidth1000 / 1000) * fontSize * hScale;
 
     // Compute Trm: T_state * Tm * CTM
@@ -760,8 +768,9 @@ function showTextString(
     text += unicode;
 
     // Advance text position
-    let advance = glyphWidth + gs.charSpacing;
+    let advance = (glyphWidth1000 / 1000) * fontSize + gs.charSpacing;
     if (unicode === ' ') advance += gs.wordSpacing;
+    advance *= hScale;
 
     totalWidth += advance;
 
@@ -875,8 +884,20 @@ function parseFontDict(
       }
     }
 
-    // Default width for standard fonts
-    defaultWidth = 600; // Reasonable default
+    // If no explicit widths, check standard 14 font metrics
+    if (widths.size === 0) {
+      const stdMetrics = getStandardFont(baseFont);
+      if (stdMetrics) {
+        for (let i = 0; i < 256; i++) {
+          widths.set(i, stdMetrics.widths[i]);
+        }
+        defaultWidth = stdMetrics.defaultWidth;
+      } else {
+        defaultWidth = 600; // Reasonable fallback
+      }
+    } else {
+      defaultWidth = 600;
+    }
   }
 
   // Parse ToUnicode CMap

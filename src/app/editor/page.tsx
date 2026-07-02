@@ -84,8 +84,6 @@ export default function EditorPage() {
           canvasContainerRef.current.innerHTML = '';
           result.canvas.style.display = 'block';
           result.canvas.style.margin = '0 auto';
-          result.canvas.style.maxWidth = '100%';
-          result.canvas.style.height = 'auto';
           canvasContainerRef.current.appendChild(result.canvas);
         }
       } catch (e) {

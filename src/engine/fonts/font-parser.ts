@@ -54,6 +54,8 @@ export interface FontData {
   standardMetrics: StandardFontMetrics | null;
   /** Parsed TrueType font data (if embedded) */
   ttfFont: TTFFont | null;
+  /** Raw font file bytes (for CSS FontFace registration) */
+  fontBytes: Uint8Array | null;
   /** Font descriptor metrics */
   ascent: number;
   descent: number;
@@ -122,6 +124,7 @@ export function loadFont(
     lastChar: 255,
     standardMetrics: null,
     ttfFont: null,
+    fontBytes: null,
     ascent: 800,
     descent: -200,
     italicAngle: 0,
@@ -350,17 +353,17 @@ function loadFontDescriptor(
   fontData.italicAngle = fd.getNumber('ItalicAngle') ?? 0;
   fontData.flags = fd.getNumber('Flags') ?? 0;
 
-  // Try to extract embedded font program
   const fontFile = fd.get('FontFile') ?? fd.get('FontFile2') ?? fd.get('FontFile3');
   if (fontFile) {
     const fontStream = resolveRef(fontFile, objects);
     if (fontStream instanceof PDFStream) {
       const fontBytes = fontStream.getBytes();
+      fontData.fontBytes = fontBytes;
       try {
         // Detect if this is TrueType/OpenType
         if (isTrueTypeData(fontBytes)) {
           fontData.ttfFont = parseTTF(fontBytes);
-
+ 
           // Populate widths from embedded font if not already set
           if (fontData.widths.size === 0 && fontData.ttfFont) {
             populateWidthsFromTTF(fontData);

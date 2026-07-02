@@ -104,8 +104,14 @@ export async function renderPageToCanvas(
 
   // Create canvas
   const canvas = document.createElement('canvas');
-  canvas.width = Math.ceil(pageWidth * scale);
-  canvas.height = Math.ceil(pageHeight * scale);
+  const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+  const logicalWidth = Math.ceil(pageWidth * scale);
+  const logicalHeight = Math.ceil(pageHeight * scale);
+
+  canvas.width = Math.ceil(logicalWidth * dpr);
+  canvas.height = Math.ceil(logicalHeight * dpr);
+  canvas.style.width = `${logicalWidth}px`;
+  canvas.style.height = `${logicalHeight}px`;
 
   const ctx = canvas.getContext('2d')!;
 
@@ -117,7 +123,7 @@ export async function renderPageToCanvas(
   // PDF coordinates: origin at bottom-left, Y goes up
   // Canvas coordinates: origin at top-left, Y goes down
   ctx.save();
-  ctx.scale(scale, scale);
+  ctx.scale(scale * dpr, scale * dpr);
 
   // Apply page rotation
   applyPageRotation(ctx, rotate, mediaBox.width, mediaBox.height);
@@ -133,6 +139,11 @@ export async function renderPageToCanvas(
 
   // Load detailed font data
   const fonts = loadPageFonts(page.resources, objects);
+
+  // Register embedded fonts in the browser
+  if (typeof window !== 'undefined') {
+    await registerEmbeddedFonts(fonts);
+  }
 
   // Render display list
   for (let i = 0; i < interpreted.displayList.length; i++) {
@@ -239,6 +250,7 @@ function drawPath(ctx: CanvasRenderingContext2D, item: PathItem): void {
 
 // ─── Text rendering ─────────────────────────────────────────────────────────
 
+
 function drawTextRun(
   ctx: CanvasRenderingContext2D,
   run: TextRun,
@@ -255,40 +267,36 @@ function drawTextRun(
   const { family, weight, style } = getCanvasFontProperties(run.fontName, fontData);
   ctx.fillStyle = fillColor;
 
-  // We draw at a fixed high resolution and scale the context, this ensures
-  // both high visual quality and accurate text placement/stretching (scaleX vs scaleY).
-  const FONT_RESOLUTION = 100;
-  ctx.font = `${style} ${weight} ${FONT_RESOLUTION}px ${family}`;
-
   for (let i = 0; i < run.glyphs.length; i++) {
     const glyph = run.glyphs[i];
     const { tRm } = glyph;
 
-    ctx.save();
-    
-    // Apply exact Text Rendering Matrix from Glyph Space to User Space
-    ctx.transform(tRm.a, tRm.b, tRm.c, tRm.d, tRm.e, tRm.f);
-    
-    // Scale down from our 100px resolution
-    ctx.scale(1 / FONT_RESOLUTION, 1 / FONT_RESOLUTION);
-    
-    // Determine horizontal stretch to match exact PDF glyph width
-    // The intended width in this space is textSpaceWidth * FONT_RESOLUTION
-    const intendedWidth = glyph.textSpaceWidth * FONT_RESOLUTION;
-    const actualWidth = ctx.measureText(glyph.unicode).width;
-    
-    // Only scale if actual width is non-zero (prevent Infinity/NaN) and different
-    if (actualWidth > 0 && intendedWidth > 0 && glyph.unicode.trim() !== '') {
-      const stretch = intendedWidth / actualWidth;
-      ctx.scale(stretch, 1);
-    }
+    // Extract the effective font size from the text rendering matrix.
+    // The tRm encodes: fontSize * hScale in 'a' component, fontSize in 'd' component
+    // (for non-rotated text). The effective visual height comes from the d column.
+    const effFontSize = Math.sqrt(tRm.c * tRm.c + tRm.d * tRm.d);
+    if (effFontSize < 0.1) continue; // Skip invisible text
 
-    // Canvas coordinate system has Y down, while PDF has Y up.
-    // The CTM/tRm already preserves the Y-up coordinate space, 
-    // but the canvas text renderer expects to draw Y-down.
-    // So we flip the Y axis just for the text stroke.
+    ctx.save();
+
+    // Position at the glyph's exact location in user space.
+    // Then set up the local coordinate system from the tRm, but only
+    // use the rotational/scaling part (a,b,c,d), not translation (e,f)
+    // — we handle translation explicitly via (tRm.e, tRm.f).
+    ctx.transform(
+      tRm.a / effFontSize,  tRm.b / effFontSize,
+      tRm.c / effFontSize,  tRm.d / effFontSize,
+      tRm.e,                tRm.f,
+    );
+
+    // Flip Y for text (PDF Y-up has already been flipped by the parent
+    // transform, but the text rendering matrix re-introduces the PDF
+    // orientation, so we need to flip once more for canvas fillText).
     ctx.scale(1, -1);
-    
+
+    // Set font at the effective size
+    ctx.font = `${style} ${weight} ${effFontSize}px ${family}`;
+
     ctx.fillText(glyph.unicode, 0, 0);
     ctx.restore();
   }
@@ -309,6 +317,11 @@ function getCanvasFontProperties(
   let style = 'normal';
 
   if (fontData) {
+    if (fontData.fontBytes && fontData.baseFont) {
+      family = `"${fontData.baseFont}"`;
+      return { family, weight, style };
+    }
+
     const std = fontData.standardMetrics;
     if (std) {
       family = std.cssFamily;
@@ -433,3 +446,33 @@ export async function renderAllPages(
   }
   return results;
 }
+
+async function registerEmbeddedFonts(fonts: Map<string, FontData>): Promise<void> {
+  const promises: Promise<void>[] = [];
+  for (const [, fontData] of fonts.entries()) {
+    if (fontData.fontBytes && fontData.baseFont) {
+      const familyName = fontData.baseFont;
+      
+      let alreadyLoaded = false;
+      try {
+        alreadyLoaded = document.fonts.check(`12px "${familyName}"`);
+      } catch {
+        // ignore
+      }
+      
+      if (!alreadyLoaded) {
+        const fontFace = new FontFace(familyName, fontData.fontBytes.buffer);
+        const p = fontFace.load().then((loadedFace) => {
+          document.fonts.add(loadedFace);
+        }).catch((e) => {
+          console.warn(`[Renderer] Failed to load font face for "${fontData.baseFont}":`, e);
+        });
+        promises.push(p);
+      }
+    }
+  }
+  if (promises.length > 0) {
+    await Promise.all(promises);
+  }
+}
+

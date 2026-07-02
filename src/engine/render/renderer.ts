@@ -461,7 +461,7 @@ async function registerEmbeddedFonts(fonts: Map<string, FontData>): Promise<void
       }
       
       if (!alreadyLoaded) {
-        const fontFace = new FontFace(familyName, fontData.fontBytes.buffer);
+        const fontFace = new FontFace(familyName, fontData.fontBytes.buffer as ArrayBuffer);
         const p = fontFace.load().then((loadedFace) => {
           document.fonts.add(loadedFace);
         }).catch((e) => {

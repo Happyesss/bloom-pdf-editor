@@ -469,6 +469,11 @@ export function interpretPage(
         // Operand is an array of strings and numbers
         const arr = ops[0];
         if (arr instanceof PDFArray) {
+          const combinedGlyphs: GlyphPosition[] = [];
+          let combinedText = '';
+          let firstRun: TextRun | null = null;
+          let lastRun: TextRun | null = null;
+
           for (let j = 0; j < arr.length; j++) {
             const item = arr.get(j)!;
             if (item instanceof PDFNumber) {
@@ -482,11 +487,35 @@ export function interpretPage(
             } else {
               const result = showTextString(item, gs, textMatrix, fonts, objects, page);
               if (result) {
-                displayList.push(result.run);
-                textRuns.push(result.run);
+                if (!firstRun) firstRun = result.run;
+                lastRun = result.run;
+                combinedGlyphs.push(...result.run.glyphs);
+                combinedText += result.run.text;
                 textMatrix = result.newTextMatrix;
               }
             }
+          }
+
+          if (firstRun && lastRun && combinedGlyphs.length > 0) {
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            for (let k = 0; k < combinedGlyphs.length; k++) {
+              const g = combinedGlyphs[k];
+              if (g.x < minX) minX = g.x;
+              if (g.y < minY) minY = g.y;
+              if (g.x + g.width > maxX) maxX = g.x + g.width;
+              if (g.y + g.fontSize > maxY) maxY = g.y + g.fontSize;
+            }
+            const combinedRun: TextRun = {
+              ...firstRun,
+              text: combinedText,
+              glyphs: combinedGlyphs,
+              x: minX,
+              y: minY,
+              width: maxX - minX,
+              height: maxY - minY,
+            };
+            displayList.push(combinedRun);
+            textRuns.push(combinedRun);
           }
         }
         break;

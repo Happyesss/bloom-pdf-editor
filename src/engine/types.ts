@@ -98,7 +98,7 @@ export class PDFRef {
 
 export class PDFArray {
   readonly _tag = 'PDFArray' as const;
-  constructor(public readonly items: PDFObject[]) {}
+  constructor(public readonly items: PDFObject[] = []) {}
   get length(): number { return this.items.length; }
   get(index: number): PDFObject | undefined { return this.items[index]; }
   push(item: PDFObject): void { this.items.push(item); }

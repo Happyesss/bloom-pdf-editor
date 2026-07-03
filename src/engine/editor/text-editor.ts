@@ -32,6 +32,7 @@ import {
 } from '../types';
 import { resolveRef } from '../parser/parser';
 import { loadFont, type FontData, charCodeToUnicode } from '../fonts/font-parser';
+import { serializeToString } from './stream-compiler';
 
 // ─── Edit operations ────────────────────────────────────────────────────────
 
@@ -104,7 +105,12 @@ export function applyTextEdits(
     }
 
     // Replace the operand in the matched instruction
-    matched.instruction.operands = [encoded.pdfString];
+    if (matched.instruction.operator === 'TJ') {
+      const arr = new PDFArray([encoded.pdfString]);
+      matched.instruction.operands = [arr];
+    } else {
+      matched.instruction.operands = [encoded.pdfString];
+    }
   }
 
   // Recompile the instructions back into a content stream
@@ -173,21 +179,43 @@ function matchTextRunToInstruction(
   page: PDFPageInfo,
   objects: Map<string, PDFObject>,
 ): TextInstruction | null {
-  // Strategy: find the instruction whose decoded text best matches the run's text
+  // 1) Try exact or trimmed match first
   for (const ti of textInstructions) {
-    if (ti.fontName !== run.fontName) continue;
+    if (ti.fontName !== run.fontName && run.fontName !== '') continue;
 
-    // Decode the instruction's text operand
     const decoded = decodeInstructionText(ti.instruction, ti.fontName, page, objects);
     if (decoded === null) continue;
 
-    // Check if the decoded text matches the run's text
     if (decoded === run.text || decoded.trim() === run.text.trim()) {
       return ti;
     }
+  }
 
-    // Fuzzy match: check if the run text is a substring
-    if (decoded.includes(run.text) || run.text.includes(decoded)) {
+  // 2) Try whitespace-insensitive match
+  const runClean = run.text.replace(/\s+/g, '');
+  if (runClean.length > 0) {
+    for (const ti of textInstructions) {
+      if (ti.fontName !== run.fontName && run.fontName !== '') continue;
+
+      const decoded = decodeInstructionText(ti.instruction, ti.fontName, page, objects);
+      if (decoded === null) continue;
+
+      const decClean = decoded.replace(/\s+/g, '');
+      if (decClean === runClean) {
+        return ti;
+      }
+    }
+  }
+
+  // 3) Try substring match ONLY if decoded instruction contains the run text (e.g. multi-line TJ array)
+  // NEVER check if run.text.includes(decoded), as short/single-character instructions would falsely match!
+  for (const ti of textInstructions) {
+    if (ti.fontName !== run.fontName && run.fontName !== '') continue;
+
+    const decoded = decodeInstructionText(ti.instruction, ti.fontName, page, objects);
+    if (decoded === null) continue;
+
+    if (decoded.includes(run.text) && run.text.trim().length > 1) {
       return ti;
     }
   }
@@ -401,7 +429,7 @@ function compileInstructions(instructions: CSInstruction[]): Uint8Array {
 
     // Write operands
     for (const op of inst.operands) {
-      parts.push(serializePDFObject(op));
+      parts.push(serializeToString(op));
       parts.push(' ');
     }
 
@@ -416,33 +444,6 @@ function compileInstructions(instructions: CSInstruction[]): Uint8Array {
     bytes[i] = text.charCodeAt(i) & 0xff;
   }
   return bytes;
-}
-
-function serializePDFObject(obj: PDFObject): string {
-  if (obj instanceof PDFNumber) return obj.toString();
-  if (obj instanceof PDFName) return obj.toString();
-  if (obj instanceof PDFString) return obj.toString();
-  if (obj instanceof PDFHexString) return obj.toString();
-
-  if (obj instanceof PDFArray) {
-    const items = [];
-    for (let i = 0; i < obj.length; i++) {
-      items.push(serializePDFObject(obj.get(i)!));
-    }
-    return `[${items.join(' ')}]`;
-  }
-
-  if (obj instanceof PDFDict) {
-    const entries: string[] = [];
-    const dictEntries = Array.from(obj.entries());
-    for (let i = 0; i < dictEntries.length; i++) {
-      const [k, v] = dictEntries[i];
-      entries.push(`/${k} ${serializePDFObject(v)}`);
-    }
-    return `<< ${entries.join(' ')} >>`;
-  }
-
-  return obj.toString();
 }
 
 // ─── Font helpers ───────────────────────────────────────────────────────────

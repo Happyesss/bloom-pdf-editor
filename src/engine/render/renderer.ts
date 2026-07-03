@@ -31,6 +31,7 @@ import {
   PDFObject,
   PDFRef,
   PDFStream,
+  PDFArray,
   type PDFDocumentData,
   type PDFPageInfo,
 } from '../types';
@@ -159,6 +160,85 @@ export async function renderPageToCanvas(
       case 'image':
         if (renderImages) await drawImage(ctx, item, page, objects);
         break;
+    }
+  }
+
+  // Render Annotations (Appearance Streams)
+  const annotsRef = page.dict.get('Annots');
+  let annotsObj = annotsRef;
+  if (annotsRef instanceof PDFRef) {
+    annotsObj = resolveRef(annotsRef, objects);
+  }
+  
+  if (annotsObj instanceof PDFArray) {
+    for (const annotRef of annotsObj.items) {
+      if (!(annotRef instanceof PDFRef)) continue;
+      const annotDict = resolveRef(annotRef, objects);
+      if (!(annotDict instanceof PDFDict)) continue;
+      
+      const apRef = annotDict.get('AP');
+      let apDict = apRef;
+      if (apRef instanceof PDFRef) apDict = resolveRef(apRef, objects);
+      
+      if (apDict instanceof PDFDict) {
+        const nRef = apDict.get('N');
+        let nStream = nRef;
+        if (nRef instanceof PDFRef) nStream = resolveRef(nRef, objects);
+        
+        if (nStream instanceof PDFStream) {
+          // Interpret this Appearance stream
+          const annotResources = nStream.dict.get('Resources') || annotDict.get('Resources') || page.dict.get('Resources');
+          const mockPage = {
+            ...page,
+            resources: annotResources instanceof PDFRef ? resolveRef(annotResources, objects) as PDFDict : (annotResources as PDFDict) || new PDFDict(),
+          };
+          
+          // Need to decode the stream if not already decoded
+          if (!nStream.decodedBytes) {
+             const { applyFilters } = await import('../parser/filters');
+             nStream.decodedBytes = await applyFilters(
+                 nStream.rawBytes,
+                 nStream.getFilters(),
+                 nStream.getDecodeParams()
+             );
+          }
+          // Now getBytes() will safely return the uncompressed bytes
+          
+          const annotInterpreted = interpretPage(nStream.getBytes(), mockPage, objects);
+          const annotFonts = loadPageFonts(mockPage.resources, objects);
+          if (typeof window !== 'undefined') {
+            await registerEmbeddedFonts(annotFonts);
+          }
+          
+          ctx.save();
+          
+          // Form XObjects (like Appearance streams) have a Matrix mapping from their BBox to the target coord system
+          const streamMatrix = nStream.dict.get('Matrix');
+          if (streamMatrix instanceof PDFArray && streamMatrix.items.length === 6) {
+             const m = streamMatrix.items.map((e: any) => (e as PDFNumber).value);
+             // transform takes (a, b, c, d, e, f)
+             ctx.transform(m[0], m[1], m[2], m[3], m[4], m[5]);
+          } else {
+            // If no matrix is provided, it's often positioned via the Rect, so we translate to Rect.x, Rect.y
+            const rectObj = annotDict.get('Rect');
+            if (rectObj instanceof PDFArray && rectObj.items.length === 4) {
+               const x = (rectObj.items[0] as PDFNumber).value;
+               const y = (rectObj.items[1] as PDFNumber).value;
+               ctx.translate(x, y);
+            }
+          }
+
+          for (let j = 0; j < annotInterpreted.displayList.length; j++) {
+            const item = annotInterpreted.displayList[j];
+            switch (item.type) {
+              case 'path': if (renderPaths) drawPath(ctx, item); break;
+              case 'text': if (renderText) drawTextRun(ctx, item, annotFonts); break;
+              case 'image': if (renderImages) await drawImage(ctx, item, mockPage, objects); break;
+            }
+          }
+          ctx.restore();
+        }
+      }
     }
   }
 

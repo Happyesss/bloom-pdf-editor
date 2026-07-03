@@ -71,7 +71,7 @@ export { decodeImage } from './render/image-decoder';
 export type { DecodedImage } from './render/image-decoder';
 
 // ── Editor ──
-export { applyTextEdits, findTextInPage, findAndReplace } from './editor/text-editor';
+export { applyTextEdits, findTextInPage, findAndReplace, insertTextRun } from './editor/text-editor';
 export type { TextEdit, EditResult } from './editor/text-editor';
 export {
   compileContentStream,

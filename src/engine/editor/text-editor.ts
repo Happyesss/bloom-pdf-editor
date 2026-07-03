@@ -123,6 +123,80 @@ export function applyTextEdits(
   };
 }
 
+/**
+ * Inserts a new text run into a page's content stream.
+ *
+ * @param contentBytes Original decoded content stream bytes
+ * @param page Page info for resources
+ * @param objects Document object map
+ * @param text The new text to insert
+ * @param x X coordinate (PDF units)
+ * @param y Y coordinate (PDF units)
+ * @param fontSize Font size in points
+ * @param color RGB color [0-1, 0-1, 0-1]
+ * @returns Modified content stream bytes
+ */
+export function insertTextRun(
+  contentBytes: Uint8Array,
+  page: PDFPageInfo,
+  objects: Map<string, PDFObject>,
+  text: string,
+  x: number,
+  y: number,
+  fontSize: number,
+  color: [number, number, number],
+): Uint8Array {
+  // Ensure the page has the Helv font in its resources
+  const resourcesObj = page.dict.get('Resources');
+  let resources = resourcesObj instanceof PDFRef ? resolveRef(resourcesObj, objects) : resourcesObj;
+  if (!(resources instanceof PDFDict)) {
+    resources = new PDFDict();
+    page.dict.set('Resources', resources);
+  }
+  
+  const fontObj = resources.get('Font');
+  let fontDict = fontObj instanceof PDFRef ? resolveRef(fontObj, objects) : fontObj;
+  if (!(fontDict instanceof PDFDict)) {
+    fontDict = new PDFDict();
+    resources.set('Font', fontDict);
+  }
+  
+  if (!fontDict.has('Helv')) {
+    const helvetica = new PDFDict();
+    helvetica.set('Type', new PDFName('Font'));
+    helvetica.set('Subtype', new PDFName('Type1'));
+    helvetica.set('BaseFont', new PDFName('Helvetica'));
+    fontDict.set('Helv', helvetica);
+  }
+
+  // PDF strings are usually encoded in MacRoman or PDFDocEncoding for standard fonts.
+  // For basic text, just convert chars to a PDF string.
+  // (In a full implementation, we'd encode correctly using the font's encoding).
+  let encodedText = '';
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code < 256) {
+      encodedText += String.fromCharCode(code);
+    } else {
+      encodedText += '?'; // fallback for unsupported chars in standard font
+    }
+  }
+  const pdfString = new PDFString(encodedText);
+  const escaped = serializeToString(pdfString);
+
+  const [r, g, b] = color;
+  const injection = `\nq\nBT\n${r} ${g} ${b} rg\n/Helv ${fontSize} Tf\n1 0 0 1 ${x} ${y} Tm\n${escaped} Tj\nET\nQ\n`;
+  const enc = new TextEncoder();
+  const injectionBytes = enc.encode(injection);
+
+  // Concat using a helper
+  const newBytes = new Uint8Array(contentBytes.length + injectionBytes.length);
+  newBytes.set(contentBytes);
+  newBytes.set(injectionBytes, contentBytes.length);
+
+  return newBytes;
+}
+
 // ─── Text instruction matching ──────────────────────────────────────────────
 
 interface TextInstruction {

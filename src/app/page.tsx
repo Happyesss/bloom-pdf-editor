@@ -3,6 +3,7 @@
 import { useCallback, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { savePdfToStorage } from '@/lib/pdfStorage';
+import { FileUp, Loader2 } from 'lucide-react';
 
 export default function Home() {
   const [isDragging, setIsDragging] = useState(false);
@@ -52,28 +53,11 @@ export default function Home() {
   }, [handleFile]);
 
   return (
-    <div style={{
-      minHeight: '100vh',
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      justifyContent: 'center',
-      padding: '40px 20px',
-      fontFamily: 'system-ui, -apple-system, sans-serif',
-    }}>
-      <h1 style={{
-        fontSize: 32,
-        fontWeight: 700,
-        marginBottom: 8,
-        color: '#f5f5f7',
-      }}>
+    <div className="min-h-screen flex flex-col items-center justify-center py-10 px-5 font-sans bg-zinc-950 text-zinc-100">
+      <h1 className="text-4xl font-bold mb-2 text-zinc-100 tracking-tight">
         PDF Editor
       </h1>
-      <p style={{
-        fontSize: 14,
-        color: '#888',
-        marginBottom: 40,
-      }}>
+      <p className="text-sm text-zinc-400 mb-12">
         Pure TypeScript engine — zero dependencies
       </p>
 
@@ -83,58 +67,26 @@ export default function Home() {
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
         onClick={() => fileInputRef.current?.click()}
-        style={{
-          width: '100%',
-          maxWidth: 480,
-          minHeight: 220,
-          border: `2px dashed ${isDragging ? '#2997ff' : '#333'}`,
-          borderRadius: 12,
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          justifyContent: 'center',
-          cursor: 'pointer',
-          background: isDragging ? 'rgba(41, 151, 255, 0.05)' : 'rgba(255,255,255,0.02)',
-          transition: 'all 0.2s ease',
-          padding: 32,
-        }}
+        className={`w-full max-w-lg min-h-[240px] rounded-2xl flex flex-col items-center justify-center cursor-pointer transition-all duration-300 p-8 border-2 border-dashed ${
+          isDragging 
+            ? 'border-blue-500 bg-blue-500/10 scale-[1.02] shadow-[0_0_30px_rgba(59,130,246,0.15)]' 
+            : 'border-zinc-700 bg-zinc-900/50 hover:bg-zinc-800/80 hover:border-zinc-500'
+        }`}
       >
         {isLoading ? (
           <>
-            <div style={{
-              width: 40,
-              height: 40,
-              border: '3px solid #333',
-              borderTopColor: '#2997ff',
-              borderRadius: '50%',
-              animation: 'spin 0.8s linear infinite',
-              marginBottom: 16,
-            }} />
-            <p style={{ color: '#aaa', fontSize: 14 }}>Loading PDF...</p>
+            <Loader2 size={48} className="animate-spin text-blue-500 mb-4" />
+            <p className="text-sm font-medium text-zinc-400 animate-pulse">Loading PDF...</p>
           </>
         ) : (
           <>
-            <svg
-              width="48"
-              height="48"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke={isDragging ? '#2997ff' : '#666'}
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              style={{ marginBottom: 16 }}
-            >
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-              <polyline points="14 2 14 8 20 8" />
-              <line x1="12" y1="18" x2="12" y2="12" />
-              <line x1="9" y1="15" x2="12" y2="12" />
-              <line x1="15" y1="15" x2="12" y2="12" />
-            </svg>
-            <p style={{ color: '#ccc', fontSize: 15, marginBottom: 4 }}>
+            <div className={`p-4 rounded-full mb-4 transition-colors duration-300 ${isDragging ? 'bg-blue-500/20 text-blue-400' : 'bg-zinc-800 text-zinc-400'}`}>
+              <FileUp size={40} />
+            </div>
+            <p className="text-base font-medium text-zinc-300 mb-1">
               Drop a PDF here or click to browse
             </p>
-            <p style={{ color: '#666', fontSize: 12 }}>
+            <p className="text-xs text-zinc-500 font-medium">
               Supports any standard PDF file
             </p>
           </>
@@ -146,26 +98,14 @@ export default function Home() {
         type="file"
         accept=".pdf,application/pdf"
         onChange={onFileSelect}
-        style={{ display: 'none' }}
+        className="hidden"
       />
 
       {error && (
-        <p style={{
-          color: '#ff453a',
-          fontSize: 13,
-          marginTop: 16,
-          maxWidth: 480,
-          textAlign: 'center',
-        }}>
+        <p className="text-red-400 bg-red-400/10 border border-red-400/20 px-4 py-2 rounded-lg text-sm mt-6 max-w-lg text-center font-medium animate-in slide-in-from-bottom-2 fade-in">
           {error}
         </p>
       )}
-
-      <style>{`
-        @keyframes spin {
-          to { transform: rotate(360deg); }
-        }
-      `}</style>
     </div>
   );
 }

@@ -3,6 +3,21 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { loadPdfFromStorage, clearPdfFromStorage } from '@/lib/pdfStorage';
+import { 
+  MousePointer2, 
+  Type, 
+  TextCursorInput, 
+  Highlighter, 
+  PenTool, 
+  Eraser, 
+  Download, 
+  X, 
+  ZoomIn, 
+  ZoomOut,
+  ChevronLeft,
+  ChevronRight,
+  Loader2
+} from 'lucide-react';
 
 // We import types only — the engine modules are loaded dynamically
 // because they require browser APIs (canvas, DecompressionStream)
@@ -10,22 +25,33 @@ import type { PDFDocumentData, RenderResult, TextRun } from '@/engine';
 
 // ─── Tool types ─────────────────────────────────────────────────────────────
 
-type EditorTool = 'select' | 'text' | 'highlight' | 'draw' | 'erase';
+type EditorTool = 'select' | 'text' | 'addtext' | 'highlight' | 'draw' | 'erase';
 
 interface ToolDef {
   id: EditorTool;
   label: string;
-  icon: string;
+  icon: React.ReactNode;
   shortcut: string;
 }
 
 const TOOLS: ToolDef[] = [
-  { id: 'select',    label: 'Select',    icon: '⎋',  shortcut: 'V' },
-  { id: 'text',      label: 'Edit Text', icon: '✎',  shortcut: 'T' },
-  { id: 'highlight', label: 'Highlight', icon: '🖍', shortcut: 'H' },
-  { id: 'draw',      label: 'Draw',      icon: '✏',  shortcut: 'D' },
-  { id: 'erase',     label: 'Erase',     icon: '⌫',  shortcut: 'E' },
+  { id: 'select',    label: 'Select',    icon: <MousePointer2 size={18} />,  shortcut: 'V' },
+  { id: 'text',      label: 'Edit Text', icon: <Type size={18} />,  shortcut: 'T' },
+  { id: 'addtext',   label: 'Add Text',  icon: <TextCursorInput size={18} />,  shortcut: 'A' },
+  { id: 'highlight', label: 'Highlight', icon: <Highlighter size={18} />, shortcut: 'H' },
+  { id: 'draw',      label: 'Draw',      icon: <PenTool size={18} />,  shortcut: 'D' },
+  { id: 'erase',     label: 'Erase',     icon: <Eraser size={18} />,  shortcut: 'E' },
 ];
+
+export type PathType = 'draw' | 'highlight';
+
+export interface DrawnPath {
+  id: string;
+  type: PathType;
+  color: string;
+  size: number;
+  points: { x: number; y: number }[];
+}
 
 // ─── Coordinate helpers ─────────────────────────────────────────────────────
 
@@ -99,6 +125,23 @@ function caretIndexFromPdfX(pdfX: number, run: TextRun): number {
   return glyphs.length;
 }
 
+/** Convert #RRGGBB to [r,g,b] where each is 0-1 */
+function hexToRGB(hex: string): [number, number, number] {
+  const clean = hex.replace('#', '');
+  if (clean.length === 3) {
+    return [
+      parseInt(clean[0]+clean[0], 16) / 255,
+      parseInt(clean[1]+clean[1], 16) / 255,
+      parseInt(clean[2]+clean[2], 16) / 255,
+    ];
+  }
+  return [
+    parseInt(clean.substring(0,2), 16) / 255,
+    parseInt(clean.substring(2,4), 16) / 255,
+    parseInt(clean.substring(4,6), 16) / 255,
+  ];
+}
+
 // ─── Component ──────────────────────────────────────────────────────────────
 
 export default function EditorPage() {
@@ -114,6 +157,8 @@ export default function EditorPage() {
   const [isRendering, setIsRendering] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [renderResult, setRenderResult] = useState<RenderResult | null>(null);
+  const [thumbnails, setThumbnails] = useState<string[]>([]);
+  const [isGeneratingThumbnails, setIsGeneratingThumbnails] = useState(false);
 
   // ── Phase 4 state ──
   const [activeTool, setActiveTool] = useState<EditorTool>('text');
@@ -141,8 +186,15 @@ export default function EditorPage() {
 
   // Drawing state
   const [isDrawing, setIsDrawing] = useState(false);
-  const [drawPaths, setDrawPaths] = useState<{ x: number; y: number }[][]>([]);
+  const [drawnPaths, setDrawnPaths] = useState<DrawnPath[]>([]);
   const currentDrawPath = useRef<{ x: number; y: number }[]>([]);
+
+  // Tool properties
+  const [drawColor, setDrawColor] = useState('#ff3b30');
+  const [drawSize, setDrawSize] = useState(2);
+  const [highlightColor, setHighlightColor] = useState('#fffb00');
+  const [highlightSize, setHighlightSize] = useState(16);
+  const [eraserSize, setEraserSize] = useState(20);
 
   // Caret blinking
   const caretVisibleRef = useRef(true);
@@ -196,6 +248,36 @@ export default function EditorPage() {
     init();
     return () => { cancelled = true; };
   }, [router]);
+
+  // ── Generate thumbnails ──
+  useEffect(() => {
+    if (!doc || !engineRef.current) return;
+    let cancelled = false;
+
+    async function generateThumbnails() {
+      setIsGeneratingThumbnails(true);
+      const engine = engineRef.current!;
+      const thumbs: string[] = [];
+      
+      try {
+        for (let i = 0; i < doc!.pages.length; i++) {
+          if (cancelled) break;
+          // Render at 15% scale for a quick thumbnail
+          const res = await engine.renderPage(doc!, i, { scale: 0.15, renderText: true, renderPaths: true, renderImages: true });
+          if (cancelled) break;
+          thumbs.push(res.canvas.toDataURL('image/jpeg', 0.6));
+        }
+        if (!cancelled) setThumbnails(thumbs);
+      } catch (e) {
+        console.error('[Editor] Thumbnail generation failed:', e);
+      } finally {
+        if (!cancelled) setIsGeneratingThumbnails(false);
+      }
+    }
+
+    generateThumbnails();
+    return () => { cancelled = true; };
+  }, [doc]);
 
   // Reset edit state when doc or page changes
   useEffect(() => {
@@ -332,25 +414,35 @@ export default function EditorPage() {
     }
 
     // ── Freehand drawing paths ──
-    if (drawPaths.length > 0) {
+    if (drawnPaths.length > 0) {
       ctx.save();
       ctx.scale(dpr, dpr);
-      ctx.strokeStyle = '#ff3b30';
-      ctx.lineWidth = 2;
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
-      for (const path of drawPaths) {
-        if (path.length < 2) continue;
+      for (const path of drawnPaths) {
+        if (path.points.length < 2) continue;
+        
         ctx.beginPath();
-        ctx.moveTo(path[0].x, path[0].y);
-        for (let i = 1; i < path.length; i++) {
-          ctx.lineTo(path[i].x, path[i].y);
+        if (path.type === 'highlight') {
+          ctx.globalCompositeOperation = 'multiply';
+          ctx.globalAlpha = 0.4;
+        } else {
+          ctx.globalCompositeOperation = 'source-over';
+          ctx.globalAlpha = 1.0;
+        }
+        
+        ctx.strokeStyle = path.color;
+        ctx.lineWidth = path.size;
+        
+        ctx.moveTo(path.points[0].x, path.points[0].y);
+        for (let i = 1; i < path.points.length; i++) {
+          ctx.lineTo(path.points[i].x, path.points[i].y);
         }
         ctx.stroke();
       }
       ctx.restore();
     }
-  }, [editingRun, editText, caretPos, renderResult, doc, currentPage, scale, drawPaths]);
+  }, [editingRun, editText, caretPos, renderResult, doc, currentPage, scale, drawnPaths]);
 
   // Re-draw overlay whenever edit state changes
   useEffect(() => { drawOverlay(); }, [drawOverlay]);
@@ -587,6 +679,40 @@ export default function EditorPage() {
           setSelectedRun(null);
         }
       }
+    } else if (activeTool === 'addtext') {
+      if (blurTimeoutRef.current) {
+        clearTimeout(blurTimeoutRef.current);
+        blurTimeoutRef.current = null;
+      }
+      
+      // Inject new text run at click position
+      try {
+        setIsSaving(true);
+        const engine = engineRef.current;
+        if (!engine) return;
+        const page = doc.pages[currentPage];
+        const contentBytes = engine.getPageContentBytes(page, doc.objects);
+        
+        // Push undo snapshot
+        undoStackRef.current.push({ pageIndex: currentPage, contentBytes: new Uint8Array(contentBytes) });
+        if (undoStackRef.current.length > 50) undoStackRef.current.shift();
+        redoStackRef.current = [];
+        
+        const newBytes = engine.insertTextRun(
+          contentBytes, page, doc.objects,
+          "New Text", pdfX, pdfY, 12, [0, 0, 0]
+        );
+        
+        engine.updatePageContent(page.contentRefs, newBytes, doc.objects).then(() => {
+          setRenderKey(k => k + 1);
+        });
+      } catch (err) {
+        console.error('[Editor] Add text failed:', err);
+      } finally {
+        setIsSaving(false);
+        // Switch back to text edit tool so they can click it
+        setActiveTool('text');
+      }
     } else if (activeTool === 'highlight') {
       const hit = hitTestTextRuns(pdfX, pdfY, renderResult.textRuns);
       if (hit) setSelectedRun(hit);
@@ -634,9 +760,97 @@ export default function EditorPage() {
     }
   }, [renderResult, doc, currentPage, scale, activeTool, editingRun, handleEditSubmit, setEditingRun]);
 
-  // ── Drawing handlers ──
+  const applyEraser = useCallback((x: number, y: number) => {
+    const eraserRadius = eraserSize / 2;
+    setDrawnPaths(prev => {
+      let newPaths: DrawnPath[] = [];
+      let modified = false;
+      for (const path of prev) {
+        let currentSubPath: {x:number, y:number}[] = [];
+        for (const p of path.points) {
+          const dx = p.x - x;
+          const dy = p.y - y;
+          if (Math.sqrt(dx*dx + dy*dy) > eraserRadius) {
+            currentSubPath.push(p);
+          } else {
+            if (currentSubPath.length > 0) {
+              newPaths.push({ ...path, id: Math.random().toString(36).substr(2,9), points: currentSubPath });
+              currentSubPath = [];
+              modified = true;
+            }
+          }
+        }
+        if (currentSubPath.length > 0) {
+          if (currentSubPath.length === path.points.length) {
+            newPaths.push(path);
+          } else {
+            newPaths.push({ ...path, id: Math.random().toString(36).substr(2,9), points: currentSubPath });
+            modified = true;
+          }
+        }
+      }
+      return modified ? newPaths : prev;
+    });
+  }, [eraserSize]);
+
+  // ── Commit drawings to PDF ──
+  const commitDrawingsToPdf = useCallback(() => {
+    if (!doc || !engineRef.current || drawnPaths.length === 0) return;
+    const engine = engineRef.current;
+    const page = doc.pages[currentPage];
+    let currentObjNum = engine.getNextObjNum(doc);
+    
+    const pageHeight = renderResult?.pageHeight || page.mediaBox.height;
+    
+    for (const p of drawnPaths) {
+      if (p.points.length < 2) continue;
+      
+      const inkPathsPdf: number[][] = [[]];
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      
+      for (const pt of p.points) {
+        const { pdfX, pdfY } = canvasToPdf(
+          pt.x, pt.y, scale, 
+          renderResult?.pageWidth || page.mediaBox.width, 
+          pageHeight, 
+          page.mediaBox.x, page.mediaBox.y
+        );
+        inkPathsPdf[0].push(pdfX, pdfY);
+        minX = Math.min(minX, pdfX);
+        minY = Math.min(minY, pdfY);
+        maxX = Math.max(maxX, pdfX);
+        maxY = Math.max(maxY, pdfY);
+      }
+      
+      const lw = p.size / scale;
+      const rect = { x: minX - lw, y: minY - lw, width: (maxX - minX) + lw*2, height: (maxY - minY) + lw*2 };
+      const rgb = hexToRGB(p.color);
+      
+      const annotation: import('@/engine').InkAnnotation = {
+        type: 'Ink',
+        rect,
+        color: rgb,
+        opacity: p.type === 'highlight' ? 0.4 : 1.0,
+        inkPaths: inkPathsPdf,
+        lineWidth: lw,
+      };
+      
+      const { dict, appearanceStream } = engine.createAnnotationDict(annotation, currentObjNum++);
+      if (appearanceStream) {
+        doc.objects.set(`${currentObjNum}_0`, appearanceStream as import('@/engine').PDFObject);
+        currentObjNum++;
+      }
+      
+      const annotRef = new engine.PDFRef(currentObjNum, 0);
+      engine.addAnnotationToPage(page.dict, dict, annotRef, doc.objects);
+      currentObjNum++;
+    }
+    
+    setDrawnPaths([]);
+  }, [doc, currentPage, drawnPaths, scale, renderResult]);
+
   const handleDrawStart = useCallback((e: React.MouseEvent) => {
-    if (activeTool !== 'draw') return;
+    if (activeTool !== 'draw' && activeTool !== 'highlight' && activeTool !== 'erase') return;
     const overlay = overlayRef.current;
     if (!overlay) return;
 
@@ -645,17 +859,27 @@ export default function EditorPage() {
     const y = e.clientY - rect.top;
 
     setIsDrawing(true);
-    currentDrawPath.current = [{ x, y }];
-  }, [activeTool]);
+
+    if (activeTool === 'erase') {
+      applyEraser(x, y);
+    } else {
+      currentDrawPath.current = [{ x, y }];
+    }
+  }, [activeTool, applyEraser]);
 
   const handleDrawMove = useCallback((e: React.MouseEvent) => {
-    if (!isDrawing || activeTool !== 'draw') return;
+    if (!isDrawing) return;
     const overlay = overlayRef.current;
     if (!overlay) return;
 
     const rect = overlay.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
+
+    if (activeTool === 'erase') {
+      applyEraser(x, y);
+      return;
+    }
 
     currentDrawPath.current.push({ x, y });
 
@@ -667,8 +891,17 @@ export default function EditorPage() {
       if (path.length >= 2) {
         ctx.save();
         ctx.scale(dpr, dpr);
-        ctx.strokeStyle = '#ff3b30';
-        ctx.lineWidth = 2;
+        if (activeTool === 'highlight') {
+          ctx.strokeStyle = highlightColor;
+          ctx.lineWidth = highlightSize;
+          ctx.globalCompositeOperation = 'multiply';
+          ctx.globalAlpha = 0.4;
+        } else {
+          ctx.strokeStyle = drawColor;
+          ctx.lineWidth = drawSize;
+          ctx.globalCompositeOperation = 'source-over';
+          ctx.globalAlpha = 1.0;
+        }
         ctx.lineCap = 'round';
         ctx.beginPath();
         const prev = path[path.length - 2];
@@ -678,16 +911,32 @@ export default function EditorPage() {
         ctx.restore();
       }
     }
-  }, [isDrawing, activeTool]);
+  }, [isDrawing, activeTool, drawColor, drawSize, highlightColor, highlightSize, applyEraser]);
 
   const handleDrawEnd = useCallback(() => {
     if (!isDrawing) return;
     setIsDrawing(false);
+    
+    if (activeTool === 'erase') return;
+
     if (currentDrawPath.current.length > 1) {
-      setDrawPaths(prev => [...prev, [...currentDrawPath.current]]);
+      const newPath: DrawnPath = {
+        id: Math.random().toString(36).substr(2,9),
+        type: activeTool as PathType,
+        color: activeTool === 'draw' ? drawColor : highlightColor,
+        size: activeTool === 'draw' ? drawSize : highlightSize,
+        points: [...currentDrawPath.current]
+      };
+      
+      // Immediately commit to PDF to use native annotation rendering
+      setDrawnPaths([newPath]);
+      setTimeout(() => {
+        commitDrawingsToPdf();
+        setRenderKey(k => k + 1);
+      }, 0);
     }
     currentDrawPath.current = [];
-  }, [isDrawing]);
+  }, [isDrawing, activeTool, drawColor, drawSize, highlightColor, highlightSize, commitDrawingsToPdf]);
 
   // ── Hidden input handler — this is where all typing is captured ──
   const handleHiddenInput = useCallback((e: React.FormEvent<HTMLTextAreaElement>) => {
@@ -776,12 +1025,14 @@ export default function EditorPage() {
 
   // ── Navigation handlers ──
   const goToPrev = useCallback(() => {
+    commitDrawingsToPdf();
     setCurrentPage(p => Math.max(0, p - 1));
-  }, []);
+  }, [commitDrawingsToPdf]);
 
   const goToNext = useCallback(() => {
+    commitDrawingsToPdf();
     setCurrentPage(p => Math.min(totalPages - 1, p + 1));
-  }, [totalPages]);
+  }, [totalPages, commitDrawingsToPdf]);
 
   const zoomIn = useCallback(() => {
     setScale(s => Math.min(4, s + 0.25));
@@ -796,6 +1047,7 @@ export default function EditorPage() {
     if (!doc || !engineRef.current) return;
     try {
       setIsSaving(true);
+      commitDrawingsToPdf();
       const engine = engineRef.current;
       const bytes = await engine.serializeDocument(doc);
       const blob = new Blob([bytes as unknown as BlobPart], { type: 'application/pdf' });
@@ -836,6 +1088,8 @@ export default function EditorPage() {
         setActiveTool('select');
       } else if (e.key === 't' || e.key === 'T') {
         setActiveTool('text');
+      } else if (e.key === 'a' || e.key === 'A') {
+        setActiveTool('addtext');
       } else if (e.key === 'h' || e.key === 'H') {
         if (!e.metaKey && !e.ctrlKey) setActiveTool('highlight');
       } else if (e.key === 'd') {
@@ -849,12 +1103,9 @@ export default function EditorPage() {
   // ── Loading state ──
   if (isLoading) {
     return (
-      <div style={S.center}>
-        <div style={S.spinner} />
-        <p style={{ color: '#888', marginTop: 16, fontSize: 14, fontFamily: 'system-ui' }}>
-          Parsing PDF with our engine…
-        </p>
-        <style>{spinnerCSS}</style>
+      <div className="min-h-screen flex flex-col items-center justify-center bg-zinc-950 text-zinc-400">
+        <div className="w-8 h-8 border-4 border-zinc-800 border-t-blue-500 rounded-full animate-spin" />
+        <p className="mt-4 text-sm font-medium animate-pulse">Processing PDF...</p>
       </div>
     );
   }
@@ -862,45 +1113,75 @@ export default function EditorPage() {
   // ── Error state ──
   if (error && !doc) {
     return (
-      <div style={S.center}>
-        <p style={{ color: '#ff453a', fontSize: 15, maxWidth: 400, textAlign: 'center', lineHeight: 1.6 }}>
+      <div className="min-h-screen flex flex-col items-center justify-center font-sans bg-zinc-950 text-zinc-100">
+        <p className="text-red-500 text-sm max-w-[400px] text-center leading-relaxed">
           {error}
         </p>
-        <button onClick={handleClose} style={S.btn}>← Go Back</button>
+        <button 
+          onClick={handleClose} 
+          className="mt-6 px-4 py-2 rounded-lg border border-zinc-700 text-zinc-300 hover:bg-zinc-800 transition-colors flex items-center gap-2"
+        >
+          <ChevronLeft size={16} /> Go Back
+        </button>
       </div>
     );
   }
 
-  const cursorForTool = activeTool === 'text' ? 'text' : activeTool === 'draw' ? 'crosshair' : activeTool === 'highlight' ? 'pointer' : 'default';
+  const eraserSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${eraserSize}" height="${eraserSize}" viewBox="0 0 ${eraserSize} ${eraserSize}"><circle cx="${eraserSize/2}" cy="${eraserSize/2}" r="${eraserSize/2 - 1}" fill="rgba(255,255,255,0.4)" stroke="black" stroke-width="1"/></svg>`;
+  const eraserCursorUrl = `url('data:image/svg+xml;utf8,${encodeURIComponent(eraserSvg)}') ${eraserSize/2} ${eraserSize/2}, auto`;
+  
+  const cursorForTool = activeTool === 'text' ? 'text' 
+    : activeTool === 'draw' ? 'crosshair' 
+    : activeTool === 'highlight' ? 'pointer' 
+    : activeTool === 'erase' ? eraserCursorUrl 
+    : 'default';
 
   // ── Main editor UI ──
   return (
-    <div style={S.layout}>
+    <div className="flex flex-col h-screen font-sans bg-zinc-950 text-zinc-100 selection:bg-blue-500/30">
+      
       {/* ── Top toolbar ── */}
-      <div style={S.toolbar}>
-        <div style={S.toolbarGroup}>
-          <button onClick={handleClose} style={S.toolBtn} title="Close file">✕</button>
-          <span style={S.fileName}>{fileName}</span>
+      <header className="flex items-center justify-between px-4 h-14 bg-zinc-900/80 backdrop-blur-lg border-b border-zinc-800/80 shrink-0 z-20">
+        <div className="flex items-center gap-3">
+          <button 
+            onClick={handleClose} 
+            className="p-1.5 text-zinc-400 hover:text-red-400 hover:bg-red-500/10 rounded-md transition-all duration-200" 
+            title="Close file"
+          >
+            <X size={18} />
+          </button>
+          <span className="text-zinc-300 font-medium text-sm truncate max-w-[250px]">{fileName}</span>
         </div>
 
-        <div style={S.toolbarGroup}>
-          <button onClick={goToPrev} disabled={currentPage === 0} style={S.toolBtn}>◀</button>
-          <span style={S.pageInfo}>{currentPage + 1} / {totalPages}</span>
-          <button onClick={goToNext} disabled={currentPage >= totalPages - 1} style={S.toolBtn}>▶</button>
+        <div className="flex items-center gap-2 bg-zinc-900 px-2 py-1.5 rounded-lg border border-zinc-800 shadow-sm">
+          <button onClick={goToPrev} disabled={currentPage === 0} className="p-1 text-zinc-400 hover:text-zinc-100 disabled:opacity-30 disabled:hover:text-zinc-400 transition-colors">
+            <ChevronLeft size={18} />
+          </button>
+          <span className="text-zinc-400 text-xs font-medium w-16 text-center tracking-wider">
+            {currentPage + 1} / {totalPages}
+          </span>
+          <button onClick={goToNext} disabled={currentPage >= totalPages - 1} className="p-1 text-zinc-400 hover:text-zinc-100 disabled:opacity-30 disabled:hover:text-zinc-400 transition-colors">
+            <ChevronRight size={18} />
+          </button>
 
-          <span style={S.separator} />
+          <div className="w-[1px] h-4 bg-zinc-800 mx-2" />
 
-          <button onClick={zoomOut} disabled={scale <= 0.5} style={S.toolBtn}>−</button>
-          <span style={S.zoomInfo}>{Math.round(scale * 100)}%</span>
-          <button onClick={zoomIn} disabled={scale >= 4} style={S.toolBtn}>+</button>
+          <button onClick={zoomOut} disabled={scale <= 0.5} className="p-1 text-zinc-400 hover:text-zinc-100 disabled:opacity-30 disabled:hover:text-zinc-400 transition-colors">
+            <ZoomOut size={16} />
+          </button>
+          <span className="text-zinc-400 text-xs font-medium w-12 text-center">
+            {Math.round(scale * 100)}%
+          </span>
+          <button onClick={zoomIn} disabled={scale >= 4} className="p-1 text-zinc-400 hover:text-zinc-100 disabled:opacity-30 disabled:hover:text-zinc-400 transition-colors">
+            <ZoomIn size={16} />
+          </button>
         </div>
 
-        <div style={S.toolbarGroup}>
-          {drawPaths.length > 0 && (
+        <div className="flex items-center gap-3">
+          {drawnPaths.length > 0 && (
             <button
-              onClick={() => setDrawPaths([])}
-              style={{ ...S.toolBtn, color: '#ff6b6b', borderColor: '#5c2228' }}
-              title="Clear drawings"
+              onClick={() => setDrawnPaths([])}
+              className="text-xs font-medium px-3 py-1.5 text-red-400 bg-red-400/10 hover:bg-red-400/20 rounded-md transition-colors"
             >
               Clear
             </button>
@@ -908,46 +1189,158 @@ export default function EditorPage() {
           <button
             onClick={handleDownload}
             disabled={isSaving}
-            style={{ ...S.toolBtn, color: '#30d158', borderColor: '#1a4a28' }}
-            title="Download PDF"
+            className="flex items-center gap-2 text-xs font-semibold px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-md shadow-sm transition-all disabled:opacity-50"
           >
-            {isSaving ? '…' : '↓ Save'}
+            {isSaving ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+            {isSaving ? 'Saving...' : 'Save PDF'}
           </button>
         </div>
-      </div>
+      </header>
 
-      <div style={S.mainArea}>
-        {/* ── Left sidebar ── */}
-        <div style={S.sidebar}>
-          {TOOLS.map((tool) => (
-            <button
-              key={tool.id}
-              onClick={() => setActiveTool(tool.id)}
-              title={`${tool.label} (${tool.shortcut})`}
-              style={{
-                ...S.sidebarBtn,
-                background: activeTool === tool.id ? 'rgba(41, 151, 255, 0.15)' : 'transparent',
-                color: activeTool === tool.id ? '#2997ff' : '#888',
-                borderLeft: activeTool === tool.id ? '2px solid #2997ff' : '2px solid transparent',
-              }}
-            >
-              <span style={{ fontSize: 18, lineHeight: 1 }}>{tool.icon}</span>
-              <span style={{ fontSize: 9, marginTop: 2, letterSpacing: '0.02em' }}>{tool.label}</span>
-            </button>
-          ))}
+      <div className="flex-1 flex overflow-hidden">
+        
+        {/* ── Left sidebar (Tools) ── */}
+        <aside className="w-16 bg-zinc-900/95 backdrop-blur-md border-r border-zinc-800/80 flex flex-col items-center pt-4 pb-4 gap-2 shrink-0 z-10 shadow-[4px_0_24px_rgba(0,0,0,0.2)]">
+          <div className="flex-1 flex flex-col gap-2 w-full px-2">
+            {TOOLS.map((tool) => {
+              const isActive = activeTool === tool.id;
+              const isHighlight = tool.id === 'highlight';
+              const activeColor = isHighlight ? highlightColor : '#3b82f6';
+              
+              return (
+                <button
+                  key={tool.id}
+                  onClick={() => setActiveTool(tool.id)}
+                  title={`${tool.label} (${tool.shortcut})`}
+                  className={`w-full aspect-square flex flex-col items-center justify-center gap-1 rounded-xl transition-all duration-200 group relative`}
+                  style={{
+                    backgroundColor: isActive ? (isHighlight ? `${highlightColor}25` : 'rgba(59, 130, 246, 0.15)') : 'transparent',
+                    color: isActive ? activeColor : '#a1a1aa',
+                  }}
+                >
+                  <div className={`transition-transform duration-200 ${isActive ? 'scale-110' : 'group-hover:scale-110 group-hover:text-zinc-300'}`}>
+                    {tool.icon}
+                  </div>
+                  {isActive && (
+                    <div 
+                      className="absolute left-0 top-1/4 bottom-1/4 w-1 rounded-r-full"
+                      style={{ backgroundColor: activeColor }}
+                    />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+          
+          {/* Properties Panel */}
+          {['draw', 'highlight', 'erase'].includes(activeTool) && (
+            <div className="w-full px-2 pt-4 pb-2 border-t border-zinc-800 flex flex-col gap-4 animate-in fade-in duration-300">
+              {activeTool === 'draw' && (
+                <div className="flex flex-col gap-2">
+                  <div className="grid grid-cols-2 gap-1.5 p-1 bg-zinc-950 rounded-lg border border-zinc-800">
+                    {['#ef4444', '#3b82f6', '#22c55e', '#f59e0b', '#a855f7', '#f4f4f5'].map(color => (
+                      <button
+                        key={color}
+                        onClick={() => setDrawColor(color)}
+                        className={`w-4 h-4 rounded-full mx-auto transition-transform ${drawColor === color ? 'scale-125 ring-2 ring-zinc-400 ring-offset-2 ring-offset-zinc-950' : 'hover:scale-110'}`}
+                        style={{ backgroundColor: color }}
+                      />
+                    ))}
+                  </div>
+                  <input 
+                    type="range" 
+                    min="1" max="20" 
+                    value={drawSize} 
+                    onChange={(e) => setDrawSize(parseInt(e.target.value))} 
+                    className="mt-2"
+                    title={`Size: ${drawSize}px`}
+                  />
+                </div>
+              )}
+              {activeTool === 'highlight' && (
+                <div className="flex flex-col gap-2">
+                   <div className="grid grid-cols-2 gap-1.5 p-1 bg-zinc-950 rounded-lg border border-zinc-800">
+                    {['#fffb00', '#00ff00', '#00e5ff', '#ff00ff'].map(color => (
+                      <button
+                        key={color}
+                        onClick={() => setHighlightColor(color)}
+                        className={`w-4 h-4 rounded-full mx-auto transition-transform ${highlightColor === color ? 'scale-125 ring-2 ring-zinc-400 ring-offset-2 ring-offset-zinc-950' : 'hover:scale-110'}`}
+                        style={{ backgroundColor: color }}
+                      />
+                    ))}
+                  </div>
+                  <input 
+                    type="range" 
+                    min="5" max="40" 
+                    value={highlightSize} 
+                    onChange={(e) => setHighlightSize(parseInt(e.target.value))} 
+                    className="mt-2"
+                    title={`Size: ${highlightSize}px`}
+                  />
+                </div>
+              )}
+              {activeTool === 'erase' && (
+                <div className="flex flex-col gap-2 px-1">
+                  <span className="text-[9px] font-bold tracking-widest text-zinc-500 text-center">SIZE</span>
+                  <input 
+                    type="range" 
+                    min="5" max="50" 
+                    value={eraserSize} 
+                    onChange={(e) => setEraserSize(parseInt(e.target.value))} 
+                    title={`Size: ${eraserSize}px`}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+        </aside>
+
+        {/* ── Thumbnails sidebar ── */}
+        <div className="w-56 bg-zinc-900 border-r border-zinc-800 flex flex-col overflow-y-auto p-4 gap-4 shrink-0 shadow-inner">
+          {isGeneratingThumbnails && thumbnails.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-12 gap-3 text-zinc-500">
+              <Loader2 size={24} className="animate-spin" />
+              <span className="text-xs font-medium">Generating Previews...</span>
+            </div>
+          ) : (
+            thumbnails.map((thumbDataUrl, i) => (
+              <div
+                key={i}
+                className={`group relative flex flex-col items-center cursor-pointer p-2 rounded-xl border-2 transition-all duration-300 ${
+                  currentPage === i 
+                    ? 'border-blue-500 bg-blue-500/5 shadow-[0_0_15px_rgba(59,130,246,0.15)]' 
+                    : 'border-transparent hover:bg-zinc-800'
+                }`}
+                onClick={() => {
+                  commitDrawingsToPdf();
+                  setCurrentPage(i);
+                }}
+              >
+                <span className={`text-[10px] font-bold mb-2 transition-colors ${currentPage === i ? 'text-blue-400' : 'text-zinc-500 group-hover:text-zinc-400'}`}>
+                  PAGE {i + 1}
+                </span>
+                <div className="w-full relative shadow-md bg-white rounded overflow-hidden transition-transform duration-300 group-hover:scale-[1.02]">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={thumbDataUrl} alt={`Page ${i + 1}`} className="w-full pointer-events-none" />
+                </div>
+              </div>
+            ))
+          )}
         </div>
 
         {/* ── Canvas area ── */}
-        <div style={S.canvasArea}>
+        <div className="flex-1 overflow-auto relative flex justify-center items-start py-12 checkerboard">
           {isRendering && (
-            <div style={S.renderingOverlay}>
-              <div style={S.spinnerSmall} />
+            <div className="absolute top-4 right-4 z-30 bg-zinc-900/90 backdrop-blur border border-zinc-800 shadow-lg rounded-full px-4 py-2 flex items-center gap-2 text-zinc-300 text-sm font-medium animate-in slide-in-from-top-4 fade-in">
+              <Loader2 size={16} className="animate-spin text-blue-500" />
+              Rendering...
             </div>
           )}
 
           <div
             ref={canvasContainerRef}
-            style={{ ...S.canvasWrapper, cursor: cursorForTool }}
+            className="relative inline-block shrink-0 shadow-2xl transition-transform duration-200"
+            style={{ cursor: cursorForTool }}
             onClick={handleCanvasClick}
             onDoubleClick={handleCanvasDoubleClick}
             onMouseDown={handleDrawStart}
@@ -960,12 +1353,9 @@ export default function EditorPage() {
             {/* Overlay canvas for caret / drawings — NO selection boxes */}
             <canvas
               ref={overlayRef}
+              className="absolute top-0 left-0 z-10"
               style={{
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                zIndex: 10,
-                pointerEvents: activeTool === 'draw' ? 'auto' : 'none',
+                pointerEvents: ['draw', 'highlight', 'erase'].includes(activeTool) ? 'auto' : 'none',
               }}
             />
 
@@ -977,288 +1367,43 @@ export default function EditorPage() {
               onKeyDown={handleHiddenKeyDown}
               onBlur={handleHiddenBlur}
               aria-label="Text editing input"
-              style={{
-                position: 'fixed',
-                left: 0,
-                top: 0,
-                width: 1,
-                height: 1,
-                opacity: 0,
-                pointerEvents: 'none',
-                padding: 0,
-                border: 'none',
-                outline: 'none',
-                resize: 'none',
-                overflow: 'hidden',
-                zIndex: -1,
-              }}
+              className="fixed left-0 top-0 w-px h-px opacity-0 pointer-events-none p-0 border-none outline-none resize-none overflow-hidden -z-10"
             />
           </div>
         </div>
       </div>
 
       {/* ── Bottom status bar ── */}
-      <div style={S.statusBar}>
-        <span style={S.statusText}>
+      <footer className="flex items-center justify-between px-4 h-7 bg-zinc-900 border-t border-zinc-800 shrink-0 select-none">
+        <span className="text-[10px] font-medium tracking-wider text-zinc-500">
           {renderResult
-            ? `${renderResult.pageWidth.toFixed(0)} × ${renderResult.pageHeight.toFixed(0)} pt`
+            ? `${renderResult.pageWidth.toFixed(0)} × ${renderResult.pageHeight.toFixed(0)} PT`
             : ''}
         </span>
-        <span style={S.statusText}>
-          Tool: <b style={{ color: '#aaa' }}>{TOOLS.find(t => t.id === activeTool)?.label}</b>
+        <span className="text-[10px] font-medium tracking-wider text-zinc-500 flex items-center gap-2">
+          <span>TOOL: <span className="text-zinc-300">{TOOLS.find(t => t.id === activeTool)?.label.toUpperCase()}</span></span>
           {selectedRun && (
-            <> &nbsp;|&nbsp; Selected: &quot;{selectedRun.text.substring(0, 30)}
-            {selectedRun.text.length > 30 ? '…' : ''}&quot;</>
+            <>
+              <span className="w-1 h-1 rounded-full bg-zinc-700" />
+              <span>SELECTED: <span className="text-zinc-300">&quot;{selectedRun.text.substring(0, 30)}{selectedRun.text.length > 30 ? '…' : ''}&quot;</span></span>
+            </>
           )}
         </span>
-        <span style={S.statusText}>
-          {renderResult ? `${renderResult.textRuns.length} text runs` : ''}
-          {doc ? ` | ${totalPages} pages | v${doc.version}` : ''}
+        <span className="text-[10px] font-medium tracking-wider text-zinc-500">
+          {renderResult ? `${renderResult.textRuns.length} RUNS` : ''}
+          {doc ? ` • ${totalPages} PAGES • v${doc.version}` : ''}
         </span>
-      </div>
+      </footer>
 
       {/* Error toast */}
       {error && (
-        <div style={S.errorToast}>
+        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-red-500/10 backdrop-blur-md border border-red-500/30 text-red-400 px-4 py-3 rounded-xl text-sm font-medium flex items-center gap-4 shadow-xl z-[100] animate-in slide-in-from-bottom-5 fade-in">
           {error}
-          <button onClick={() => setError(null)} style={S.errorClose}>✕</button>
+          <button onClick={() => setError(null)} className="text-red-400 hover:text-red-300 transition-colors">
+            <X size={16} />
+          </button>
         </div>
       )}
-
-      <style>{spinnerCSS}</style>
     </div>
   );
 }
-
-// ─── Styles ─────────────────────────────────────────────────────────────────
-
-const S: Record<string, React.CSSProperties> = {
-  center: {
-    minHeight: '100vh',
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontFamily: 'system-ui',
-  },
-  spinner: {
-    width: 40,
-    height: 40,
-    border: '3px solid #333',
-    borderTopColor: '#2997ff',
-    borderRadius: '50%',
-    animation: 'spin 0.8s linear infinite',
-  },
-  spinnerSmall: {
-    width: 24,
-    height: 24,
-    border: '2px solid #333',
-    borderTopColor: '#2997ff',
-    borderRadius: '50%',
-    animation: 'spin 0.8s linear infinite',
-  },
-  layout: {
-    display: 'flex',
-    flexDirection: 'column',
-    height: '100vh',
-    fontFamily: "'Inter', system-ui, -apple-system, sans-serif",
-    background: '#0d0d0d',
-    color: '#f5f5f7',
-  },
-  toolbar: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: '0 12px',
-    height: 48,
-    background: '#161616',
-    borderBottom: '1px solid #222',
-    flexShrink: 0,
-  },
-  toolbarGroup: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 6,
-  },
-  toolBtn: {
-    background: 'none',
-    border: '1px solid #333',
-    color: '#ccc',
-    padding: '4px 10px',
-    borderRadius: 4,
-    cursor: 'pointer',
-    fontSize: 13,
-    fontFamily: 'system-ui',
-    lineHeight: '20px',
-    transition: 'all 0.15s ease',
-  },
-  btn: {
-    background: 'none',
-    border: '1px solid #444',
-    color: '#ccc',
-    padding: '8px 20px',
-    borderRadius: 6,
-    cursor: 'pointer',
-    fontSize: 14,
-    marginTop: 20,
-    fontFamily: 'system-ui',
-  },
-  fileName: {
-    color: '#888',
-    fontSize: 13,
-    maxWidth: 200,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
-  },
-  pageInfo: {
-    color: '#aaa',
-    fontSize: 13,
-    minWidth: 60,
-    textAlign: 'center',
-  },
-  zoomInfo: {
-    color: '#aaa',
-    fontSize: 12,
-    minWidth: 44,
-    textAlign: 'center',
-  },
-  separator: {
-    width: 1,
-    height: 20,
-    background: '#333',
-    margin: '0 6px',
-  },
-  mainArea: {
-    flex: 1,
-    display: 'flex',
-    overflow: 'hidden',
-  },
-  sidebar: {
-    width: 56,
-    background: '#111',
-    borderRight: '1px solid #222',
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    paddingTop: 8,
-    gap: 2,
-    flexShrink: 0,
-  },
-  sidebarBtn: {
-    width: 52,
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: '8px 4px',
-    border: 'none',
-    cursor: 'pointer',
-    borderRadius: '0 4px 4px 0',
-    transition: 'all 0.15s ease',
-    fontFamily: 'system-ui',
-  },
-  canvasArea: {
-    flex: 1,
-    overflow: 'auto',
-    background: '#1a1a1a',
-    position: 'relative',
-    display: 'flex',
-    justifyContent: 'center',
-    alignItems: 'flex-start',
-    padding: '24px 0',
-  },
-  canvasWrapper: {
-    position: 'relative',
-    display: 'inline-block',
-    flexShrink: 0,
-  },
-  renderingOverlay: {
-    position: 'absolute',
-    top: 12,
-    right: 12,
-    zIndex: 30,
-    background: 'rgba(0,0,0,0.6)',
-    borderRadius: 8,
-    padding: 8,
-  },
-  editTextarea: {
-    width: '100%',
-    minHeight: '100%',
-    background: 'rgba(255, 255, 255, 0.95)',
-    color: '#111',
-    border: '2px solid #2997ff',
-    borderRadius: 3,
-    padding: '2px 4px',
-    fontSize: 14,
-    fontFamily: 'inherit',
-    resize: 'both',
-    outline: 'none',
-    boxShadow: '0 2px 12px rgba(41, 151, 255, 0.3)',
-  },
-  editActions: {
-    display: 'flex',
-    gap: 4,
-    marginTop: 4,
-    justifyContent: 'flex-end',
-  },
-  editBtnSave: {
-    background: '#2997ff',
-    color: '#fff',
-    border: 'none',
-    borderRadius: 3,
-    padding: '2px 10px',
-    cursor: 'pointer',
-    fontSize: 13,
-    fontWeight: 600,
-  },
-  editBtnCancel: {
-    background: '#333',
-    color: '#ccc',
-    border: 'none',
-    borderRadius: 3,
-    padding: '2px 10px',
-    cursor: 'pointer',
-    fontSize: 13,
-  },
-  statusBar: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: '0 16px',
-    height: 28,
-    background: '#0a0a0a',
-    borderTop: '1px solid #1a1a1a',
-    flexShrink: 0,
-  },
-  statusText: {
-    color: '#555',
-    fontSize: 11,
-  },
-  errorToast: {
-    position: 'fixed',
-    bottom: 40,
-    left: '50%',
-    transform: 'translateX(-50%)',
-    background: '#2a1215',
-    border: '1px solid #5c2228',
-    color: '#ff6b6b',
-    padding: '8px 16px',
-    borderRadius: 8,
-    fontSize: 13,
-    display: 'flex',
-    alignItems: 'center',
-    gap: 12,
-    zIndex: 100,
-  },
-  errorClose: {
-    background: 'none',
-    border: 'none',
-    color: '#ff6b6b',
-    cursor: 'pointer',
-    fontSize: 14,
-    padding: 0,
-  },
-};
-
-const spinnerCSS = `@keyframes spin { to { transform: rotate(360deg); } }`;

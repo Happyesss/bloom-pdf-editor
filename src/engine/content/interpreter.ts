@@ -213,6 +213,137 @@ export interface FontInfo {
   firstChar: number;
   /** Last char code with a width entry */
   lastChar: number;
+  /** Encoding Differences: charCode → glyph name */
+  differences: Map<number, string>;
+}
+
+// ─── WinAnsiEncoding (Windows-1252) byte → Unicode mapping for 0x80–0x9F ────
+// These 32 bytes differ from direct Unicode code points.
+const WIN_ANSI_TO_UNICODE: Record<number, number> = {
+  0x80: 0x20AC, // € Euro sign
+  0x82: 0x201A, // ‚ Single low-9 quotation mark
+  0x83: 0x0192, // ƒ Latin small letter f with hook
+  0x84: 0x201E, // „ Double low-9 quotation mark
+  0x85: 0x2026, // … Horizontal ellipsis
+  0x86: 0x2020, // † Dagger
+  0x87: 0x2021, // ‡ Double dagger
+  0x88: 0x02C6, // ˆ Modifier letter circumflex accent
+  0x89: 0x2030, // ‰ Per mille sign
+  0x8A: 0x0160, // Š Latin capital letter S with caron
+  0x8B: 0x2039, // ‹ Single left-pointing angle quotation mark
+  0x8C: 0x0152, // Œ Latin capital ligature OE
+  0x8E: 0x017D, // Ž Latin capital letter Z with caron
+  0x91: 0x2018, // ' Left single quotation mark
+  0x92: 0x2019, // ' Right single quotation mark
+  0x93: 0x201C, // " Left double quotation mark
+  0x94: 0x201D, // " Right double quotation mark
+  0x95: 0x2022, // • Bullet
+  0x96: 0x2013, // – En dash
+  0x97: 0x2014, // — Em dash
+  0x98: 0x02DC, // ˜ Small tilde
+  0x99: 0x2122, // ™ Trade mark sign
+  0x9A: 0x0161, // š Latin small letter s with caron
+  0x9B: 0x203A, // › Single right-pointing angle quotation mark
+  0x9C: 0x0153, // œ Latin small ligature oe
+  0x9E: 0x017E, // ž Latin small letter z with caron
+  0x9F: 0x0178, // Ÿ Latin capital letter Y with diaeresis
+};
+
+// ─── Adobe Glyph Name → Unicode mapping (common subset) ─────────────────────
+const GLYPH_NAME_TO_UNICODE: Record<string, string> = {
+  space: ' ', exclam: '!', quotedbl: '"', numbersign: '#',
+  dollar: '$', percent: '%', ampersand: '&', quotesingle: "'",
+  parenleft: '(', parenright: ')', asterisk: '*', plus: '+',
+  comma: ',', hyphen: '-', period: '.', slash: '/',
+  zero: '0', one: '1', two: '2', three: '3', four: '4',
+  five: '5', six: '6', seven: '7', eight: '8', nine: '9',
+  colon: ':', semicolon: ';', less: '<', equal: '=',
+  greater: '>', question: '?', at: '@',
+  A: 'A', B: 'B', C: 'C', D: 'D', E: 'E', F: 'F', G: 'G',
+  H: 'H', I: 'I', J: 'J', K: 'K', L: 'L', M: 'M', N: 'N',
+  O: 'O', P: 'P', Q: 'Q', R: 'R', S: 'S', T: 'T', U: 'U',
+  V: 'V', W: 'W', X: 'X', Y: 'Y', Z: 'Z',
+  bracketleft: '[', backslash: '\\', bracketright: ']',
+  asciicircum: '^', underscore: '_', grave: '`',
+  a: 'a', b: 'b', c: 'c', d: 'd', e: 'e', f: 'f', g: 'g',
+  h: 'h', i: 'i', j: 'j', k: 'k', l: 'l', m: 'm', n: 'n',
+  o: 'o', p: 'p', q: 'q', r: 'r', s: 's', t: 't', u: 'u',
+  v: 'v', w: 'w', x: 'x', y: 'y', z: 'z',
+  braceleft: '{', bar: '|', braceright: '}', asciitilde: '~',
+  // Extended Latin
+  Agrave: 'À', Aacute: 'Á', Acircumflex: 'Â', Atilde: 'Ã',
+  Adieresis: 'Ä', Aring: 'Å', AE: 'Æ', Ccedilla: 'Ç',
+  Egrave: 'È', Eacute: 'É', Ecircumflex: 'Ê', Edieresis: 'Ë',
+  Igrave: 'Ì', Iacute: 'Í', Icircumflex: 'Î', Idieresis: 'Ï',
+  Eth: 'Ð', Ntilde: 'Ñ', Ograve: 'Ò', Oacute: 'Ó',
+  Ocircumflex: 'Ô', Otilde: 'Õ', Odieresis: 'Ö', multiply: '×',
+  Oslash: 'Ø', Ugrave: 'Ù', Uacute: 'Ú', Ucircumflex: 'Û',
+  Udieresis: 'Ü', Yacute: 'Ý', Thorn: 'Þ', germandbls: 'ß',
+  agrave: 'à', aacute: 'á', acircumflex: 'â', atilde: 'ã',
+  adieresis: 'ä', aring: 'å', ae: 'æ', ccedilla: 'ç',
+  egrave: 'è', eacute: 'é', ecircumflex: 'ê', edieresis: 'ë',
+  igrave: 'ì', iacute: 'í', icircumflex: 'î', idieresis: 'ï',
+  eth: 'ð', ntilde: 'ñ', ograve: 'ò', oacute: 'ó',
+  ocircumflex: 'ô', otilde: 'õ', odieresis: 'ö', divide: '÷',
+  oslash: 'ø', ugrave: 'ù', uacute: 'ú', ucircumflex: 'û',
+  udieresis: 'ü', yacute: 'ý', thorn: 'þ', ydieresis: 'ÿ',
+  // Symbols and punctuation
+  bullet: '\u2022', endash: '\u2013', emdash: '\u2014',
+  ellipsis: '\u2026', quotedblleft: '\u201C', quotedblright: '\u201D',
+  quoteleft: '\u2018', quoteright: '\u2019',
+  quotesinglbase: '\u201A', quotedblbase: '\u201E',
+  dagger: '\u2020', daggerdbl: '\u2021', perthousand: '\u2030',
+  guilsinglleft: '\u2039', guilsinglright: '\u203A',
+  guillemotleft: '\u00AB', guillemotright: '\u00BB',
+  fi: 'fi', fl: 'fl', ff: 'ff', ffi: 'ffi', ffl: 'ffl',
+  trademark: '\u2122', copyright: '\u00A9', registered: '\u00AE',
+  degree: '\u00B0', plusminus: '\u00B1', mu: '\u00B5',
+  paragraph: '\u00B6', section: '\u00A7', Euro: '\u20AC',
+  sterling: '\u00A3', yen: '\u00A5', cent: '\u00A2',
+  currency: '\u00A4', florin: '\u0192',
+  fraction: '\u2044', minus: '\u2212',
+  dotlessi: '\u0131', lslash: '\u0142', Lslash: '\u0141',
+  OE: '\u0152', oe: '\u0153', Scaron: '\u0160', scaron: '\u0161',
+  Zcaron: '\u017D', zcaron: '\u017E', Ydieresis: '\u0178',
+  brokenbar: '\u00A6', exclamdown: '\u00A1', questiondown: '\u00BF',
+  logicalnot: '\u00AC', ordfeminine: '\u00AA', ordmasculine: '\u00BA',
+  onehalf: '\u00BD', onequarter: '\u00BC', threequarters: '\u00BE',
+  onesuperior: '\u00B9', twosuperior: '\u00B2', threesuperior: '\u00B3',
+  nbspace: '\u00A0', circumflex: '\u02C6', tilde: '\u02DC',
+  macron: '\u00AF', breve: '\u02D8', dotaccent: '\u02D9',
+  ring: '\u02DA', cedilla: '\u00B8', hungarumlaut: '\u02DD',
+  ogonek: '\u02DB', caron: '\u02C7',
+};
+
+/**
+ * Convert an Adobe glyph name to its Unicode character.
+ * Falls back to empty string if unknown.
+ */
+function glyphNameToUnicode(name: string): string {
+  // Direct lookup
+  if (GLYPH_NAME_TO_UNICODE[name]) return GLYPH_NAME_TO_UNICODE[name];
+  // Try uniXXXX format (e.g., uni2022 → U+2022)
+  if (name.startsWith('uni') && name.length === 7) {
+    const code = parseInt(name.substring(3), 16);
+    if (!isNaN(code) && code > 0) return String.fromCodePoint(code);
+  }
+  return '';
+}
+
+/**
+ * Map a byte value to Unicode using the specified encoding.
+ * Handles the critical WinAnsiEncoding 0x80–0x9F range that
+ * String.fromCharCode gets wrong.
+ */
+function encodingCharToUnicode(charCode: number, encoding: string): string {
+  if (encoding === 'WinAnsiEncoding' || encoding === 'Identity-H') {
+    if (charCode >= 0x80 && charCode <= 0x9F) {
+      const mapped = WIN_ANSI_TO_UNICODE[charCode];
+      if (mapped) return String.fromCodePoint(mapped);
+    }
+  }
+  // For all other byte values and encodings, direct mapping works
+  return String.fromCharCode(charCode);
 }
 
 // ─── Interpreter ────────────────────────────────────────────────────────────
@@ -750,15 +881,18 @@ function showTextString(
       idx += 1;
     }
 
-    // Map to Unicode
+    // Map to Unicode — priority: ToUnicode CMap > Differences > Encoding table > ASCII fallback
     let unicode: string;
     if (font?.toUnicode?.has(charCode)) {
       unicode = font.toUnicode.get(charCode)!;
-    } else if (!isComposite && charCode >= 0x20 && charCode <= 0x7e) {
-      unicode = String.fromCharCode(charCode);
+    } else if (!isComposite && font?.differences?.has(charCode)) {
+      // Encoding Differences: charCode → glyph name → Unicode
+      const glyphName = font.differences.get(charCode)!;
+      const mapped = glyphNameToUnicode(glyphName);
+      unicode = mapped || encodingCharToUnicode(charCode, font?.encoding ?? 'StandardEncoding');
     } else if (!isComposite) {
-      // Try standard encoding
-      unicode = String.fromCharCode(charCode);
+      // Use encoding-aware mapping (handles WinAnsi 0x80–0x9F correctly)
+      unicode = encodingCharToUnicode(charCode, font?.encoding ?? 'StandardEncoding');
     } else {
       unicode = String.fromCharCode(charCode);
     }
@@ -941,14 +1075,29 @@ function parseFontDict(
 
   // Parse encoding for simple fonts
   let encoding = 'StandardEncoding';
+  const differences = new Map<number, string>();
   const encodingObj = dict.get('Encoding');
   if (encodingObj) {
     const resolved = resolveRef(encodingObj, objects);
     if (resolved instanceof PDFName) {
       encoding = resolved.name;
     } else if (resolved instanceof PDFDict) {
-      encoding = resolved.getName('BaseEncoding') ?? 'StandardEncoding';
-      // Could also parse /Differences array here for custom encoding
+      encoding = resolved.getName('BaseEncoding') ?? 'WinAnsiEncoding';
+      // Parse /Differences array for custom encoding
+      const diffsArr = resolved.get('Differences');
+      const resolvedDiffs = diffsArr ? resolveRef(diffsArr, objects) : undefined;
+      if (resolvedDiffs instanceof PDFArray) {
+        let currentCode = 0;
+        for (let di = 0; di < resolvedDiffs.length; di++) {
+          const item = resolvedDiffs.get(di)!;
+          if (item instanceof PDFNumber) {
+            currentCode = item.value;
+          } else if (item instanceof PDFName) {
+            differences.set(currentCode, item.name);
+            currentCode++;
+          }
+        }
+      }
     }
   }
 
@@ -963,6 +1112,7 @@ function parseFontDict(
     defaultWidth,
     firstChar,
     lastChar,
+    differences,
   };
 }
 

@@ -156,6 +156,13 @@ export default function EditorPage() {
   const engineRef = useRef<typeof import('@/engine') | null>(null);
   const pdfCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
+  // Undo/Redo stacks — store content byte snapshots
+  interface UndoEntry { pageIndex: number; contentBytes: Uint8Array }
+  const undoStackRef = useRef<UndoEntry[]>([]);
+  const redoStackRef = useRef<UndoEntry[]>([]);
+  /** Snapshot of content bytes taken when user first starts editing a run */
+  const undoSnapshotRef = useRef<UndoEntry | null>(null);
+
   // ── Load engine and PDF ──
   useEffect(() => {
     let cancelled = false;
@@ -390,6 +397,21 @@ export default function EditorPage() {
       const engine = engineRef.current;
       const page = doc.pages[currentPage];
       const contentBytes = engine.getPageContentBytes(page, doc.objects);
+
+      // Push undo snapshot (taken when editing began, or now if not yet taken)
+      const snapshot = undoSnapshotRef.current;
+      if (snapshot) {
+        undoStackRef.current.push(snapshot);
+        undoSnapshotRef.current = null;
+      } else {
+        // Fallback: snapshot current state
+        undoStackRef.current.push({ pageIndex: currentPage, contentBytes: new Uint8Array(contentBytes) });
+      }
+      // Limit undo stack to 50 entries
+      if (undoStackRef.current.length > 50) undoStackRef.current.shift();
+      // Clear redo stack on new edit
+      redoStackRef.current = [];
+
       const editResult = engine.applyTextEdits(
         contentBytes, page, doc.objects,
         [{ targetRun: editingRun, newText: editText }],
@@ -436,11 +458,77 @@ export default function EditorPage() {
         console.warn('[Editor] Revert on cancel failed:', e);
       }
     }
+    undoSnapshotRef.current = null;
     setEditingRun(null);
     setSelectedRun(null);
     setEditText('');
     setCaretPos(0);
   }, [editingRun, editText, doc, currentPage, setEditingRun]);
+
+  // ── Undo ──
+  const handleUndo = useCallback(async () => {
+    if (!doc || !engineRef.current) return;
+    const entry = undoStackRef.current.pop();
+    if (!entry) return;
+    try {
+      const engine = engineRef.current;
+      const page = doc.pages[entry.pageIndex];
+      // Save current state to redo stack
+      const currentBytes = engine.getPageContentBytes(page, doc.objects);
+      redoStackRef.current.push({ pageIndex: entry.pageIndex, contentBytes: new Uint8Array(currentBytes) });
+      // Restore the old content bytes
+      await engine.updatePageContent(page.contentRefs, entry.contentBytes, doc.objects);
+      // Exit editing mode and re-render
+      undoSnapshotRef.current = null;
+      setEditingRun(null);
+      setSelectedRun(null);
+      setEditText('');
+      setCaretPos(0);
+      setRenderKey(k => k + 1);
+    } catch (e) {
+      console.error('[Editor] Undo failed:', e);
+    }
+  }, [doc, setEditingRun]);
+
+  // ── Redo ──
+  const handleRedo = useCallback(async () => {
+    if (!doc || !engineRef.current) return;
+    const entry = redoStackRef.current.pop();
+    if (!entry) return;
+    try {
+      const engine = engineRef.current;
+      const page = doc.pages[entry.pageIndex];
+      // Save current state to undo stack
+      const currentBytes = engine.getPageContentBytes(page, doc.objects);
+      undoStackRef.current.push({ pageIndex: entry.pageIndex, contentBytes: new Uint8Array(currentBytes) });
+      // Restore the redo content bytes
+      await engine.updatePageContent(page.contentRefs, entry.contentBytes, doc.objects);
+      // Exit editing mode and re-render
+      undoSnapshotRef.current = null;
+      setEditingRun(null);
+      setSelectedRun(null);
+      setEditText('');
+      setCaretPos(0);
+      setRenderKey(k => k + 1);
+    } catch (e) {
+      console.error('[Editor] Redo failed:', e);
+    }
+  }, [doc, setEditingRun]);
+
+  // ── Global keyboard shortcuts for undo/redo ──
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        handleUndo();
+      } else if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+        e.preventDefault();
+        handleRedo();
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [handleUndo, handleRedo]);
 
   // ── Canvas click handler — caret-based, no boxes ──
   const handleCanvasClick = useCallback((e: React.MouseEvent) => {
@@ -618,6 +706,12 @@ export default function EditorPage() {
       const engine = engineRef.current;
       const page = doc.pages[currentPage];
       const contentBytes = engine.getPageContentBytes(page, doc.objects);
+
+      // Snapshot content bytes BEFORE the first live keystroke for undo
+      if (!undoSnapshotRef.current) {
+        undoSnapshotRef.current = { pageIndex: currentPage, contentBytes: new Uint8Array(contentBytes) };
+      }
+
       const editResult = engine.applyTextEdits(
         contentBytes, page, doc.objects,
         [{ targetRun: editingRun, newText: newVal }],
@@ -638,6 +732,17 @@ export default function EditorPage() {
   }, [editingRun, doc, currentPage, setEditingRun]);
 
   const handleHiddenKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Undo/Redo — intercept before other handlers
+    if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+      e.preventDefault();
+      handleUndo();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+      e.preventDefault();
+      handleRedo();
+      return;
+    }
     if (!editingRun) return;
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -653,7 +758,7 @@ export default function EditorPage() {
         caretVisibleRef.current = true;
       }, 0);
     }
-  }, [editingRun, caretPos, handleEditSubmit, handleEditCancel]);
+  }, [editingRun, caretPos, handleEditSubmit, handleEditCancel, handleUndo, handleRedo]);
 
   const handleHiddenBlur = useCallback(() => {
     if (!editingRun) return;

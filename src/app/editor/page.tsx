@@ -47,7 +47,6 @@ interface ToolDef {
 const TOOLS: ToolDef[] = [
   { id: 'select',    label: 'Select',    icon: <MousePointer2 size={18} />,  shortcut: 'V' },
   { id: 'text',      label: 'Edit Text', icon: <Type size={18} />,  shortcut: 'T' },
-  { id: 'addtext',   label: 'Add Text',  icon: <TextCursorInput size={18} />,  shortcut: 'A' },
   { id: 'highlight', label: 'Highlight', icon: <Highlighter size={18} />, shortcut: 'H' },
   { id: 'draw',      label: 'Draw',      icon: <PenTool size={18} />,  shortcut: 'D' },
   { id: 'erase',     label: 'Erase',     icon: <Eraser size={18} />,  shortcut: 'E' },
@@ -73,6 +72,15 @@ export interface FloatingText {
   fontSize: number;
   fontFamily: string;
   color: string;
+}
+
+export interface FloatingImage {
+  id: string;
+  pdfX: number;
+  pdfY: number;
+  pdfWidth: number;
+  pdfHeight: number;
+  dataUrl: string;
 }
 
 // ─── Coordinate helpers ─────────────────────────────────────────────────────
@@ -232,7 +240,12 @@ export default function EditorPage() {
   
   const [floatingTexts, setFloatingTexts] = useState<FloatingText[]>([]);
   const [activeFloatingTextId, setActiveFloatingTextId] = useState<string | null>(null);
-  const dragInfo = useRef<{ id: string; startX: number; startY: number; startPdfX: number; startPdfY: number } | null>(null);
+  
+  const [floatingImages, setFloatingImages] = useState<FloatingImage[]>([]);
+  const [activeFloatingImageId, setActiveFloatingImageId] = useState<string | null>(null);
+  const replacingImageIdRef = useRef<string | null>(null);
+
+  const dragInfo = useRef<{ id: string; type: 'text' | 'image'; startX: number; startY: number; startPdfX: number; startPdfY: number } | null>(null);
 
   // Tool properties
   const [drawColor, setDrawColor] = useState('#ff3b30');
@@ -264,6 +277,7 @@ export default function EditorPage() {
   const hiddenInputRef = useRef<HTMLTextAreaElement>(null);
   const blurTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const engineRef = useRef<typeof import('@/engine') | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const pdfCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   // Undo/Redo stacks — store content byte snapshots
@@ -506,8 +520,8 @@ export default function EditorPage() {
       ctx.restore();
     }
 
-    // ── Display item bounding boxes (images/paths) in select mode ──
-    if (activeTool === 'select' && displayItems.length > 0) {
+    // ── Display item bounding boxes (images/paths) in select/text mode ──
+    if ((activeTool === 'select' || activeTool === 'text') && displayItems.length > 0) {
       ctx.save();
       ctx.scale(dpr, dpr);
 
@@ -850,6 +864,7 @@ export default function EditorPage() {
           setSelectedRun(null);
         }
         setActiveFloatingTextId(null);
+        setActiveFloatingImageId(null);
       }
     } else if (activeTool === 'addtext') {
       if (blurTimeoutRef.current) {
@@ -872,7 +887,7 @@ export default function EditorPage() {
       
       setFloatingTexts(prev => [...prev, newBox]);
       setActiveFloatingTextId(newBox.id);
-      setActiveTool('select');
+      setActiveTool('text');
 
     } else if (activeTool === 'highlight') {
       const hit = hitTestTextRuns(pdfX, pdfY, renderResult.textRuns);
@@ -954,11 +969,12 @@ export default function EditorPage() {
     });
   }, [eraserSize]);
 
-  // ── Commit drawings and texts to PDF ──
-  const commitDrawingsToPdf = useCallback((pathsToCommit?: DrawnPath[], textsToCommit?: FloatingText[]) => {
+  // ── Commit drawings, texts, and images to PDF ──
+  const commitDrawingsToPdf = useCallback(async (pathsToCommit?: DrawnPath[], textsToCommit?: FloatingText[], imagesToCommit?: FloatingImage[]) => {
     const paths = pathsToCommit || drawnPaths;
     const fTexts = textsToCommit || floatingTexts;
-    if (!doc || !engineRef.current || (paths.length === 0 && fTexts.length === 0)) return;
+    const fImages = imagesToCommit || floatingImages;
+    if (!doc || !engineRef.current || (paths.length === 0 && fTexts.length === 0 && fImages.length === 0)) return;
     const engine = engineRef.current;
     const page = doc.pages[currentPage];
     let currentObjNum = engine.getNextObjNum(doc);
@@ -1009,9 +1025,9 @@ export default function EditorPage() {
       currentObjNum++;
     }
     
-    if (fTexts.length > 0) {
+    if (fTexts.length > 0 || fImages.length > 0) {
       let contentBytes = engine.getPageContentBytes(page, doc.objects);
-      let newContentBytes = new Uint8Array(contentBytes);
+      let newContentBytes: any = new Uint8Array(contentBytes);
       
       for (const ft of fTexts) {
         if (!ft.text.trim()) continue;
@@ -1023,15 +1039,30 @@ export default function EditorPage() {
         );
       }
       
-      engine.updatePageContent(page.contentRefs, newContentBytes, doc.objects).catch(e => {
-        console.error('[Editor] Failed to commit text:', e);
+      for (const fi of fImages) {
+        const { newContentBytes: b } = await engine.insertImageRun(
+          newContentBytes, page, doc.objects,
+          fi.dataUrl, fi.pdfX, fi.pdfY, fi.pdfWidth, fi.pdfHeight,
+          () => {
+            const num = currentObjNum;
+            currentObjNum++;
+            return num;
+          }
+        );
+        newContentBytes = b;
+      }
+      
+      engine.updatePageContent(page.contentRefs, newContentBytes, doc.objects).catch((e: Error) => {
+        console.error('[Editor] Failed to commit content:', e);
       });
     }
     
     setDrawnPaths([]);
     setFloatingTexts([]);
+    setFloatingImages([]);
     setActiveFloatingTextId(null);
-  }, [doc, currentPage, drawnPaths, floatingTexts, scale, renderResult]);
+    setActiveFloatingImageId(null);
+  }, [doc, currentPage, drawnPaths, floatingTexts, floatingImages, scale, renderResult]);
 
   const handleDrawStart = useCallback((e: React.MouseEvent) => {
     if (activeTool !== 'draw' && activeTool !== 'highlight' && activeTool !== 'erase') return;
@@ -1120,10 +1151,12 @@ export default function EditorPage() {
   const handleFloatingTextPointerDown = useCallback((e: React.PointerEvent, id: string) => {
     e.stopPropagation();
     setActiveFloatingTextId(id);
+    setActiveFloatingImageId(null);
     const box = floatingTexts.find(b => b.id === id);
     if (!box) return;
     dragInfo.current = {
       id,
+      type: 'text',
       startX: e.clientX,
       startY: e.clientY,
       startPdfX: box.pdfX,
@@ -1153,6 +1186,92 @@ export default function EditorPage() {
     window.addEventListener('pointermove', handleMove);
     window.addEventListener('pointerup', handleUp);
   }, [floatingTexts, scale, doc, renderResult]);
+
+  const handleFloatingImagePointerDown = useCallback((e: React.PointerEvent, id: string) => {
+    e.stopPropagation();
+    setActiveFloatingImageId(id);
+    setActiveFloatingTextId(null);
+    const box = floatingImages.find(b => b.id === id);
+    if (!box) return;
+    dragInfo.current = {
+      id,
+      type: 'image',
+      startX: e.clientX,
+      startY: e.clientY,
+      startPdfX: box.pdfX,
+      startPdfY: box.pdfY
+    };
+    
+    const handleMove = (me: PointerEvent) => {
+      if (!dragInfo.current || !doc || !renderResult) return;
+      const dx = me.clientX - dragInfo.current.startX;
+      const dy = me.clientY - dragInfo.current.startY;
+      const pdfDx = dx / scale;
+      const pdfDy = -dy / scale;
+      
+      setFloatingImages(prev => prev.map(p => p.id === id ? {
+        ...p,
+        pdfX: dragInfo.current!.startPdfX + pdfDx,
+        pdfY: dragInfo.current!.startPdfY + pdfDy,
+      } : p));
+    };
+    
+    const handleUp = () => {
+      dragInfo.current = null;
+      window.removeEventListener('pointermove', handleMove);
+      window.removeEventListener('pointerup', handleUp);
+    };
+    
+    window.addEventListener('pointermove', handleMove);
+    window.addEventListener('pointerup', handleUp);
+  }, [floatingImages, scale, doc, renderResult]);
+
+  const handleImageUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const dataUrl = event.target?.result as string;
+      const img = new window.Image();
+      img.onload = () => {
+        if (replacingImageIdRef.current) {
+          // Replace existing
+          setFloatingImages(prev => prev.map(p => p.id === replacingImageIdRef.current ? { ...p, dataUrl } : p));
+          replacingImageIdRef.current = null;
+        } else {
+          // Add new
+          if (!doc || !renderResult) return;
+          const page = doc.pages[currentPage];
+          
+          let pdfWidth = img.width;
+          let pdfHeight = img.height;
+          const maxDim = 200;
+          if (pdfWidth > maxDim || pdfHeight > maxDim) {
+            const ratio = Math.min(maxDim / pdfWidth, maxDim / pdfHeight);
+            pdfWidth *= ratio;
+            pdfHeight *= ratio;
+          }
+          
+          const pdfX = page.mediaBox.width / 2 - pdfWidth / 2;
+          const pdfY = page.mediaBox.height / 2 + pdfHeight / 2; // Center of screen
+          
+          const newImg: FloatingImage = {
+            id: Math.random().toString(36).substr(2, 9),
+            pdfX,
+            pdfY,
+            pdfWidth,
+            pdfHeight,
+            dataUrl
+          };
+          setFloatingImages(prev => [...prev, newImg]);
+          setActiveFloatingImageId(newImg.id);
+        }
+      };
+      img.src = dataUrl;
+    };
+    reader.readAsDataURL(file);
+    if (fileInputRef.current) fileInputRef.current.value = ''; // reset
+  }, [doc, currentPage, renderResult]);
 
 
   // ── Hidden input handler — this is where all typing is captured ──
@@ -1264,7 +1383,7 @@ export default function EditorPage() {
     if (!doc || !engineRef.current) return;
     try {
       setIsSaving(true);
-      commitDrawingsToPdf();
+      await commitDrawingsToPdf();
       const engine = engineRef.current;
       const bytes = await engine.serializeDocument(doc);
       const blob = new Blob([bytes as unknown as BlobPart], { type: 'application/pdf' });
@@ -1292,6 +1411,9 @@ export default function EditorPage() {
     function onKey(e: KeyboardEvent) {
       // Don't intercept when the hidden input has focus (editing)
       if (editingRun) return;
+      
+      // Don't intercept when the user is typing in any text box or input
+      if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA') return;
 
       if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
         e.preventDefault(); goToPrev();
@@ -1553,7 +1675,17 @@ export default function EditorPage() {
                       onChange={(e) => setTextColor(e.target.value)}
                       className="w-8 h-8 rounded-lg border border-zinc-700 cursor-pointer bg-transparent"
                     />
-                    <span className="text-[11px] text-zinc-400 font-mono">{textColor.toUpperCase()}</span>
+                    <input 
+                      type="text"
+                      value={textColor.toUpperCase()}
+                      onChange={(e) => {
+                         let val = e.target.value;
+                         if (!val.startsWith('#')) val = '#' + val;
+                         setTextColor(val);
+                      }}
+                      className="w-16 bg-transparent border-b border-zinc-700 text-[11px] text-zinc-300 font-mono focus:outline-none focus:border-blue-500 uppercase pb-0.5"
+                      maxLength={7}
+                    />
                   </div>
                   <div className="flex gap-1.5 mt-1">
                     {['#000000', '#ffffff', '#ef4444', '#3b82f6', '#22c55e', '#f59e0b', '#a855f7', '#6b7280'].map(c => (
@@ -1600,9 +1732,33 @@ export default function EditorPage() {
                     />
                     <span className="text-[11px] text-zinc-400 w-8 text-right font-mono">{textOpacity}%</span>
                   </div>
-                </div>
               </div>
-            )}
+
+              {/* Add Content */}
+              <div className="pt-4 mt-4 border-t border-zinc-800/80 space-y-2">
+                <div className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase mb-2">
+                  Add Content
+                </div>
+                <button
+                  onClick={() => setActiveTool('addtext')}
+                  className={`w-full flex items-center justify-center gap-2 py-2 rounded-md transition-colors text-xs font-semibold ${activeTool === 'addtext' ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30' : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'}`}
+                >
+                  <TextCursorInput size={14} />
+                  Add Text Box
+                </button>
+                <button
+                  onClick={() => {
+                    replacingImageIdRef.current = null;
+                    fileInputRef.current?.click();
+                  }}
+                  className="w-full flex items-center justify-center gap-2 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-md transition-colors text-xs font-semibold"
+                >
+                  <Image size={14} />
+                  Add Image
+                </button>
+              </div>
+            </div>
+          )}
 
             {/* DRAW TOOL PROPERTIES */}
             {activeTool === 'draw' && (
@@ -1778,6 +1934,14 @@ export default function EditorPage() {
           </div>
         )}
 
+        <input
+          type="file"
+          accept="image/*"
+          ref={fileInputRef}
+          className="hidden"
+          onChange={handleImageUpload}
+        />
+        
         {/* ── Canvas area ── */}
         <div className="flex-1 overflow-auto relative flex justify-center items-start py-12 checkerboard">
           {isRendering && (
@@ -1830,6 +1994,7 @@ export default function EditorPage() {
                     top: cssY - (ft.fontSize * scale),
                   }}
                   onPointerDown={(e) => handleFloatingTextPointerDown(e, ft.id)}
+                  onClick={(e) => e.stopPropagation()}
                 >
                   {isActive && (
                     <button
@@ -1874,6 +2039,129 @@ export default function EditorPage() {
               );
             })}
 
+            {/* DOM overlays for FloatingImage */}
+            {floatingImages.map(fi => {
+              const { cssX, cssY } = pdfToCanvas(
+                fi.pdfX, 
+                fi.pdfY, 
+                scale, 
+                doc?.pages[currentPage]?.mediaBox.height || 0, 
+                doc?.pages[currentPage]?.mediaBox.x || 0, 
+                doc?.pages[currentPage]?.mediaBox.y || 0
+              );
+              const isActive = activeFloatingImageId === fi.id;
+              
+              return (
+                <div
+                  key={fi.id}
+                  className={`absolute z-20 cursor-move border-2 ${isActive ? 'border-blue-500 border-dashed' : 'border-transparent hover:border-zinc-500 hover:border-dashed'} p-1 -m-1`}
+                  style={{
+                    left: cssX,
+                    top: cssY,
+                    width: fi.pdfWidth * scale + 8, // +8 for padding/border
+                    height: fi.pdfHeight * scale + 8,
+                  }}
+                  onPointerDown={(e) => handleFloatingImagePointerDown(e, fi.id)}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <img 
+                    src={fi.dataUrl} 
+                    alt="floating" 
+                    className="w-full h-full object-fill pointer-events-none"
+                  />
+                  
+                  {isActive && (
+                    <>
+                      <button
+                        className="absolute -top-3 -right-3 bg-red-500 text-white rounded-full p-1 shadow hover:bg-red-600 transition-colors z-30"
+                        title="Delete Image"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setFloatingImages(prev => prev.filter(p => p.id !== fi.id));
+                          if (activeFloatingImageId === fi.id) setActiveFloatingImageId(null);
+                        }}
+                      >
+                        <X size={12} />
+                      </button>
+                      <button
+                        className="absolute -bottom-3 -right-3 bg-blue-500 text-white rounded-full p-1 shadow hover:bg-blue-600 transition-colors z-30"
+                        title="Replace Image"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          replacingImageIdRef.current = fi.id;
+                          fileInputRef.current?.click();
+                        }}
+                      >
+                        <Image size={12} />
+                      </button>
+                      
+                      {/* Dimensions panel in cm */}
+                      <div 
+                        className="absolute top-0 -right-[110px] bg-zinc-900 text-white rounded p-2 shadow-xl border border-zinc-700 text-xs flex flex-col gap-2 z-30 w-24"
+                        onClick={e => e.stopPropagation()} 
+                        onPointerDown={e => e.stopPropagation()}
+                      >
+                        <div className="text-[9px] text-zinc-400 font-bold uppercase tracking-wider mb-0.5">Dimensions</div>
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-zinc-500 w-3 text-center">W</span>
+                          <input 
+                            type="number" 
+                            value={Math.round((fi.pdfWidth * 2.54 * 10) / 72) / 10} 
+                            onChange={e => {
+                              const newW = (parseFloat(e.target.value) * 72) / 2.54;
+                              if (newW > 0) setFloatingImages(prev => prev.map(p => p.id === fi.id ? { ...p, pdfWidth: newW } : p));
+                            }}
+                            className="w-10 bg-zinc-800 rounded px-1 py-0.5 text-right no-spinners outline-none focus:ring-1 focus:ring-blue-500"
+                            step="0.1"
+                          />
+                          <span className="text-zinc-500 text-[10px]">cm</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-zinc-500 w-3 text-center">H</span>
+                          <input 
+                            type="number" 
+                            value={Math.round((fi.pdfHeight * 2.54 * 10) / 72) / 10} 
+                            onChange={e => {
+                              const newH = (parseFloat(e.target.value) * 72) / 2.54;
+                              if (newH > 0) setFloatingImages(prev => prev.map(p => p.id === fi.id ? { ...p, pdfHeight: newH } : p));
+                            }}
+                            className="w-10 bg-zinc-800 rounded px-1 py-0.5 text-right no-spinners outline-none focus:ring-1 focus:ring-blue-500"
+                            step="0.1"
+                          />
+                          <span className="text-zinc-500 text-[10px]">cm</span>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                  
+                  {/* CSS Resize Handle (only active when hovered to avoid drag conflict) */}
+                  <div 
+                    className="absolute bottom-0 right-0 w-3 h-3 cursor-se-resize bg-blue-500/50"
+                    onPointerDown={e => {
+                      e.stopPropagation(); // prevent dragging
+                      const startX = e.clientX;
+                      const startY = e.clientY;
+                      const startW = fi.pdfWidth * scale;
+                      const startH = fi.pdfHeight * scale;
+                      
+                      const handleMove = (me: PointerEvent) => {
+                        const newW = startW + (me.clientX - startX);
+                        const newH = startH + (me.clientY - startY);
+                        setFloatingImages(prev => prev.map(p => p.id === fi.id ? { ...p, pdfWidth: Math.max(10, newW / scale), pdfHeight: Math.max(10, newH / scale) } : p));
+                      };
+                      
+                      const handleUp = () => {
+                        window.removeEventListener('pointermove', handleMove);
+                        window.removeEventListener('pointerup', handleUp);
+                      };
+                      
+                      window.addEventListener('pointermove', handleMove);
+                      window.addEventListener('pointerup', handleUp);
+                    }}
+                  />
+                </div>
+              );
+            })}
 
             {/* Hidden input — captures all keystrokes invisibly */}
             <textarea

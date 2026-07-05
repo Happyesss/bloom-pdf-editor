@@ -113,3 +113,33 @@ export {
   extractPages,
   insertPagesFromDocument,
 } from './writer/page-operations';
+
+// ── Watermark ──
+export {
+  buildTextWatermarkContent,
+  buildImageWatermarkContent,
+  buildPatternWatermarkContent,
+  createOpacityExtGState,
+  createWatermarkImageXObject,
+  applyWatermarkToPage,
+  applyWatermarks,
+} from './watermark/watermark-engine';
+export type {
+  WatermarkType,
+  WatermarkBase,
+  TextWatermark,
+  ImageWatermark,
+  PatternWatermark,
+  WatermarkPosition,
+  Watermark,
+} from './watermark/watermark-engine';
+
+export { detectWatermarks, detectWatermarksOnPage } from './watermark/watermark-detector';
+export type { DetectedWatermark, DetectionOptions } from './watermark/watermark-detector';
+
+export {
+  removeWatermarks,
+  removeWatermarksFromPage,
+  detectAndRemoveAllWatermarks,
+} from './watermark/watermark-remover';
+export type { RemovalResult, BatchRemovalResult } from './watermark/watermark-remover';

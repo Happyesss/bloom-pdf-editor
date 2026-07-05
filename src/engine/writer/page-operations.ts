@@ -208,10 +208,135 @@ export function insertBlankPage(
 
   // Rebuild page tree
   rebuildKidsArray(doc);
-  updatePageCount(doc.catalog, doc.objects, 1);
 }
 
-// ─── Page extraction ────────────────────────────────────────────────────────
+// ─── Page extraction and merging ──────────────────────────────────────────────
+
+/**
+ * Insert pages from a source document into a target document at a specific index.
+ */
+export function insertPagesFromDocument(
+  target: PDFDocumentData,
+  source: PDFDocumentData,
+  insertAtIndex: number,
+): void {
+  const refMap = new Map<string, PDFRef>(); // old source key → new target ref
+
+  function copyObject(obj: PDFObject): PDFObject {
+    if (obj instanceof PDFRef) {
+      const oldKey = obj.toKey();
+      if (refMap.has(oldKey)) return refMap.get(oldKey)!;
+
+      // Allocate new ref in target
+      const newRef = new PDFRef(getNextObjNum(target), 0);
+      refMap.set(oldKey, newRef);
+      // Temporarily set it in target to reserve the ref and prevent infinite loops on circular refs
+      target.objects.set(newRef.toKey(), new PDFDict()); 
+
+      // Copy the referenced object from source
+      const resolved = source.objects.get(oldKey);
+      if (resolved) {
+        target.objects.set(newRef.toKey(), copyObjectDeep(resolved));
+      }
+
+      return newRef;
+    }
+    return copyObjectDeep(obj);
+  }
+
+  function copyObjectDeep(obj: PDFObject): PDFObject {
+    if (obj instanceof PDFDict) {
+      const newDict = new PDFDict();
+      const entries = Array.from(obj.entries());
+      for (let i = 0; i < entries.length; i++) {
+        const [key, value] = entries[i];
+        // Skip Parent reference for pages so we can re-parent them to target's Pages tree
+        if (key === 'Parent') continue;
+        newDict.set(key, copyObject(value));
+      }
+      return newDict;
+    }
+
+    if (obj instanceof PDFArray) {
+      return new PDFArray(obj.items.map((item) => copyObject(item)));
+    }
+
+    if (obj instanceof PDFStream) {
+      const newStreamDict = copyObjectDeep(obj.dict) as PDFDict;
+      return new PDFStream(
+        newStreamDict,
+        new Uint8Array(obj.rawBytes),
+        obj.decodedBytes ? new Uint8Array(obj.decodedBytes) : null,
+      );
+    }
+
+    if (obj instanceof PDFRef) {
+      return copyObject(obj);
+    }
+
+    return obj;
+  }
+
+  const targetPagesRef = target.catalog.getRef('Pages');
+  if (!targetPagesRef) throw new Error('Target document has no Pages root');
+
+  const pagesToInsert: PDFPageInfo[] = [];
+
+  for (let i = 0; i < source.pages.length; i++) {
+    const srcPage = source.pages[i];
+    if (!srcPage) continue;
+
+    const pageRef = copyObject(srcPage.ref) as PDFRef;
+
+    // Set parent to target pages node
+    const pageDictObj = target.objects.get(pageRef.toKey());
+    if (pageDictObj instanceof PDFDict) {
+      pageDictObj.set('Parent', targetPagesRef);
+
+      const copiedResources = copyObjectDeep(srcPage.resources) as PDFDict;
+      pageDictObj.set('Resources', copiedResources);
+      pageDictObj.set('MediaBox', new PDFArray([
+        new PDFNumber(srcPage.mediaBox.x),
+        new PDFNumber(srcPage.mediaBox.y),
+        new PDFNumber(srcPage.mediaBox.x + srcPage.mediaBox.width),
+        new PDFNumber(srcPage.mediaBox.y + srcPage.mediaBox.height),
+      ]));
+      pageDictObj.set('CropBox', new PDFArray([
+        new PDFNumber(srcPage.cropBox.x),
+        new PDFNumber(srcPage.cropBox.y),
+        new PDFNumber(srcPage.cropBox.x + srcPage.cropBox.width),
+        new PDFNumber(srcPage.cropBox.y + srcPage.cropBox.height),
+      ]));
+      pageDictObj.set('Rotate', new PDFNumber(srcPage.rotate));
+
+      pagesToInsert.push({
+        index: insertAtIndex + i,
+        dict: pageDictObj,
+        mediaBox: { ...srcPage.mediaBox },
+        cropBox: { ...srcPage.cropBox },
+        rotate: srcPage.rotate,
+        ref: pageRef,
+        resources: copiedResources,
+        contentRefs: srcPage.contentRefs.map((ref) => {
+          const mapped = refMap.get(ref.toKey());
+          return (mapped as PDFRef) ?? ref;
+        }),
+      });
+    }
+  }
+
+  // Insert into target pages array
+  target.pages.splice(insertAtIndex, 0, ...pagesToInsert);
+
+  // Re-index pages
+  for (let i = insertAtIndex; i < target.pages.length; i++) {
+    target.pages[i].index = i;
+  }
+
+  // Rebuild page tree
+  rebuildKidsArray(target);
+}
+
 
 /**
  * Extract specific pages into a new document data structure.
@@ -301,6 +426,22 @@ export function extractPages(
     if (pageDictObj instanceof PDFDict) {
       pageDictObj.set('Parent', pagesRef);
 
+      const copiedResources = copyObjectDeep(srcPage.resources) as PDFDict;
+      pageDictObj.set('Resources', copiedResources);
+      pageDictObj.set('MediaBox', new PDFArray([
+        new PDFNumber(srcPage.mediaBox.x),
+        new PDFNumber(srcPage.mediaBox.y),
+        new PDFNumber(srcPage.mediaBox.x + srcPage.mediaBox.width),
+        new PDFNumber(srcPage.mediaBox.y + srcPage.mediaBox.height),
+      ]));
+      pageDictObj.set('CropBox', new PDFArray([
+        new PDFNumber(srcPage.cropBox.x),
+        new PDFNumber(srcPage.cropBox.y),
+        new PDFNumber(srcPage.cropBox.x + srcPage.cropBox.width),
+        new PDFNumber(srcPage.cropBox.y + srcPage.cropBox.height),
+      ]));
+      pageDictObj.set('Rotate', new PDFNumber(srcPage.rotate));
+
       newPages.push({
         index: i,
         dict: pageDictObj,
@@ -308,10 +449,10 @@ export function extractPages(
         cropBox: { ...srcPage.cropBox },
         rotate: srcPage.rotate,
         ref: pageRef,
-        resources: pageDictObj.getDict('Resources') ?? new PDFDict(),
+        resources: copiedResources,
         contentRefs: srcPage.contentRefs.map((ref) => {
           const mapped = refMap.get(ref.toKey());
-          return mapped ?? ref;
+          return (mapped as PDFRef) ?? ref;
         }),
       });
     }

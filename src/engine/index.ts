@@ -111,4 +111,5 @@ export {
   rotatePageBy,
   insertBlankPage,
   extractPages,
+  insertPagesFromDocument,
 } from './writer/page-operations';

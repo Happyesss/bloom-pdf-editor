@@ -30,7 +30,7 @@ export default function EditorPage() {
   const [fileName, setFileName] = useState('');
   const [currentPage, setCurrentPage] = useState(0);
   const [totalPages, setTotalPages] = useState(0);
-  const [scale, setScale] = useState(1.5);
+  const [scale, setScale] = useState(1.0);
   const [isLoading, setIsLoading] = useState(true);
   const [isRendering, setIsRendering] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1236,6 +1236,52 @@ export default function EditorPage() {
     router.push('/');
   }, [router]);
 
+  // ── Page Operations ──
+  const handleDeletePage = useCallback((index: number) => {
+    if (!doc || !engineRef.current) return;
+    try {
+      engineRef.current.deletePage(doc, index);
+      setDoc({ ...doc });
+      setTotalPages(doc.pages.length);
+      if (currentPage >= doc.pages.length) {
+        setCurrentPage(Math.max(0, doc.pages.length - 1));
+      }
+    } catch (e) {
+      setError(`Failed to delete page: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [doc, currentPage]);
+
+  const handleInsertBlankPage = useCallback((index: number) => {
+    if (!doc || !engineRef.current) return;
+    try {
+      engineRef.current.insertBlankPage(doc, index);
+      setDoc({ ...doc });
+      setTotalPages(doc.pages.length);
+      if (currentPage >= index) {
+        setCurrentPage(currentPage + 1);
+      }
+    } catch (e) {
+      setError(`Failed to insert blank page: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [doc, currentPage]);
+
+  const handleInsertPdf = useCallback(async (index: number, file: File) => {
+    if (!doc || !engineRef.current) return;
+    try {
+      const buffer = await file.arrayBuffer();
+      const sourceDoc = await engineRef.current.parsePDF(new Uint8Array(buffer));
+      engineRef.current.insertPagesFromDocument(doc, sourceDoc, index);
+      setDoc({ ...doc });
+      setTotalPages(doc.pages.length);
+      if (currentPage >= index) {
+        setCurrentPage(currentPage + sourceDoc.pages.length);
+      }
+    } catch (e) {
+      setError(`Failed to insert PDF: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [doc, currentPage]);
+
+
   // ── Keyboard shortcuts (global — NOT during editing) ──
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -1625,6 +1671,9 @@ export default function EditorPage() {
             commitDrawingsToPdf();
             setCurrentPage(i);
           }}
+          onDeletePage={handleDeletePage}
+          onInsertBlankPage={handleInsertBlankPage}
+          onInsertPdf={handleInsertPdf}
         />
       </div>
 

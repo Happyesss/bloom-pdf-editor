@@ -7,7 +7,7 @@ import { X, Loader2, ChevronLeft, Image } from 'lucide-react';
 
 // We import types only — the engine modules are loaded dynamically
 // because they require browser APIs (canvas, DecompressionStream)
-import type { PDFDocumentData, RenderResult, TextRun, ImageItem, PathItem, DisplayItem, TextWatermark, ImageWatermark, Watermark } from '@/engine';
+import type { PDFDocumentData, RenderResult, TextRun, ImageItem, PathItem, DisplayItem, TextWatermark, ImageWatermark, Watermark, DetectedWatermark } from '@/engine';
 
 import type { EditorTool, ToolDef, PathType, DrawnPath, FloatingText, FloatingImage } from './types';
 import { TOOLS } from './types';
@@ -180,6 +180,8 @@ export default function EditorPage() {
   const [watermarkSize, setWatermarkSize] = useState(100);
   const [watermarkPosition, setWatermarkPosition] = useState('center');
   const [watermarkMosaic, setWatermarkMosaic] = useState(false);
+  const [watermarkLivePreview, setWatermarkLivePreview] = useState(true);
+  const [showApplySuccessModal, setShowApplySuccessModal] = useState(false);
   const [watermarkPageFrom, setWatermarkPageFrom] = useState(1);
   const [watermarkPageTo, setWatermarkPageTo] = useState(1);
   const [watermarkLayer, setWatermarkLayer] = useState<'above' | 'below'>('above');
@@ -187,6 +189,9 @@ export default function EditorPage() {
   const [watermarkImageFile, setWatermarkImageFile] = useState<File | null>(null);
   const [watermarkImageBytes, setWatermarkImageBytes] = useState<Uint8Array | null>(null);
   const [watermarkImageDims, setWatermarkImageDims] = useState<{ width: number; height: number } | null>(null);
+  
+  const [detectedWatermarks, setDetectedWatermarks] = useState<DetectedWatermark[] | null>(null);
+  const [isConfirmingRemoval, setIsConfirmingRemoval] = useState(false);
 
   // Display items (images/paths) for selection overlays
   const [displayItems, setDisplayItems] = useState<(ImageItem | PathItem)[]>([]);
@@ -1425,6 +1430,8 @@ export default function EditorPage() {
       Promise.all(updatePromises).then(() => {
         setDoc({ ...doc });
         setRenderKey(k => k + 1);
+        setWatermarkLivePreview(false);
+        setShowApplySuccessModal(true);
       }).catch(err => {
         console.error('[Editor] Apply watermark failed:', err);
         setError(`Failed to apply watermark: ${err instanceof Error ? err.message : String(err)}`);
@@ -1435,18 +1442,39 @@ export default function EditorPage() {
     }
   }, [doc, watermarkType, watermarkText, watermarkFontName, watermarkOpacity, watermarkRotation, watermarkSize, watermarkPosition, watermarkMosaic, watermarkPageFrom, watermarkPageTo, watermarkLayer, watermarkColor, watermarkImageBytes, watermarkImageDims, watermarkImageFile]);
 
-  const handleRemoveWatermarks = useCallback(() => {
+  const handleScanWatermarks = useCallback(() => {
     if (!doc || !engineRef.current) return;
     try {
-      const { removal } = engineRef.current.detectAndRemoveAllWatermarks(doc);
+      const detections = engineRef.current.detectWatermarks(doc);
+      setDetectedWatermarks(detections);
+    } catch (e) {
+      console.error('[Editor] Scan watermarks failed:', e);
+      setError(`Failed to scan watermarks: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [doc]);
+
+  const handleConfirmRemoveWatermarks = useCallback(() => {
+    setIsConfirmingRemoval(true);
+  }, []);
+
+  const executeRemoveWatermarks = useCallback(() => {
+    if (!doc || !engineRef.current || !detectedWatermarks) return;
+    try {
+      const removal = engineRef.current.removeWatermarks(doc, detectedWatermarks);
       console.log('[Editor] Removed watermarks:', removal);
       setDoc({ ...doc });
       setRenderKey(k => k + 1);
+      setDetectedWatermarks(null);
+      setIsConfirmingRemoval(false);
     } catch (e) {
       console.error('[Editor] Remove watermarks failed:', e);
       setError(`Failed to remove watermarks: ${e instanceof Error ? e.message : String(e)}`);
     }
-  }, [doc]);
+  }, [doc, detectedWatermarks]);
+
+  const handleCancelScan = useCallback(() => {
+    setDetectedWatermarks(null);
+  }, []);
 
 
   // ── Download / Save ──
@@ -1684,8 +1712,13 @@ export default function EditorPage() {
           setWatermarkLayer={setWatermarkLayer}
           watermarkColor={watermarkColor}
           setWatermarkColor={setWatermarkColor}
+          watermarkLivePreview={watermarkLivePreview}
+          setWatermarkLivePreview={setWatermarkLivePreview}
           onApplyWatermark={handleApplyWatermark}
-          onRemoveWatermarks={handleRemoveWatermarks}
+          hasScannedWatermarks={detectedWatermarks !== null}
+          onScanWatermarks={handleScanWatermarks}
+          onRemoveWatermarks={handleConfirmRemoveWatermarks}
+          onCancelScan={handleCancelScan}
         />
 
         <input
@@ -1728,7 +1761,7 @@ export default function EditorPage() {
             />
 
             {/* DOM overlays for FloatingText */}
-            {activeTool === 'watermark' && (
+            {activeTool === 'watermark' && watermarkLivePreview && (
               <WatermarkPreview 
                 doc={doc}
                 currentPage={currentPage}
@@ -1745,6 +1778,27 @@ export default function EditorPage() {
                 watermarkImageDims={watermarkImageDims}
                 watermarkImageFile={watermarkImageFile}
               />
+            )}
+            
+            {/* Detected watermarks dotted boxes */}
+            {activeTool === 'watermark' && detectedWatermarks?.filter(d => d.pageIndex === currentPage).map(dw => 
+              dw.positions.map((pos, i) => {
+                const { cssX, cssY } = pdfToCanvas(
+                  pos.x, 
+                  pos.y, 
+                  scale, 
+                  doc?.pages[currentPage]?.mediaBox.height || 0,
+                  doc?.pages[currentPage]?.mediaBox.x || 0,
+                  doc?.pages[currentPage]?.mediaBox.y || 0
+                );
+                return (
+                  <div 
+                    key={`det-${dw.id}-${i}`}
+                    className="absolute border-2 border-red-500 border-dashed bg-red-500/20 rounded z-50 pointer-events-none animate-in fade-in zoom-in duration-200"
+                    style={{ left: cssX, top: cssY, width: 120 * scale, height: 60 * scale, transform: 'translate(-50%, -50%)' }}
+                  />
+                );
+              })
             )}
             
             {floatingTexts.map(ft => {
@@ -1981,6 +2035,47 @@ export default function EditorPage() {
           <button onClick={() => setError(null)} className="text-red-400 hover:text-red-300 transition-colors">
             <X size={16} />
           </button>
+        </div>
+      )}
+      {isConfirmingRemoval && (
+        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div className="bg-zinc-900 border border-zinc-700/50 rounded-xl p-6 shadow-2xl max-w-sm w-full">
+            <h3 className="text-white font-medium text-lg mb-2">Remove Watermarks</h3>
+            <p className="text-zinc-400 text-sm mb-6">
+              Do you really want to remove the detected watermarks from this document? This action cannot be undone.
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button 
+                onClick={() => setIsConfirmingRemoval(false)}
+                className="px-4 py-2 rounded font-medium text-sm text-zinc-300 hover:text-white hover:bg-zinc-800 transition-colors"
+              >
+                Cancel
+              </button>
+              <button 
+                onClick={executeRemoveWatermarks}
+                className="px-4 py-2 rounded font-medium text-sm bg-red-600 hover:bg-red-700 text-white transition-colors"
+              >
+                Yes, Remove
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showApplySuccessModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div className="bg-zinc-900 border border-zinc-700/50 rounded-xl p-6 shadow-2xl max-w-sm w-full text-center">
+            <h3 className="text-white font-medium text-lg mb-4">Watermark Applied</h3>
+            <p className="text-zinc-400 text-sm mb-6 leading-relaxed">
+              Watermark has been applied and live preview is off. To add more watermarks, turn on the live preview to preview it live.
+            </p>
+            <button 
+              onClick={() => setShowApplySuccessModal(false)}
+              className="w-full px-4 py-2.5 rounded font-medium text-sm bg-blue-600 hover:bg-blue-700 text-white transition-colors"
+            >
+              Okay
+            </button>
+          </div>
         </div>
       )}
     </div>

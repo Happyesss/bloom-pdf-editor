@@ -74,8 +74,13 @@ interface PropertiesSidebarProps {
   setWatermarkType?: (v: 'text' | 'image') => void;
   watermarkImageFile?: File | null;
   onWatermarkImageUpload?: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  hasScannedWatermarks?: boolean;
+  onScanWatermarks?: () => void;
   onApplyWatermark?: () => void;
   onRemoveWatermarks?: () => void;
+  onCancelScan?: () => void;
+  watermarkLivePreview?: boolean;
+  setWatermarkLivePreview?: (v: boolean) => void;
 }
 
 export function PropertiesSidebar(props: PropertiesSidebarProps) {
@@ -102,7 +107,9 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
     watermarkPageTo = 1, setWatermarkPageTo,
     watermarkLayer = 'above', setWatermarkLayer,
     watermarkColor = '#000000', setWatermarkColor,
-    onApplyWatermark, onRemoveWatermarks
+    hasScannedWatermarks, onScanWatermarks,
+    onApplyWatermark, onRemoveWatermarks, onCancelScan,
+    watermarkLivePreview = true, setWatermarkLivePreview
   } = props;
 
   if (!['text', 'addtext', 'draw', 'highlight', 'erase', 'select', 'watermark'].includes(activeTool)) return null;
@@ -518,7 +525,14 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
       {/* WATERMARK PROPERTIES */}
       {activeTool === 'watermark' && (
         <div className="flex flex-col h-full bg-zinc-900/95 animate-in fade-in slide-in-from-left-4 duration-300">
-          <div className="flex border-b border-zinc-700/50">
+          <div className="p-4 pb-2">
+            <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-zinc-400 uppercase">
+              <Stamp size={14} />
+              Watermark options
+            </div>
+          </div>
+          
+          <div className="flex border-b border-zinc-700/50 mt-2">
             <button
               onClick={() => setWatermarkType?.('text')}
               className={`flex-1 py-4 flex flex-col items-center gap-2 text-[11px] font-medium transition-colors ${watermarkType === 'text' ? 'text-zinc-100 bg-zinc-800/50' : 'text-zinc-400 hover:text-zinc-200'}`}
@@ -533,6 +547,17 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
               {watermarkType === 'image' && <div className="absolute top-2 left-4 w-3 h-3 bg-green-500 rounded-full flex items-center justify-center text-white text-[8px]">✓</div>}
               <Image size={24} className={watermarkType === 'image' ? 'text-zinc-200' : 'text-zinc-500'} />
               Place image
+            </button>
+          </div>
+          
+          {/* Live Preview Toggle */}
+          <div className="p-4 border-b border-zinc-700/50 flex items-center justify-between bg-zinc-900/80">
+            <span className="text-xs font-semibold text-zinc-300">Live Preview</span>
+            <button 
+              onClick={() => setWatermarkLivePreview?.(!watermarkLivePreview)}
+              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${watermarkLivePreview ? 'bg-blue-600' : 'bg-zinc-600'}`}
+            >
+              <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${watermarkLivePreview ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
             </button>
           </div>
 
@@ -730,12 +755,30 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
               >
                 Add watermark
               </button>
-              <button
-                onClick={onRemoveWatermarks}
-                className="w-full bg-zinc-800 hover:bg-red-900/50 hover:text-red-400 text-zinc-300 border border-zinc-700 hover:border-red-800/50 rounded py-2 text-xs font-semibold transition-colors"
-              >
-                Scan &amp; Remove All
-              </button>
+              
+              {!hasScannedWatermarks ? (
+                <button
+                  onClick={onScanWatermarks}
+                  className="w-full bg-zinc-800 hover:bg-red-900/50 hover:text-red-400 text-zinc-300 border border-zinc-700 hover:border-red-800/50 rounded py-2 text-xs font-semibold transition-colors"
+                >
+                  Scan for Watermarks
+                </button>
+              ) : (
+                <div className="flex gap-2">
+                  <button
+                    onClick={onCancelScan}
+                    className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700 rounded py-2 text-xs font-semibold transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={onRemoveWatermarks}
+                    className="flex-1 bg-red-600 hover:bg-red-700 text-white rounded py-2 text-xs font-semibold transition-colors"
+                  >
+                    Remove Selected
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </div>

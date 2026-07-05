@@ -1,7 +1,7 @@
 import React, { MutableRefObject } from 'react';
 import { 
   Type, TextCursorInput, Image, PenTool, Highlighter, Eraser, MousePointer2, 
-  X, Trash2, Bold, Italic, AlignLeft, AlignCenter, AlignRight, Minus, Plus 
+  X, Trash2, Bold, Italic, Underline, AlignLeft, AlignCenter, AlignRight, Minus, Plus 
 } from 'lucide-react';
 import type { EditorTool } from '../types';
 import type { TextRun, ImageItem, PathItem } from '@/engine';
@@ -19,6 +19,8 @@ interface PropertiesSidebarProps {
   setTextBold: (v: boolean | ((prev: boolean) => boolean)) => void;
   textItalic: boolean;
   setTextItalic: (v: boolean | ((prev: boolean) => boolean)) => void;
+  textUnderline: boolean;
+  setTextUnderline: (v: boolean | ((prev: boolean) => boolean)) => void;
   textColor: string;
   setTextColor: (v: string) => void;
   textAlign: 'left' | 'center' | 'right';
@@ -51,7 +53,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
   const {
     activeTool, setActiveTool, selectedRun,
     textFontFamily, setTextFontFamily, textFontSize, setTextFontSize,
-    textBold, setTextBold, textItalic, setTextItalic, textColor, setTextColor,
+    textBold, setTextBold, textItalic, setTextItalic, textUnderline, setTextUnderline, textColor, setTextColor,
     textAlign, setTextAlign, textOpacity, setTextOpacity,
     replacingImageIdRef, fileInputRef,
     drawColor, setDrawColor, drawSize, setDrawSize,
@@ -142,14 +144,23 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
               <button
                 onClick={() => setTextBold(b => !b)}
                 className={`flex-1 py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${textBold ? 'bg-blue-600/20 text-blue-400 border border-blue-500/50' : 'bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700'}`}
+                title="Bold"
               >
-                <Bold size={14} /> Bold
+                <Bold size={16} />
               </button>
               <button
                 onClick={() => setTextItalic(i => !i)}
                 className={`flex-1 py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${textItalic ? 'bg-blue-600/20 text-blue-400 border border-blue-500/50' : 'bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700'}`}
+                title="Italic"
               >
-                <Italic size={14} /> Italic
+                <Italic size={16} />
+              </button>
+              <button
+                onClick={() => setTextUnderline(u => !u)}
+                className={`flex-1 py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${textUnderline ? 'bg-blue-600/20 text-blue-400 border border-blue-500/50' : 'bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700'}`}
+                title="Underline"
+              >
+                <Underline size={16} />
               </button>
             </div>
           </div>
@@ -260,12 +271,31 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
           </div>
           <div className="space-y-1.5">
             <label className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase">Color</label>
+            <div className="flex items-center gap-2">
+              <input
+                type="color"
+                value={drawColor}
+                onChange={(e) => setDrawColor(e.target.value)}
+                className="w-8 h-8 rounded-lg border border-zinc-700 cursor-pointer bg-transparent"
+              />
+              <input 
+                type="text"
+                value={drawColor.toUpperCase()}
+                onChange={(e) => {
+                   let val = e.target.value;
+                   if (!val.startsWith('#')) val = '#' + val;
+                   setDrawColor(val);
+                }}
+                className="w-16 bg-transparent border-b border-zinc-700 text-[11px] text-zinc-300 font-mono focus:outline-none focus:border-blue-500 uppercase pb-0.5"
+                maxLength={7}
+              />
+            </div>
             <div className="grid grid-cols-4 gap-2 p-2 bg-zinc-800/50 rounded-lg border border-zinc-700/50">
               {['#ef4444', '#3b82f6', '#22c55e', '#f59e0b', '#a855f7', '#ec4899', '#14b8a6', '#f4f4f5'].map(color => (
                 <button
                   key={color}
                   onClick={() => setDrawColor(color)}
-                  className={`w-6 h-6 rounded-full mx-auto transition-transform ${drawColor === color ? 'scale-125 ring-2 ring-zinc-300 ring-offset-2 ring-offset-zinc-900' : 'hover:scale-110'}`}
+                  className={`w-6 h-6 rounded-full mx-auto transition-transform ${drawColor.toLowerCase() === color.toLowerCase() ? 'scale-125 ring-2 ring-zinc-300 ring-offset-2 ring-offset-zinc-900' : 'hover:scale-110'}`}
                   style={{ backgroundColor: color }}
                 />
               ))}
@@ -303,12 +333,31 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
           </div>
           <div className="space-y-1.5">
             <label className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase">Color</label>
+            <div className="flex items-center gap-2">
+              <input
+                type="color"
+                value={highlightColor}
+                onChange={(e) => setHighlightColor(e.target.value)}
+                className="w-8 h-8 rounded-lg border border-zinc-700 cursor-pointer bg-transparent"
+              />
+              <input 
+                type="text"
+                value={highlightColor.toUpperCase()}
+                onChange={(e) => {
+                   let val = e.target.value;
+                   if (!val.startsWith('#')) val = '#' + val;
+                   setHighlightColor(val);
+                }}
+                className="w-16 bg-transparent border-b border-zinc-700 text-[11px] text-zinc-300 font-mono focus:outline-none focus:border-blue-500 uppercase pb-0.5"
+                maxLength={7}
+              />
+            </div>
             <div className="grid grid-cols-4 gap-2 p-2 bg-zinc-800/50 rounded-lg border border-zinc-700/50">
               {['#fffb00', '#00ff00', '#00e5ff', '#ff00ff', '#ff8c00', '#ff6b6b', '#a78bfa', '#67e8f9'].map(color => (
                 <button
                   key={color}
                   onClick={() => setHighlightColor(color)}
-                  className={`w-6 h-6 rounded-full mx-auto transition-transform ${highlightColor === color ? 'scale-125 ring-2 ring-zinc-300 ring-offset-2 ring-offset-zinc-900' : 'hover:scale-110'}`}
+                  className={`w-6 h-6 rounded-full mx-auto transition-transform ${highlightColor.toLowerCase() === color.toLowerCase() ? 'scale-125 ring-2 ring-zinc-300 ring-offset-2 ring-offset-zinc-900' : 'hover:scale-110'}`}
                   style={{ backgroundColor: color }}
                 />
               ))}

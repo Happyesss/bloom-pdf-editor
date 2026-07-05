@@ -93,6 +93,7 @@ export default function EditorPage() {
   const [textColor, setTextColor] = useState('#000000');
   const [textBold, setTextBold] = useState(false);
   const [textItalic, setTextItalic] = useState(false);
+  const [textUnderline, setTextUnderline] = useState(false);
   const [textAlign, setTextAlign] = useState<'left' | 'center' | 'right'>('left');
   const [textOpacity, setTextOpacity] = useState(100);
 
@@ -1347,6 +1348,8 @@ export default function EditorPage() {
           setTextBold={setTextBold}
           textItalic={textItalic}
           setTextItalic={setTextItalic}
+          textUnderline={textUnderline}
+          setTextUnderline={setTextUnderline}
           textColor={textColor}
           setTextColor={setTextColor}
           textAlign={textAlign}

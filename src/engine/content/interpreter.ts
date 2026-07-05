@@ -140,6 +140,8 @@ export interface TextRun {
   /** Color */
   fillColor: [number, number, number];
   fillAlpha: number;
+  /** Is underlined */
+  isUnderline?: boolean;
 }
 
 export interface GlyphPosition {

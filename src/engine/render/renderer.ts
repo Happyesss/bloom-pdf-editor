@@ -378,6 +378,35 @@ function drawTextRun(
     ctx.font = `${style} ${weight} ${effFontSize}px ${family}`;
 
     ctx.fillText(glyph.unicode, 0, 0);
+    
+    // Draw underline if enabled
+    if (run.isUnderline) {
+      ctx.beginPath();
+      // Draw a line slightly below the baseline (e.g. at y = 0.1 * effFontSize)
+      // Note that Y is flipped (scale(1, -1)) so positive Y is down in visual space
+      // but in the current coordinate system, after scale(1, -1), Y points down,
+      // and baseline is 0. So y = 0.1 draws below baseline.
+      // Wait, the font size is effective, so 0.1 is 10% of font size.
+      // Actually, since we scale the context by effFontSize by passing it to font size,
+      // the coordinates passed to fillText are 0, 0.
+      // The context is not scaled by effFontSize, but the font size is set to effFontSizepx.
+      // So the y coordinate for the line should be relative to effFontSize.
+      const underlineY = effFontSize * 0.15;
+      const underlineThickness = Math.max(1, effFontSize * 0.05);
+      
+      // Calculate visual width of the character
+      // glyph.textSpaceWidth is the width of the glyph in Text Space (w0/1000).
+      // Or we can just use the next glyph's x position, but that might include spacing.
+      // We can also measure the text using ctx.measureText.
+      const charWidth = ctx.measureText(glyph.unicode).width;
+      
+      ctx.moveTo(0, underlineY);
+      ctx.lineTo(charWidth, underlineY);
+      ctx.lineWidth = underlineThickness;
+      ctx.strokeStyle = fillColor;
+      ctx.stroke();
+    }
+
     ctx.restore();
   }
 

@@ -111,7 +111,9 @@ export type WatermarkPosition =
   | 'bottom-left'
   | 'bottom-right'
   | 'top-center'
-  | 'bottom-center';
+  | 'bottom-center'
+  | 'center-left'
+  | 'center-right';
 
 export type Watermark = TextWatermark | ImageWatermark | PatternWatermark;
 
@@ -123,57 +125,51 @@ export type Watermark = TextWatermark | ImageWatermark | PatternWatermark;
  */
 export function buildTextWatermarkContent(wm: TextWatermark, pageWidth: number, pageHeight: number): Uint8Array {
   const lines: string[] = [];
-
-  // Save graphics state
   lines.push('q');
 
-  // Set opacity via ExtGState if needed
   if (wm.opacity < 1) {
     lines.push(`/${getExtGStateName(wm.id)} gs`);
   }
 
-  // Set fill color
   const [r, g, b] = wm.color;
   lines.push(`${fmtNum(r)} ${fmtNum(g)} ${fmtNum(b)} rg`);
   lines.push(`${fmtNum(r)} ${fmtNum(g)} ${fmtNum(b)} RG`);
 
-  // Set font
   lines.push(`/${wm.fontName} ${wm.fontSize} Tf`);
 
+  const wmWidth = wm.text.length * wm.fontSize * 0.5;
+  const wmHeight = wm.fontSize;
+
   if (wm.tile) {
-    // Tiled text watermark — draw text at grid positions
     const spacing = wm.tileSpacing || 300;
     const cols = Math.ceil(pageWidth / spacing) + 1;
     const rows = Math.ceil(pageHeight / spacing) + 1;
 
     for (let row = 0; row < rows; row++) {
       for (let col = 0; col < cols; col++) {
-        const x = col * spacing - spacing / 2;
-        const y = row * spacing - spacing / 2;
+        const cx = col * spacing;
+        const cy = row * spacing;
 
         lines.push('q');
-        // Translate to position, rotate
-        lines.push(`1 0 0 1 ${fmtNum(x)} ${fmtNum(y)} cm`);
+        lines.push(`1 0 0 1 ${fmtNum(cx)} ${fmtNum(cy)} cm`);
         if (wm.rotation !== 0) {
           const rad = (wm.rotation * Math.PI) / 180;
           const cos = Math.cos(rad);
           const sin = Math.sin(rad);
           lines.push(`${fmtNum(cos)} ${fmtNum(sin)} ${fmtNum(-sin)} ${fmtNum(cos)} 0 0 cm`);
         }
-        // Draw text centered
         lines.push('BT');
-        lines.push(`0 0 Td`);
+        lines.push(`${fmtNum(-wmWidth / 2)} ${fmtNum(-wmHeight * 0.3)} Td`);
         lines.push(`(${escapePDFString(wm.text)}) Tj`);
         lines.push('ET');
         lines.push('Q');
       }
     }
   } else {
-    // Single watermark at specified position
-    const [px, py] = resolvePosition(wm.position, pageWidth, pageHeight);
+    const { cx, cy } = resolvePosition(wm.position, pageWidth, pageHeight, wmWidth, wmHeight);
 
     lines.push('q');
-    lines.push(`1 0 0 1 ${fmtNum(px)} ${fmtNum(py)} cm`);
+    lines.push(`1 0 0 1 ${fmtNum(cx)} ${fmtNum(cy)} cm`);
 
     if (wm.rotation !== 0) {
       const rad = (wm.rotation * Math.PI) / 180;
@@ -183,15 +179,13 @@ export function buildTextWatermarkContent(wm: TextWatermark, pageWidth: number, 
     }
 
     lines.push('BT');
-    lines.push(`0 0 Td`);
+    lines.push(`${fmtNum(-wmWidth / 2)} ${fmtNum(-wmHeight * 0.3)} Td`);
     lines.push(`(${escapePDFString(wm.text)}) Tj`);
     lines.push('ET');
     lines.push('Q');
   }
 
-  // Restore graphics state
   lines.push('Q');
-
   return stringToBytes(lines.join('\n') + '\n');
 }
 
@@ -205,7 +199,6 @@ export function buildImageWatermarkContent(
   imageXObjectName: string,
 ): Uint8Array {
   const lines: string[] = [];
-
   lines.push('q');
 
   if (wm.opacity < 1) {
@@ -219,35 +212,33 @@ export function buildImageWatermarkContent(
 
     for (let row = 0; row < rows; row++) {
       for (let col = 0; col < cols; col++) {
-        const x = col * spacing - spacing / 2 - wm.width / 2;
-        const y = row * spacing - spacing / 2 - wm.height / 2;
+        const cx = col * spacing;
+        const cy = row * spacing;
 
         lines.push('q');
-        lines.push(`1 0 0 1 ${fmtNum(x)} ${fmtNum(y)} cm`);
+        lines.push(`1 0 0 1 ${fmtNum(cx)} ${fmtNum(cy)} cm`);
         if (wm.rotation !== 0) {
           const rad = (wm.rotation * Math.PI) / 180;
           const cos = Math.cos(rad);
           const sin = Math.sin(rad);
           lines.push(`${fmtNum(cos)} ${fmtNum(sin)} ${fmtNum(-sin)} ${fmtNum(cos)} 0 0 cm`);
         }
-        lines.push(`${fmtNum(wm.width)} 0 0 ${fmtNum(wm.height)} 0 0 cm`);
+        lines.push(`${fmtNum(wm.width)} 0 0 ${fmtNum(wm.height)} ${fmtNum(-wm.width / 2)} ${fmtNum(-wm.height / 2)} cm`);
         lines.push(`/${imageXObjectName} Do`);
         lines.push('Q');
       }
     }
   } else {
-    const [px, py] = resolvePosition(wm.position, pageWidth, pageHeight);
-    const x = px - wm.width / 2;
-    const y = py - wm.height / 2;
+    const { cx, cy } = resolvePosition(wm.position, pageWidth, pageHeight, wm.width, wm.height);
 
-    lines.push(`1 0 0 1 ${fmtNum(x)} ${fmtNum(y)} cm`);
+    lines.push(`1 0 0 1 ${fmtNum(cx)} ${fmtNum(cy)} cm`);
     if (wm.rotation !== 0) {
       const rad = (wm.rotation * Math.PI) / 180;
       const cos = Math.cos(rad);
       const sin = Math.sin(rad);
       lines.push(`${fmtNum(cos)} ${fmtNum(sin)} ${fmtNum(-sin)} ${fmtNum(cos)} 0 0 cm`);
     }
-    lines.push(`${fmtNum(wm.width)} 0 0 ${fmtNum(wm.height)} 0 0 cm`);
+    lines.push(`${fmtNum(wm.width)} 0 0 ${fmtNum(wm.height)} ${fmtNum(-wm.width / 2)} ${fmtNum(-wm.height / 2)} cm`);
     lines.push(`/${imageXObjectName} Do`);
   }
 
@@ -377,6 +368,7 @@ export function applyWatermarkToPage(
   // Build the watermark content operators
   switch (watermark.type) {
     case 'text':
+      registerFontInResources(page, objects, watermark.fontName, getNextObjNum);
       watermarkContent = buildTextWatermarkContent(watermark, pageWidth, pageHeight);
       break;
     case 'image': {
@@ -519,6 +511,40 @@ function registerXObjectInResources(
   xobjects.set(name, ref);
 }
 
+function registerFontInResources(
+  page: PDFPageInfo,
+  objects: Map<string, PDFObject>,
+  fontName: string,
+  getNextObjNum: () => number
+): void {
+  const resources = getOrCreateResourcesDict(page, objects);
+  let fonts = resources.get('Font');
+  if (fonts instanceof PDFRef) {
+    fonts = objects.get(fonts.toKey()) as PDFDict;
+  }
+  if (!fonts || !(fonts instanceof PDFDict)) {
+    fonts = new PDFDict();
+    resources.set('Font', fonts);
+  }
+
+  if (!fonts.has(fontName)) {
+    const fontDict = new PDFDict();
+    fontDict.set('Type', new PDFName('Font'));
+    fontDict.set('Subtype', new PDFName('Type1'));
+    
+    let baseFont = fontName;
+    if (fontName === 'Arial') baseFont = 'Helvetica';
+    else if (fontName === 'Times New Roman') baseFont = 'Times-Roman';
+    
+    fontDict.set('BaseFont', new PDFName(baseFont));
+    
+    const objNum = getNextObjNum();
+    const ref = new PDFRef(objNum, 0);
+    objects.set(ref.toKey(), fontDict);
+    fonts.set(fontName, ref);
+  }
+}
+
 function registerExtGStateInResources(
   page: PDFPageInfo,
   objects: Map<string, PDFObject>,
@@ -561,19 +587,58 @@ function resolvePosition(
   position: WatermarkPosition | [number, number],
   pageWidth: number,
   pageHeight: number,
-): [number, number] {
-  if (Array.isArray(position)) return position;
+  wmWidth: number,
+  wmHeight: number,
+): { cx: number, cy: number } {
+  const pad = 30; // 30 points padding
+
+  if (Array.isArray(position)) {
+    return { cx: position[0], cy: position[1] };
+  }
+
+  let cx = pageWidth / 2;
+  let cy = pageHeight / 2;
 
   switch (position) {
-    case 'center': return [pageWidth / 2, pageHeight / 2];
-    case 'top-left': return [pageWidth * 0.15, pageHeight * 0.85];
-    case 'top-right': return [pageWidth * 0.85, pageHeight * 0.85];
-    case 'bottom-left': return [pageWidth * 0.15, pageHeight * 0.15];
-    case 'bottom-right': return [pageWidth * 0.85, pageHeight * 0.15];
-    case 'top-center': return [pageWidth / 2, pageHeight * 0.85];
-    case 'bottom-center': return [pageWidth / 2, pageHeight * 0.15];
-    default: return [pageWidth / 2, pageHeight / 2];
+    case 'top-left': 
+      cx = pad + wmWidth / 2;
+      cy = pageHeight - pad - wmHeight / 2;
+      break;
+    case 'top-center':
+      cx = pageWidth / 2;
+      cy = pageHeight - pad - wmHeight / 2;
+      break;
+    case 'top-right':
+      cx = pageWidth - pad - wmWidth / 2;
+      cy = pageHeight - pad - wmHeight / 2;
+      break;
+    case 'center-left':
+      cx = pad + wmWidth / 2;
+      cy = pageHeight / 2;
+      break;
+    case 'center':
+      cx = pageWidth / 2;
+      cy = pageHeight / 2;
+      break;
+    case 'center-right':
+      cx = pageWidth - pad - wmWidth / 2;
+      cy = pageHeight / 2;
+      break;
+    case 'bottom-left':
+      cx = pad + wmWidth / 2;
+      cy = pad + wmHeight / 2;
+      break;
+    case 'bottom-center':
+      cx = pageWidth / 2;
+      cy = pad + wmHeight / 2;
+      break;
+    case 'bottom-right':
+      cx = pageWidth - pad - wmWidth / 2;
+      cy = pad + wmHeight / 2;
+      break;
   }
+  
+  return { cx, cy };
 }
 
 function getExtGStateName(watermarkId: string): string {

@@ -5,10 +5,11 @@ import {
   Highlighter, 
   PenTool, 
   Eraser,
+  Stamp,
   LucideIcon
 } from 'lucide-react';
 
-export type EditorTool = 'select' | 'text' | 'addtext' | 'highlight' | 'draw' | 'erase';
+export type EditorTool = 'select' | 'text' | 'addtext' | 'highlight' | 'draw' | 'erase' | 'watermark';
 
 export interface ToolDef {
   id: EditorTool;
@@ -23,6 +24,7 @@ export const TOOLS: ToolDef[] = [
   { id: 'highlight', label: 'Highlight', icon: Highlighter, shortcut: 'H' },
   { id: 'draw',      label: 'Draw',      icon: PenTool,  shortcut: 'D' },
   { id: 'erase',     label: 'Erase',     icon: Eraser,  shortcut: 'E' },
+  { id: 'watermark', label: 'Watermark', icon: Stamp,   shortcut: 'W' },
 ];
 
 export type PathType = 'draw' | 'highlight';

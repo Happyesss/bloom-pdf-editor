@@ -247,6 +247,7 @@ function removeAnnotationWatermarks(
 
   for (let i = 0; i < annotArray.length; i++) {
     const item = annotArray.get(i);
+    if (!item) continue;
     if (item instanceof PDFRef && refsToRemove.has(item.toKey())) {
       // Also delete the annotation object from the object map
       objects.delete(item.toKey());
@@ -262,9 +263,10 @@ function removeAnnotationWatermarks(
     const resolved = objects.get(annots.toKey());
     if (resolved instanceof PDFArray) {
       // Mutate in place by clearing and re-adding
-      while (resolved.length > 0) resolved.pop();
+      resolved.items.length = 0;
       for (let i = 0; i < newArray.length; i++) {
-        resolved.push(newArray.get(i));
+        const item = newArray.get(i);
+        if (item) resolved.push(item);
       }
     }
   } else {
@@ -274,7 +276,7 @@ function removeAnnotationWatermarks(
   for (const det of detections) {
     const wasRemoved = det.metadata?.annotRef && refsToRemove.has(det.metadata.annotRef as string);
     results.push({
-      success: wasRemoved || false,
+      success: !!wasRemoved,
       watermarkId: det.id,
       pageIndex,
       strategy: 'annotation-removal',
@@ -724,7 +726,7 @@ export function detectAndRemoveAllWatermarks(
       total: detections.length,
       removed: 0,
       failed: 0,
-      results: detections.map(d => ({
+      results: detections.map((d: DetectedWatermark) => ({
         success: false,
         watermarkId: d.id,
         pageIndex: d.pageIndex,
@@ -752,9 +754,14 @@ function stringToBytes(s: string): Uint8Array {
 }
 
 function escapePDFStringForRegex(text: string): string {
-  // Escape regex special chars AND PDF string special chars
-  return text
-    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  // 1. Convert text to how it is escaped inside a PDF string literal
+  const pdfEscaped = text
+    .replace(/\\/g, '\\\\')
     .replace(/\(/g, '\\(')
-    .replace(/\)/g, '\\)');
+    .replace(/\)/g, '\\)')
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n');
+    
+  // 2. Escape the resulting string for use in a JavaScript RegExp
+  return pdfEscaped.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

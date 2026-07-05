@@ -7,7 +7,7 @@ import { X, Loader2, ChevronLeft, Image } from 'lucide-react';
 
 // We import types only — the engine modules are loaded dynamically
 // because they require browser APIs (canvas, DecompressionStream)
-import type { PDFDocumentData, RenderResult, TextRun, ImageItem, PathItem, DisplayItem } from '@/engine';
+import type { PDFDocumentData, RenderResult, TextRun, ImageItem, PathItem, DisplayItem, TextWatermark, ImageWatermark, Watermark } from '@/engine';
 
 import type { EditorTool, ToolDef, PathType, DrawnPath, FloatingText, FloatingImage } from './types';
 import { TOOLS } from './types';
@@ -16,6 +16,94 @@ import { canvasToPdf, pdfToCanvas, hitTestTextRuns, hitTestDisplayItems, caretIn
 import { Toolbar } from './components/Toolbar';
 import { ToolsSidebar } from './components/ToolsSidebar';
 import { PropertiesSidebar } from './components/PropertiesSidebar';
+
+const WatermarkPreview = ({
+  doc, currentPage, scale, watermarkType, watermarkText, watermarkFontName, watermarkSize,
+  watermarkColor, watermarkOpacity, watermarkRotation, watermarkMosaic, watermarkPosition,
+  watermarkImageDims, watermarkImageFile
+}: any) => {
+  const [imgUrl, setImgUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (watermarkType === 'image' && watermarkImageFile) {
+      const url = URL.createObjectURL(watermarkImageFile);
+      setImgUrl(url);
+      return () => URL.revokeObjectURL(url);
+    } else {
+      setImgUrl(null);
+    }
+  }, [watermarkType, watermarkImageFile]);
+
+  if (!doc || !doc.pages[currentPage]) return null;
+  
+  const page = doc.pages[currentPage];
+  const pageWidth = page.mediaBox.width;
+  const pageHeight = page.mediaBox.height;
+  const opacity = watermarkOpacity / 100;
+  const fontSizeCss = (72 * (watermarkSize / 100)) * scale;
+  const imgWidthCss = watermarkImageDims?.width ? (watermarkImageDims.width * (watermarkSize / 100)) * scale : 0;
+  const imgHeightCss = watermarkImageDims?.height ? (watermarkImageDims.height * (watermarkSize / 100)) * scale : 0;
+  const padCss = 30 * scale;
+
+  let wmWidthCss = watermarkType === 'text' ? (watermarkText.length * (fontSizeCss / scale) * 0.5 * scale) : imgWidthCss;
+  let wmHeightCss = watermarkType === 'text' ? fontSizeCss : imgHeightCss;
+
+  const renderItem = (cx: number, cy: number, key: string) => (
+    <div
+      key={key}
+      style={{
+        position: 'absolute',
+        left: `${cx}px`,
+        top: `${cy}px`,
+        transform: `translate(-50%, -50%) rotate(${-watermarkRotation}deg)`,
+        opacity,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        pointerEvents: 'none'
+      }}
+    >
+      {watermarkType === 'text' ? (
+        <span style={{ fontSize: fontSizeCss, color: watermarkColor, fontFamily: watermarkFontName, whiteSpace: 'pre', lineHeight: 1 }}>
+          {watermarkText}
+        </span>
+      ) : imgUrl ? (
+        <img src={imgUrl} style={{ width: imgWidthCss, height: imgHeightCss }} alt="watermark" />
+      ) : null}
+    </div>
+  );
+
+  if (watermarkMosaic) {
+    const spacing = 300 * scale;
+    const cols = Math.ceil((pageWidth * scale) / spacing) + 1;
+    const rows = Math.ceil((pageHeight * scale) / spacing) + 1;
+    const tiles = [];
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        tiles.push(renderItem(c * spacing, r * spacing, `tile-${r}-${c}`));
+      }
+    }
+    return <div className="absolute inset-0 z-40 pointer-events-none overflow-hidden">{tiles}</div>;
+  }
+
+  let cx = (pageWidth / 2) * scale;
+  let cy = (pageHeight / 2) * scale;
+  
+  switch (watermarkPosition) {
+    case 'top-left': cx = padCss + wmWidthCss / 2; cy = padCss + wmHeightCss / 2; break;
+    case 'top-center': cx = (pageWidth / 2) * scale; cy = padCss + wmHeightCss / 2; break;
+    case 'top-right': cx = (pageWidth * scale) - padCss - wmWidthCss / 2; cy = padCss + wmHeightCss / 2; break;
+    case 'center-left': cx = padCss + wmWidthCss / 2; cy = (pageHeight / 2) * scale; break;
+    case 'center': cx = (pageWidth / 2) * scale; cy = (pageHeight / 2) * scale; break;
+    case 'center-right': cx = (pageWidth * scale) - padCss - wmWidthCss / 2; cy = (pageHeight / 2) * scale; break;
+    case 'bottom-left': cx = padCss + wmWidthCss / 2; cy = (pageHeight * scale) - padCss - wmHeightCss / 2; break;
+    case 'bottom-center': cx = (pageWidth / 2) * scale; cy = (pageHeight * scale) - padCss - wmHeightCss / 2; break;
+    case 'bottom-right': cx = (pageWidth * scale) - padCss - wmWidthCss / 2; cy = (pageHeight * scale) - padCss - wmHeightCss / 2; break;
+  }
+
+  return <div className="absolute inset-0 z-40 pointer-events-none overflow-hidden">{renderItem(cx, cy, 'single')}</div>;
+}
+
 import { ThumbnailsSidebar } from './components/ThumbnailsSidebar';
 import { StatusBar } from './components/StatusBar';
 
@@ -66,10 +154,10 @@ export default function EditorPage() {
   const [isDrawing, setIsDrawing] = useState(false);
   const [drawnPaths, setDrawnPaths] = useState<DrawnPath[]>([]);
   const currentDrawPath = useRef<{ x: number; y: number }[]>([]);
-  
+
   const [floatingTexts, setFloatingTexts] = useState<FloatingText[]>([]);
   const [activeFloatingTextId, setActiveFloatingTextId] = useState<string | null>(null);
-  
+
   const [floatingImages, setFloatingImages] = useState<FloatingImage[]>([]);
   const [activeFloatingImageId, setActiveFloatingImageId] = useState<string | null>(null);
   const replacingImageIdRef = useRef<string | null>(null);
@@ -82,6 +170,23 @@ export default function EditorPage() {
   const [highlightColor, setHighlightColor] = useState('#fffb00');
   const [highlightSize, setHighlightSize] = useState(16);
   const [eraserSize, setEraserSize] = useState(20);
+
+  // Watermark tool properties
+  const [watermarkType, setWatermarkType] = useState<'text' | 'image'>('text');
+  const [watermarkText, setWatermarkText] = useState('Bloom PDF');
+  const [watermarkFontName, setWatermarkFontName] = useState('Arial');
+  const [watermarkOpacity, setWatermarkOpacity] = useState(25);
+  const [watermarkRotation, setWatermarkRotation] = useState(45);
+  const [watermarkSize, setWatermarkSize] = useState(100);
+  const [watermarkPosition, setWatermarkPosition] = useState('center');
+  const [watermarkMosaic, setWatermarkMosaic] = useState(false);
+  const [watermarkPageFrom, setWatermarkPageFrom] = useState(1);
+  const [watermarkPageTo, setWatermarkPageTo] = useState(1);
+  const [watermarkLayer, setWatermarkLayer] = useState<'above' | 'below'>('above');
+  const [watermarkColor, setWatermarkColor] = useState('#000000');
+  const [watermarkImageFile, setWatermarkImageFile] = useState<File | null>(null);
+  const [watermarkImageBytes, setWatermarkImageBytes] = useState<Uint8Array | null>(null);
+  const [watermarkImageDims, setWatermarkImageDims] = useState<{ width: number; height: number } | null>(null);
 
   // Display items (images/paths) for selection overlays
   const [displayItems, setDisplayItems] = useState<(ImageItem | PathItem)[]>([]);
@@ -160,7 +265,7 @@ export default function EditorPage() {
       setIsGeneratingThumbnails(true);
       const engine = engineRef.current!;
       const thumbs: string[] = [];
-      
+
       try {
         for (let i = 0; i < doc!.pages.length; i++) {
           if (cancelled) break;
@@ -425,7 +530,7 @@ export default function EditorPage() {
       ctx.lineJoin = 'round';
       for (const path of drawnPaths) {
         if (path.points.length < 2) continue;
-        
+
         ctx.beginPath();
         if (path.type === 'highlight') {
           ctx.globalCompositeOperation = 'multiply';
@@ -434,10 +539,10 @@ export default function EditorPage() {
           ctx.globalCompositeOperation = 'source-over';
           ctx.globalAlpha = 1.0;
         }
-        
+
         ctx.strokeStyle = path.color;
         ctx.lineWidth = path.size;
-        
+
         ctx.moveTo(path.points[0].x, path.points[0].y);
         for (let i = 1; i < path.points.length; i++) {
           ctx.lineTo(path.points[i].x, path.points[i].y);
@@ -701,10 +806,10 @@ export default function EditorPage() {
         clearTimeout(blurTimeoutRef.current);
         blurTimeoutRef.current = null;
       }
-      
+
       if (!doc || !renderResult) return;
       const page = doc.pages[currentPage];
-      
+
       const newBox: FloatingText = {
         id: Math.random().toString(36).substr(2, 9),
         pdfX,
@@ -714,7 +819,7 @@ export default function EditorPage() {
         fontFamily: textFontFamily,
         color: textColor,
       };
-      
+
       setFloatingTexts(prev => [...prev, newBox]);
       setActiveFloatingTextId(newBox.id);
       setActiveTool('text');
@@ -772,15 +877,15 @@ export default function EditorPage() {
       let newPaths: DrawnPath[] = [];
       let modified = false;
       for (const path of prev) {
-        let currentSubPath: {x:number, y:number}[] = [];
+        let currentSubPath: { x: number, y: number }[] = [];
         for (const p of path.points) {
           const dx = p.x - x;
           const dy = p.y - y;
-          if (Math.sqrt(dx*dx + dy*dy) > eraserRadius) {
+          if (Math.sqrt(dx * dx + dy * dy) > eraserRadius) {
             currentSubPath.push(p);
           } else {
             if (currentSubPath.length > 0) {
-              newPaths.push({ ...path, id: Math.random().toString(36).substr(2,9), points: currentSubPath });
+              newPaths.push({ ...path, id: Math.random().toString(36).substr(2, 9), points: currentSubPath });
               currentSubPath = [];
               modified = true;
             }
@@ -790,7 +895,7 @@ export default function EditorPage() {
           if (currentSubPath.length === path.points.length) {
             newPaths.push(path);
           } else {
-            newPaths.push({ ...path, id: Math.random().toString(36).substr(2,9), points: currentSubPath });
+            newPaths.push({ ...path, id: Math.random().toString(36).substr(2, 9), points: currentSubPath });
             modified = true;
           }
         }
@@ -808,20 +913,20 @@ export default function EditorPage() {
     const engine = engineRef.current;
     const page = doc.pages[currentPage];
     let currentObjNum = engine.getNextObjNum(doc);
-    
+
     const pageHeight = renderResult?.pageHeight || page.mediaBox.height;
-    
+
     for (const p of paths) {
       if (p.points.length < 2) continue;
-      
+
       const inkPathsPdf: number[][] = [[]];
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      
+
       for (const pt of p.points) {
         const { pdfX, pdfY } = canvasToPdf(
-          pt.x, pt.y, scale, 
-          renderResult?.pageWidth || page.mediaBox.width, 
-          pageHeight, 
+          pt.x, pt.y, scale,
+          renderResult?.pageWidth || page.mediaBox.width,
+          pageHeight,
           page.mediaBox.x, page.mediaBox.y
         );
         inkPathsPdf[0].push(pdfX, pdfY);
@@ -830,11 +935,11 @@ export default function EditorPage() {
         maxX = Math.max(maxX, pdfX);
         maxY = Math.max(maxY, pdfY);
       }
-      
+
       const lw = p.size / scale;
-      const rect = { x: minX - lw, y: minY - lw, width: (maxX - minX) + lw*2, height: (maxY - minY) + lw*2 };
+      const rect = { x: minX - lw, y: minY - lw, width: (maxX - minX) + lw * 2, height: (maxY - minY) + lw * 2 };
       const rgb = hexToRGB(p.color);
-      
+
       const annotation: import('@/engine').InkAnnotation = {
         type: 'Ink',
         rect,
@@ -843,32 +948,32 @@ export default function EditorPage() {
         inkPaths: inkPathsPdf,
         lineWidth: lw,
       };
-      
+
       const { dict, appearanceStream } = engine.createAnnotationDict(annotation, currentObjNum++);
       if (appearanceStream) {
         doc.objects.set(`${currentObjNum}_0`, appearanceStream as import('@/engine').PDFObject);
         currentObjNum++;
       }
-      
+
       const annotRef = new engine.PDFRef(currentObjNum, 0);
       engine.addAnnotationToPage(page.dict, dict, annotRef, doc.objects);
       currentObjNum++;
     }
-    
+
     if (fTexts.length > 0 || fImages.length > 0) {
       let contentBytes = engine.getPageContentBytes(page, doc.objects);
       let newContentBytes: any = new Uint8Array(contentBytes);
-      
+
       for (const ft of fTexts) {
         if (!ft.text.trim()) continue;
         const rgb = hexToRGB(ft.color);
-        
+
         newContentBytes = engine.insertTextRun(
           newContentBytes, page, doc.objects,
           ft.text, ft.pdfX, ft.pdfY, ft.fontSize, rgb
         );
       }
-      
+
       for (const fi of fImages) {
         const { newContentBytes: b } = await engine.insertImageRun(
           newContentBytes, page, doc.objects,
@@ -881,12 +986,12 @@ export default function EditorPage() {
         );
         newContentBytes = b;
       }
-      
+
       engine.updatePageContent(page.contentRefs, newContentBytes, doc.objects).catch((e: Error) => {
         console.error('[Editor] Failed to commit content:', e);
       });
     }
-    
+
     setDrawnPaths([]);
     setFloatingTexts([]);
     setFloatingImages([]);
@@ -961,18 +1066,18 @@ export default function EditorPage() {
   const handleDrawEnd = useCallback(() => {
     if (!isDrawing) return;
     setIsDrawing(false);
-    
+
     if (activeTool === 'erase') return;
 
     if (currentDrawPath.current.length > 1) {
       const newPath: DrawnPath = {
-        id: Math.random().toString(36).substr(2,9),
+        id: Math.random().toString(36).substr(2, 9),
         type: activeTool as PathType,
         color: activeTool === 'draw' ? drawColor : highlightColor,
         size: activeTool === 'draw' ? drawSize : highlightSize,
         points: [...currentDrawPath.current]
       };
-      
+
       setDrawnPaths(prev => [...prev, newPath]);
     }
     currentDrawPath.current = [];
@@ -992,27 +1097,27 @@ export default function EditorPage() {
       startPdfX: box.pdfX,
       startPdfY: box.pdfY
     };
-    
+
     const handleMove = (me: PointerEvent) => {
       if (!dragInfo.current || !doc || !renderResult) return;
       const dx = me.clientX - dragInfo.current.startX;
       const dy = me.clientY - dragInfo.current.startY;
       const pdfDx = dx / scale;
       const pdfDy = -dy / scale;
-      
+
       setFloatingTexts(prev => prev.map(p => p.id === id ? {
         ...p,
         pdfX: dragInfo.current!.startPdfX + pdfDx,
         pdfY: dragInfo.current!.startPdfY + pdfDy,
       } : p));
     };
-    
+
     const handleUp = () => {
       dragInfo.current = null;
       window.removeEventListener('pointermove', handleMove);
       window.removeEventListener('pointerup', handleUp);
     };
-    
+
     window.addEventListener('pointermove', handleMove);
     window.addEventListener('pointerup', handleUp);
   }, [floatingTexts, scale, doc, renderResult]);
@@ -1031,27 +1136,27 @@ export default function EditorPage() {
       startPdfX: box.pdfX,
       startPdfY: box.pdfY
     };
-    
+
     const handleMove = (me: PointerEvent) => {
       if (!dragInfo.current || !doc || !renderResult) return;
       const dx = me.clientX - dragInfo.current.startX;
       const dy = me.clientY - dragInfo.current.startY;
       const pdfDx = dx / scale;
       const pdfDy = -dy / scale;
-      
+
       setFloatingImages(prev => prev.map(p => p.id === id ? {
         ...p,
         pdfX: dragInfo.current!.startPdfX + pdfDx,
         pdfY: dragInfo.current!.startPdfY + pdfDy,
       } : p));
     };
-    
+
     const handleUp = () => {
       dragInfo.current = null;
       window.removeEventListener('pointermove', handleMove);
       window.removeEventListener('pointerup', handleUp);
     };
-    
+
     window.addEventListener('pointermove', handleMove);
     window.addEventListener('pointerup', handleUp);
   }, [floatingImages, scale, doc, renderResult]);
@@ -1072,7 +1177,7 @@ export default function EditorPage() {
           // Add new
           if (!doc || !renderResult) return;
           const page = doc.pages[currentPage];
-          
+
           let pdfWidth = img.width;
           let pdfHeight = img.height;
           const maxDim = 200;
@@ -1081,10 +1186,10 @@ export default function EditorPage() {
             pdfWidth *= ratio;
             pdfHeight *= ratio;
           }
-          
+
           const pdfX = page.mediaBox.width / 2 - pdfWidth / 2;
           const pdfY = page.mediaBox.height / 2 + pdfHeight / 2; // Center of screen
-          
+
           const newImg: FloatingImage = {
             id: Math.random().toString(36).substr(2, 9),
             pdfX,
@@ -1207,6 +1312,142 @@ export default function EditorPage() {
   const zoomOut = useCallback(() => {
     setScale(s => Math.max(0.5, s - 0.25));
   }, []);
+  // ── Watermark Handlers ──
+  const handleWatermarkImageUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setWatermarkImageFile(file);
+
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      const dataUrl = ev.target?.result as string;
+      const img = new window.Image();
+      img.onload = () => {
+        // Convert the image to JPEG using a canvas because the simplified PDF engine
+        // only correctly supports image/jpeg (DCTDecode) without complex FlateDecode logic.
+        const canvas = document.createElement('canvas');
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          // Fill with white background in case of transparent PNG
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(img, 0, 0);
+
+          canvas.toBlob(blob => {
+            if (blob) {
+              blob.arrayBuffer().then(buf => {
+                setWatermarkImageBytes(new Uint8Array(buf));
+                setWatermarkImageDims({ width: img.naturalWidth, height: img.naturalHeight });
+
+                // Override the file to be considered JPEG
+                const jpegFile = new File([blob], file.name.replace(/\.[^.]+$/, '.jpg'), { type: 'image/jpeg' });
+                setWatermarkImageFile(jpegFile);
+              });
+            }
+          }, 'image/jpeg', 0.9);
+        }
+      };
+      img.src = dataUrl;
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  }, []);
+
+  const handleApplyWatermark = useCallback(() => {
+    if (!doc || !engineRef.current) return;
+    try {
+      let wm: Watermark;
+
+      const pageIndices: number[] = [];
+      const totalPages = doc.pages.length;
+      const fromIdx = Math.max(0, watermarkPageFrom - 1);
+      const toIdx = Math.min(totalPages - 1, watermarkPageTo - 1);
+      for (let i = fromIdx; i <= toIdx; i++) {
+        pageIndices.push(i);
+      }
+
+      if (watermarkType === 'text') {
+        const r = parseInt(watermarkColor.slice(1, 3), 16) / 255;
+        const g = parseInt(watermarkColor.slice(3, 5), 16) / 255;
+        const b = parseInt(watermarkColor.slice(5, 7), 16) / 255;
+
+        wm = {
+          id: `wm-${Date.now()}`,
+          type: 'text',
+          text: watermarkText,
+          opacity: watermarkOpacity / 100,
+          color: [r, g, b],
+          rotation: watermarkRotation,
+          tile: watermarkMosaic,
+          layer: watermarkLayer,
+          fontName: watermarkFontName,
+          fontSize: Math.round(72 * (watermarkSize / 100)),
+          position: watermarkPosition as any,
+          pageIndices
+        };
+      } else {
+        if (!watermarkImageBytes || !watermarkImageDims || !watermarkImageFile) {
+          setError('Please upload an image first');
+          return;
+        }
+
+        const mimeType = watermarkImageFile.type === 'image/png' ? 'image/png' : 'image/jpeg';
+
+        wm = {
+          id: `wm-${Date.now()}`,
+          type: 'image',
+          imageBytes: watermarkImageBytes,
+          mimeType,
+          width: watermarkImageDims.width * (watermarkSize / 100),
+          height: watermarkImageDims.height * (watermarkSize / 100),
+          opacity: watermarkOpacity / 100,
+          rotation: watermarkRotation,
+          tile: watermarkMosaic,
+          layer: watermarkLayer,
+          position: watermarkPosition as any,
+          pageIndices
+        };
+      }
+
+      const results = engineRef.current.applyWatermarks(doc, [wm], () => engineRef.current!.getNextObjNum(doc));
+
+      const updatePromises: Promise<void>[] = [];
+      results.forEach((newBytes, pageIdx) => {
+        const page = doc.pages[pageIdx];
+        updatePromises.push(
+          engineRef.current!.updatePageContent(page.contentRefs, newBytes, doc.objects)
+        );
+      });
+
+      Promise.all(updatePromises).then(() => {
+        setDoc({ ...doc });
+        setRenderKey(k => k + 1);
+      }).catch(err => {
+        console.error('[Editor] Apply watermark failed:', err);
+        setError(`Failed to apply watermark: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    } catch (e) {
+      console.error('[Editor] Apply watermark failed:', e);
+      setError(`Failed to apply watermark: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [doc, watermarkType, watermarkText, watermarkFontName, watermarkOpacity, watermarkRotation, watermarkSize, watermarkPosition, watermarkMosaic, watermarkPageFrom, watermarkPageTo, watermarkLayer, watermarkColor, watermarkImageBytes, watermarkImageDims, watermarkImageFile]);
+
+  const handleRemoveWatermarks = useCallback(() => {
+    if (!doc || !engineRef.current) return;
+    try {
+      const { removal } = engineRef.current.detectAndRemoveAllWatermarks(doc);
+      console.log('[Editor] Removed watermarks:', removal);
+      setDoc({ ...doc });
+      setRenderKey(k => k + 1);
+    } catch (e) {
+      console.error('[Editor] Remove watermarks failed:', e);
+      setError(`Failed to remove watermarks: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [doc]);
+
 
   // ── Download / Save ──
   const handleDownload = useCallback(async () => {
@@ -1287,7 +1528,7 @@ export default function EditorPage() {
     function onKey(e: KeyboardEvent) {
       // Don't intercept when the hidden input has focus (editing)
       if (editingRun) return;
-      
+
       // Don't intercept when the user is typing in any text box or input
       if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA') return;
 
@@ -1332,8 +1573,8 @@ export default function EditorPage() {
         <p className="text-red-500 text-sm max-w-[400px] text-center leading-relaxed">
           {error}
         </p>
-        <button 
-          onClick={handleClose} 
+        <button
+          onClick={handleClose}
           className="mt-6 px-4 py-2 rounded-lg border border-zinc-700 text-zinc-300 hover:bg-zinc-800 transition-colors flex items-center gap-2"
         >
           <ChevronLeft size={16} /> Go Back
@@ -1342,21 +1583,21 @@ export default function EditorPage() {
     );
   }
 
-  const eraserSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${eraserSize}" height="${eraserSize}" viewBox="0 0 ${eraserSize} ${eraserSize}"><circle cx="${eraserSize/2}" cy="${eraserSize/2}" r="${eraserSize/2 - 1}" fill="rgba(255,255,255,0.4)" stroke="black" stroke-width="1"/></svg>`;
-  const eraserCursorUrl = `url('data:image/svg+xml;utf8,${encodeURIComponent(eraserSvg)}') ${eraserSize/2} ${eraserSize/2}, auto`;
-  
-  const cursorForTool = activeTool === 'text' ? 'text' 
-    : activeTool === 'draw' ? 'crosshair' 
-    : activeTool === 'highlight' ? 'pointer' 
-    : activeTool === 'erase' ? eraserCursorUrl 
-    : 'default';
+  const eraserSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${eraserSize}" height="${eraserSize}" viewBox="0 0 ${eraserSize} ${eraserSize}"><circle cx="${eraserSize / 2}" cy="${eraserSize / 2}" r="${eraserSize / 2 - 1}" fill="rgba(255,255,255,0.4)" stroke="black" stroke-width="1"/></svg>`;
+  const eraserCursorUrl = `url('data:image/svg+xml;utf8,${encodeURIComponent(eraserSvg)}') ${eraserSize / 2} ${eraserSize / 2}, auto`;
+
+  const cursorForTool = activeTool === 'text' ? 'text'
+    : activeTool === 'draw' ? 'crosshair'
+      : activeTool === 'highlight' ? 'pointer'
+        : activeTool === 'erase' ? eraserCursorUrl
+          : 'default';
 
   // ── Main editor UI ──
   return (
     <div className="flex flex-col h-screen font-sans bg-zinc-950 text-zinc-100 selection:bg-blue-500/30">
-      
+
       {/* ── Top toolbar ── */}
-      <Toolbar 
+      <Toolbar
         fileName={fileName}
         currentPage={currentPage}
         totalPages={totalPages}
@@ -1373,12 +1614,12 @@ export default function EditorPage() {
       />
 
       <div className="flex-1 flex overflow-hidden">
-        
+
         {/* ── Left sidebar (Tools only) ── */}
-        <ToolsSidebar 
-          activeTool={activeTool} 
-          setActiveTool={setActiveTool} 
-          highlightColor={highlightColor} 
+        <ToolsSidebar
+          activeTool={activeTool}
+          setActiveTool={setActiveTool}
+          highlightColor={highlightColor}
         />
 
         {/* ── Left Sidebar (Properties) ── */}
@@ -1417,6 +1658,34 @@ export default function EditorPage() {
           selectedDisplayItem={selectedDisplayItem}
           setSelectedDisplayItem={setSelectedDisplayItem}
           displayItems={displayItems}
+          watermarkType={watermarkType}
+          setWatermarkType={setWatermarkType}
+          watermarkImageFile={watermarkImageFile}
+          onWatermarkImageUpload={handleWatermarkImageUpload}
+          watermarkText={watermarkText}
+          setWatermarkText={setWatermarkText}
+          watermarkFontName={watermarkFontName}
+          setWatermarkFontName={setWatermarkFontName}
+          watermarkOpacity={watermarkOpacity}
+          setWatermarkOpacity={setWatermarkOpacity}
+          watermarkRotation={watermarkRotation}
+          setWatermarkRotation={setWatermarkRotation}
+          watermarkSize={watermarkSize}
+          setWatermarkSize={setWatermarkSize}
+          watermarkPosition={watermarkPosition}
+          setWatermarkPosition={setWatermarkPosition}
+          watermarkMosaic={watermarkMosaic}
+          setWatermarkMosaic={setWatermarkMosaic}
+          watermarkPageFrom={watermarkPageFrom}
+          setWatermarkPageFrom={setWatermarkPageFrom}
+          watermarkPageTo={watermarkPageTo}
+          setWatermarkPageTo={setWatermarkPageTo}
+          watermarkLayer={watermarkLayer}
+          setWatermarkLayer={setWatermarkLayer}
+          watermarkColor={watermarkColor}
+          setWatermarkColor={setWatermarkColor}
+          onApplyWatermark={handleApplyWatermark}
+          onRemoveWatermarks={handleRemoveWatermarks}
         />
 
         <input
@@ -1426,7 +1695,7 @@ export default function EditorPage() {
           className="hidden"
           onChange={handleImageUpload}
         />
-        
+
         {/* ── Canvas area ── */}
         <div className="flex-1 overflow-auto relative flex justify-center items-start py-12 checkerboard">
           {isRendering && (
@@ -1459,17 +1728,36 @@ export default function EditorPage() {
             />
 
             {/* DOM overlays for FloatingText */}
+            {activeTool === 'watermark' && (
+              <WatermarkPreview 
+                doc={doc}
+                currentPage={currentPage}
+                scale={scale}
+                watermarkType={watermarkType}
+                watermarkText={watermarkText}
+                watermarkFontName={watermarkFontName}
+                watermarkSize={watermarkSize}
+                watermarkColor={watermarkColor}
+                watermarkOpacity={watermarkOpacity}
+                watermarkRotation={watermarkRotation}
+                watermarkMosaic={watermarkMosaic}
+                watermarkPosition={watermarkPosition}
+                watermarkImageDims={watermarkImageDims}
+                watermarkImageFile={watermarkImageFile}
+              />
+            )}
+            
             {floatingTexts.map(ft => {
               const { cssX, cssY } = pdfToCanvas(
-                ft.pdfX, 
-                ft.pdfY, 
-                scale, 
-                doc?.pages[currentPage]?.mediaBox.height || 0, 
-                doc?.pages[currentPage]?.mediaBox.x || 0, 
+                ft.pdfX,
+                ft.pdfY,
+                scale,
+                doc?.pages[currentPage]?.mediaBox.height || 0,
+                doc?.pages[currentPage]?.mediaBox.x || 0,
                 doc?.pages[currentPage]?.mediaBox.y || 0
               );
               const isActive = activeFloatingTextId === ft.id;
-              
+
               return (
                 <div
                   key={ft.id}
@@ -1527,15 +1815,15 @@ export default function EditorPage() {
             {/* DOM overlays for FloatingImage */}
             {floatingImages.map(fi => {
               const { cssX, cssY } = pdfToCanvas(
-                fi.pdfX, 
-                fi.pdfY, 
-                scale, 
-                doc?.pages[currentPage]?.mediaBox.height || 0, 
-                doc?.pages[currentPage]?.mediaBox.x || 0, 
+                fi.pdfX,
+                fi.pdfY,
+                scale,
+                doc?.pages[currentPage]?.mediaBox.height || 0,
+                doc?.pages[currentPage]?.mediaBox.x || 0,
                 doc?.pages[currentPage]?.mediaBox.y || 0
               );
               const isActive = activeFloatingImageId === fi.id;
-              
+
               return (
                 <div
                   key={fi.id}
@@ -1549,12 +1837,12 @@ export default function EditorPage() {
                   onPointerDown={(e) => handleFloatingImagePointerDown(e, fi.id)}
                   onClick={(e) => e.stopPropagation()}
                 >
-                  <img 
-                    src={fi.dataUrl} 
-                    alt="floating" 
+                  <img
+                    src={fi.dataUrl}
+                    alt="floating"
                     className="w-full h-full object-fill pointer-events-none"
                   />
-                  
+
                   {isActive && (
                     <>
                       <button
@@ -1579,19 +1867,19 @@ export default function EditorPage() {
                       >
                         <Image size={12} />
                       </button>
-                      
+
                       {/* Dimensions panel in cm */}
-                      <div 
+                      <div
                         className="absolute top-0 -right-[110px] bg-zinc-900 text-white rounded p-2 shadow-xl border border-zinc-700 text-xs flex flex-col gap-2 z-30 w-24"
-                        onClick={e => e.stopPropagation()} 
+                        onClick={e => e.stopPropagation()}
                         onPointerDown={e => e.stopPropagation()}
                       >
                         <div className="text-[9px] text-zinc-400 font-bold uppercase tracking-wider mb-0.5">Dimensions</div>
                         <div className="flex items-center justify-between gap-1">
                           <span className="text-zinc-500 w-3 text-center">W</span>
-                          <input 
-                            type="number" 
-                            value={Math.round((fi.pdfWidth * 2.54 * 10) / 72) / 10} 
+                          <input
+                            type="number"
+                            value={Math.round((fi.pdfWidth * 2.54 * 10) / 72) / 10}
                             onChange={e => {
                               const newW = (parseFloat(e.target.value) * 72) / 2.54;
                               if (newW > 0) setFloatingImages(prev => prev.map(p => p.id === fi.id ? { ...p, pdfWidth: newW } : p));
@@ -1603,9 +1891,9 @@ export default function EditorPage() {
                         </div>
                         <div className="flex items-center justify-between gap-1">
                           <span className="text-zinc-500 w-3 text-center">H</span>
-                          <input 
-                            type="number" 
-                            value={Math.round((fi.pdfHeight * 2.54 * 10) / 72) / 10} 
+                          <input
+                            type="number"
+                            value={Math.round((fi.pdfHeight * 2.54 * 10) / 72) / 10}
                             onChange={e => {
                               const newH = (parseFloat(e.target.value) * 72) / 2.54;
                               if (newH > 0) setFloatingImages(prev => prev.map(p => p.id === fi.id ? { ...p, pdfHeight: newH } : p));
@@ -1618,9 +1906,9 @@ export default function EditorPage() {
                       </div>
                     </>
                   )}
-                  
+
                   {/* CSS Resize Handle (only active when hovered to avoid drag conflict) */}
-                  <div 
+                  <div
                     className="absolute bottom-0 right-0 w-3 h-3 cursor-se-resize bg-blue-500/50"
                     onPointerDown={e => {
                       e.stopPropagation(); // prevent dragging
@@ -1628,18 +1916,18 @@ export default function EditorPage() {
                       const startY = e.clientY;
                       const startW = fi.pdfWidth * scale;
                       const startH = fi.pdfHeight * scale;
-                      
+
                       const handleMove = (me: PointerEvent) => {
                         const newW = startW + (me.clientX - startX);
                         const newH = startH + (me.clientY - startY);
                         setFloatingImages(prev => prev.map(p => p.id === fi.id ? { ...p, pdfWidth: Math.max(10, newW / scale), pdfHeight: Math.max(10, newH / scale) } : p));
                       };
-                      
+
                       const handleUp = () => {
                         window.removeEventListener('pointermove', handleMove);
                         window.removeEventListener('pointerup', handleUp);
                       };
-                      
+
                       window.addEventListener('pointermove', handleMove);
                       window.addEventListener('pointerup', handleUp);
                     }}

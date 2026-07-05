@@ -29,6 +29,7 @@ import {
   PDFObject,
   PDFStream,
   PDFString,
+  PDFRef,
   type PDFPageInfo,
 } from '../types';
 

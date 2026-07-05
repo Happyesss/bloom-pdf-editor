@@ -63,6 +63,18 @@ export interface DrawnPath {
   points: { x: number; y: number }[];
 }
 
+export interface FloatingText {
+  id: string;
+  pdfX: number;
+  pdfY: number;
+  pdfWidth?: number;
+  pdfHeight?: number;
+  text: string;
+  fontSize: number;
+  fontFamily: string;
+  color: string;
+}
+
 // ─── Coordinate helpers ─────────────────────────────────────────────────────
 
 /** Convert a canvas CSS‐pixel mouse position to PDF user‐space coordinates. */
@@ -217,6 +229,10 @@ export default function EditorPage() {
   const [isDrawing, setIsDrawing] = useState(false);
   const [drawnPaths, setDrawnPaths] = useState<DrawnPath[]>([]);
   const currentDrawPath = useRef<{ x: number; y: number }[]>([]);
+  
+  const [floatingTexts, setFloatingTexts] = useState<FloatingText[]>([]);
+  const [activeFloatingTextId, setActiveFloatingTextId] = useState<string | null>(null);
+  const dragInfo = useRef<{ id: string; startX: number; startY: number; startPdfX: number; startPdfY: number } | null>(null);
 
   // Tool properties
   const [drawColor, setDrawColor] = useState('#ff3b30');
@@ -833,6 +849,7 @@ export default function EditorPage() {
           setEditingRun(null);
           setSelectedRun(null);
         }
+        setActiveFloatingTextId(null);
       }
     } else if (activeTool === 'addtext') {
       if (blurTimeoutRef.current) {
@@ -840,34 +857,23 @@ export default function EditorPage() {
         blurTimeoutRef.current = null;
       }
       
-      // Inject new text run at click position
-      try {
-        setIsSaving(true);
-        const engine = engineRef.current;
-        if (!engine) return;
-        const page = doc.pages[currentPage];
-        const contentBytes = engine.getPageContentBytes(page, doc.objects);
-        
-        // Push undo snapshot
-        undoStackRef.current.push({ pageIndex: currentPage, contentBytes: new Uint8Array(contentBytes) });
-        if (undoStackRef.current.length > 50) undoStackRef.current.shift();
-        redoStackRef.current = [];
-        
-        const newBytes = engine.insertTextRun(
-          contentBytes, page, doc.objects,
-          "New Text", pdfX, pdfY, textFontSize, hexToRGB(textColor)
-        );
-        
-        engine.updatePageContent(page.contentRefs, newBytes, doc.objects).then(() => {
-          setRenderKey(k => k + 1);
-        });
-      } catch (err) {
-        console.error('[Editor] Add text failed:', err);
-      } finally {
-        setIsSaving(false);
-        // Switch back to text edit tool so they can click it
-        setActiveTool('text');
-      }
+      if (!doc || !renderResult) return;
+      const page = doc.pages[currentPage];
+      
+      const newBox: FloatingText = {
+        id: Math.random().toString(36).substr(2, 9),
+        pdfX,
+        pdfY,
+        text: 'New Text',
+        fontSize: textFontSize,
+        fontFamily: textFontFamily,
+        color: textColor,
+      };
+      
+      setFloatingTexts(prev => [...prev, newBox]);
+      setActiveFloatingTextId(newBox.id);
+      setActiveTool('select');
+
     } else if (activeTool === 'highlight') {
       const hit = hitTestTextRuns(pdfX, pdfY, renderResult.textRuns);
       if (hit) setSelectedRun(hit);
@@ -948,16 +954,18 @@ export default function EditorPage() {
     });
   }, [eraserSize]);
 
-  // ── Commit drawings to PDF ──
-  const commitDrawingsToPdf = useCallback(() => {
-    if (!doc || !engineRef.current || drawnPaths.length === 0) return;
+  // ── Commit drawings and texts to PDF ──
+  const commitDrawingsToPdf = useCallback((pathsToCommit?: DrawnPath[], textsToCommit?: FloatingText[]) => {
+    const paths = pathsToCommit || drawnPaths;
+    const fTexts = textsToCommit || floatingTexts;
+    if (!doc || !engineRef.current || (paths.length === 0 && fTexts.length === 0)) return;
     const engine = engineRef.current;
     const page = doc.pages[currentPage];
     let currentObjNum = engine.getNextObjNum(doc);
     
     const pageHeight = renderResult?.pageHeight || page.mediaBox.height;
     
-    for (const p of drawnPaths) {
+    for (const p of paths) {
       if (p.points.length < 2) continue;
       
       const inkPathsPdf: number[][] = [[]];
@@ -1001,8 +1009,29 @@ export default function EditorPage() {
       currentObjNum++;
     }
     
+    if (fTexts.length > 0) {
+      let contentBytes = engine.getPageContentBytes(page, doc.objects);
+      let newContentBytes = new Uint8Array(contentBytes);
+      
+      for (const ft of fTexts) {
+        if (!ft.text.trim()) continue;
+        const rgb = hexToRGB(ft.color);
+        
+        newContentBytes = engine.insertTextRun(
+          newContentBytes, page, doc.objects,
+          ft.text, ft.pdfX, ft.pdfY, ft.fontSize, rgb
+        );
+      }
+      
+      engine.updatePageContent(page.contentRefs, newContentBytes, doc.objects).catch(e => {
+        console.error('[Editor] Failed to commit text:', e);
+      });
+    }
+    
     setDrawnPaths([]);
-  }, [doc, currentPage, drawnPaths, scale, renderResult]);
+    setFloatingTexts([]);
+    setActiveFloatingTextId(null);
+  }, [doc, currentPage, drawnPaths, floatingTexts, scale, renderResult]);
 
   const handleDrawStart = useCallback((e: React.MouseEvent) => {
     if (activeTool !== 'draw' && activeTool !== 'highlight' && activeTool !== 'erase') return;
@@ -1083,15 +1112,48 @@ export default function EditorPage() {
         points: [...currentDrawPath.current]
       };
       
-      // Immediately commit to PDF to use native annotation rendering
-      setDrawnPaths([newPath]);
-      setTimeout(() => {
-        commitDrawingsToPdf();
-        setRenderKey(k => k + 1);
-      }, 0);
+      setDrawnPaths(prev => [...prev, newPath]);
     }
     currentDrawPath.current = [];
   }, [isDrawing, activeTool, drawColor, drawSize, highlightColor, highlightSize, commitDrawingsToPdf]);
+
+  const handleFloatingTextPointerDown = useCallback((e: React.PointerEvent, id: string) => {
+    e.stopPropagation();
+    setActiveFloatingTextId(id);
+    const box = floatingTexts.find(b => b.id === id);
+    if (!box) return;
+    dragInfo.current = {
+      id,
+      startX: e.clientX,
+      startY: e.clientY,
+      startPdfX: box.pdfX,
+      startPdfY: box.pdfY
+    };
+    
+    const handleMove = (me: PointerEvent) => {
+      if (!dragInfo.current || !doc || !renderResult) return;
+      const dx = me.clientX - dragInfo.current.startX;
+      const dy = me.clientY - dragInfo.current.startY;
+      const pdfDx = dx / scale;
+      const pdfDy = -dy / scale;
+      
+      setFloatingTexts(prev => prev.map(p => p.id === id ? {
+        ...p,
+        pdfX: dragInfo.current!.startPdfX + pdfDx,
+        pdfY: dragInfo.current!.startPdfY + pdfDy,
+      } : p));
+    };
+    
+    const handleUp = () => {
+      dragInfo.current = null;
+      window.removeEventListener('pointermove', handleMove);
+      window.removeEventListener('pointerup', handleUp);
+    };
+    
+    window.addEventListener('pointermove', handleMove);
+    window.addEventListener('pointerup', handleUp);
+  }, [floatingTexts, scale, doc, renderResult]);
+
 
   // ── Hidden input handler — this is where all typing is captured ──
   const handleHiddenInput = useCallback((e: React.FormEvent<HTMLTextAreaElement>) => {
@@ -1746,6 +1808,72 @@ export default function EditorPage() {
                 pointerEvents: ['draw', 'highlight', 'erase'].includes(activeTool) ? 'auto' : 'none',
               }}
             />
+
+            {/* DOM overlays for FloatingText */}
+            {floatingTexts.map(ft => {
+              const { cssX, cssY } = pdfToCanvas(
+                ft.pdfX, 
+                ft.pdfY, 
+                scale, 
+                doc?.pages[currentPage]?.mediaBox.height || 0, 
+                doc?.pages[currentPage]?.mediaBox.x || 0, 
+                doc?.pages[currentPage]?.mediaBox.y || 0
+              );
+              const isActive = activeFloatingTextId === ft.id;
+              
+              return (
+                <div
+                  key={ft.id}
+                  className={`absolute z-20 cursor-move border-2 ${isActive ? 'border-blue-500 border-dashed' : 'border-transparent hover:border-zinc-500 hover:border-dashed'} p-1 -m-1`}
+                  style={{
+                    left: cssX,
+                    top: cssY - (ft.fontSize * scale),
+                  }}
+                  onPointerDown={(e) => handleFloatingTextPointerDown(e, ft.id)}
+                >
+                  {isActive && (
+                    <button
+                      className="absolute -top-3 -right-3 bg-red-500 text-white rounded-full p-1 shadow hover:bg-red-600 transition-colors z-30"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setFloatingTexts(prev => prev.filter(p => p.id !== ft.id));
+                        if (activeFloatingTextId === ft.id) setActiveFloatingTextId(null);
+                      }}
+                    >
+                      <X size={12} />
+                    </button>
+                  )}
+                  <textarea
+                    value={ft.text}
+                    onChange={(e) => {
+                      setFloatingTexts(prev => prev.map(p => p.id === ft.id ? { ...p, text: e.target.value } : p));
+                    }}
+                    onFocus={() => setActiveFloatingTextId(ft.id)}
+                    className="bg-transparent outline-none overflow-hidden block resize"
+                    style={{
+                      fontFamily: ft.fontFamily,
+                      fontSize: ft.fontSize * scale,
+                      color: ft.color,
+                      minWidth: '100px',
+                      minHeight: `${ft.fontSize * scale * 1.5}px`,
+                      width: ft.pdfWidth ? `${ft.pdfWidth * scale}px` : undefined,
+                      height: ft.pdfHeight ? `${ft.pdfHeight * scale}px` : undefined,
+                    }}
+                    onPointerDown={e => {
+                      if (isActive) e.stopPropagation();
+                    }}
+                    onMouseUp={e => {
+                      // Capture size after resize handle is released
+                      const target = e.target as HTMLTextAreaElement;
+                      const w = target.offsetWidth / scale;
+                      const h = target.offsetHeight / scale;
+                      setFloatingTexts(prev => prev.map(p => p.id === ft.id ? { ...p, pdfWidth: w, pdfHeight: h } : p));
+                    }}
+                  />
+                </div>
+              );
+            })}
+
 
             {/* Hidden input — captures all keystrokes invisibly */}
             <textarea

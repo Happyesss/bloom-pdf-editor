@@ -35,7 +35,7 @@ import { flateEncode } from '../parser/filters';
 
 // ─── Watermark types ────────────────────────────────────────────────────────
 
-export type WatermarkType = 'text' | 'image' | 'pattern';
+export type WatermarkType = 'text' | 'image' | 'pattern' | 'shape';
 
 export interface WatermarkBase {
   /** Unique identifier for this watermark */
@@ -115,7 +115,21 @@ export type WatermarkPosition =
   | 'center-left'
   | 'center-right';
 
-export type Watermark = TextWatermark | ImageWatermark | PatternWatermark;
+export interface ShapeWatermark extends WatermarkBase {
+  type: 'shape';
+  shape: 'rectangle' | 'circle' | 'pill';
+  text: string;
+  fontName: string;
+  fontSize: number;
+  textColor: [number, number, number];
+  shapeColor: [number, number, number];
+  position: WatermarkPosition | [number, number];
+  width: number;
+  height: number;
+  tileSpacing?: number;
+}
+
+export type Watermark = TextWatermark | ImageWatermark | PatternWatermark | ShapeWatermark;
 
 // ─── Watermark application ──────────────────────────────────────────────────
 
@@ -295,6 +309,114 @@ export function buildPatternWatermarkContent(wm: PatternWatermark, pageWidth: nu
 }
 
 /**
+ * Generate PDF content stream operators for a shape watermark.
+ */
+export function buildShapeWatermarkContent(wm: ShapeWatermark, pageWidth: number, pageHeight: number): Uint8Array {
+  const lines: string[] = [];
+  lines.push('q');
+
+  if (wm.opacity < 1) {
+    lines.push(`/${getExtGStateName(wm.id)} gs`);
+  }
+
+  let cxs: number[] = [];
+  let cys: number[] = [];
+
+  if (wm.tile) {
+    const spacing = wm.tileSpacing || 300;
+    const cols = Math.ceil(pageWidth / spacing) + 1;
+    const rows = Math.ceil(pageHeight / spacing) + 1;
+    for (let row = 0; row < rows; row++) {
+      for (let col = 0; col < cols; col++) {
+        cxs.push(col * spacing);
+        cys.push(row * spacing);
+      }
+    }
+  } else {
+    const pos = resolvePosition(wm.position, pageWidth, pageHeight, wm.width, wm.height);
+    cxs.push(pos.cx);
+    cys.push(pos.cy);
+  }
+
+  for (let i = 0; i < cxs.length; i++) {
+    const cx = cxs[i];
+    const cy = cys[i];
+    
+    lines.push('q');
+    lines.push(`1 0 0 1 ${fmtNum(cx)} ${fmtNum(cy)} cm`);
+    if (wm.rotation !== 0) {
+      const rad = (wm.rotation * Math.PI) / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
+      lines.push(`${fmtNum(cos)} ${fmtNum(sin)} ${fmtNum(-sin)} ${fmtNum(cos)} 0 0 cm`);
+    }
+
+    // Draw Shape
+    const [sr, sg, sb] = wm.shapeColor;
+    lines.push(`${fmtNum(sr)} ${fmtNum(sg)} ${fmtNum(sb)} RG`);
+    lines.push('2 w');
+    
+    const hw = wm.width / 2;
+    const hh = wm.height / 2;
+
+    if (wm.shape === 'rectangle') {
+      lines.push(`${fmtNum(-hw)} ${fmtNum(-hh)} ${fmtNum(wm.width)} ${fmtNum(wm.height)} re`);
+      lines.push('S');
+    } else if (wm.shape === 'circle') {
+      const rx = hw;
+      const ry = hh;
+      const k = 0.5522847498;
+      const kx = rx * k;
+      const ky = ry * k;
+      
+      lines.push(`${fmtNum(rx)} 0 m`);
+      lines.push(`${fmtNum(rx)} ${fmtNum(ky)} ${fmtNum(kx)} ${fmtNum(ry)} 0 ${fmtNum(ry)} c`);
+      lines.push(`${fmtNum(-kx)} ${fmtNum(ry)} ${fmtNum(-rx)} ${fmtNum(ky)} ${fmtNum(-rx)} 0 c`);
+      lines.push(`${fmtNum(-rx)} ${fmtNum(-ky)} ${fmtNum(-kx)} ${fmtNum(-ry)} 0 ${fmtNum(-ry)} c`);
+      lines.push(`${fmtNum(kx)} ${fmtNum(-ry)} ${fmtNum(rx)} ${fmtNum(-ky)} ${fmtNum(rx)} 0 c`);
+      lines.push('s');
+    } else if (wm.shape === 'pill') {
+      const x = -hw;
+      const y = -hh;
+      const w = wm.width;
+      const h = wm.height;
+      const r = Math.min(hw, hh);
+      const k = r * 0.5522847498;
+      
+      lines.push(`${fmtNum(x + r)} ${fmtNum(y)} m`);
+      lines.push(`${fmtNum(x + w - r)} ${fmtNum(y)} l`);
+      lines.push(`${fmtNum(x + w - r + k)} ${fmtNum(y)} ${fmtNum(x + w)} ${fmtNum(y + r - k)} ${fmtNum(x + w)} ${fmtNum(y + r)} c`);
+      lines.push(`${fmtNum(x + w)} ${fmtNum(y + h - r)} l`);
+      lines.push(`${fmtNum(x + w)} ${fmtNum(y + h - r + k)} ${fmtNum(x + w - r + k)} ${fmtNum(y + h)} ${fmtNum(x + w - r)} ${fmtNum(y + h)} c`);
+      lines.push(`${fmtNum(x + r)} ${fmtNum(y + h)} l`);
+      lines.push(`${fmtNum(x + r - k)} ${fmtNum(y + h)} ${fmtNum(x)} ${fmtNum(y + h - r + k)} ${fmtNum(x)} ${fmtNum(y + h - r)} c`);
+      lines.push(`${fmtNum(x)} ${fmtNum(y + r)} l`);
+      lines.push(`${fmtNum(x)} ${fmtNum(y + r - k)} ${fmtNum(x + r - k)} ${fmtNum(y)} ${fmtNum(x + r)} ${fmtNum(y)} c`);
+      lines.push('s');
+    }
+
+    if (wm.text) {
+      const [tr, tg, tb] = wm.textColor;
+      lines.push(`${fmtNum(tr)} ${fmtNum(tg)} ${fmtNum(tb)} rg`);
+      lines.push(`/${wm.fontName} ${wm.fontSize} Tf`);
+      
+      const textWidth = wm.text.length * wm.fontSize * 0.5;
+      const textHeight = wm.fontSize;
+      
+      lines.push('BT');
+      lines.push(`${fmtNum(-textWidth / 2)} ${fmtNum(-textHeight * 0.3)} Td`);
+      lines.push(`(${escapePDFString(wm.text)}) Tj`);
+      lines.push('ET');
+    }
+
+    lines.push('Q');
+  }
+
+  lines.push('Q');
+  return stringToBytes(lines.join('\n') + '\n');
+}
+
+/**
  * Create an ExtGState dictionary for opacity control.
  * Returns the dictionary and its name.
  */
@@ -385,8 +507,14 @@ export function applyWatermarkToPage(
       break;
     }
     case 'pattern':
-      watermarkContent = buildPatternWatermarkContent(watermark, pageWidth, pageHeight);
+      watermarkContent = buildPatternWatermarkContent(watermark as PatternWatermark, pageWidth, pageHeight);
       break;
+    case 'shape': {
+      const shapeWm = watermark as ShapeWatermark;
+      registerFontInResources(page, objects, shapeWm.fontName, getNextObjNum);
+      watermarkContent = buildShapeWatermarkContent(shapeWm, pageWidth, pageHeight);
+      break;
+    }
     default:
       watermarkContent = new Uint8Array(0);
   }

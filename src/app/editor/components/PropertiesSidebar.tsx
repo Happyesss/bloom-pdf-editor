@@ -70,8 +70,12 @@ interface PropertiesSidebarProps {
   setWatermarkLayer?: (v: 'above' | 'below') => void;
   watermarkColor?: string;
   setWatermarkColor?: (v: string) => void;
-  watermarkType?: 'text' | 'image';
-  setWatermarkType?: (v: 'text' | 'image') => void;
+  watermarkType?: 'text' | 'image' | 'shape';
+  setWatermarkType?: (v: 'text' | 'image' | 'shape') => void;
+  watermarkShapeType?: 'rectangle' | 'circle' | 'pill';
+  setWatermarkShapeType?: (v: 'rectangle' | 'circle' | 'pill') => void;
+  watermarkShapeColor?: string;
+  setWatermarkShapeColor?: (v: string) => void;
   watermarkImageFile?: File | null;
   onWatermarkImageUpload?: (e: React.ChangeEvent<HTMLInputElement>) => void;
   hasScannedWatermarks?: boolean;
@@ -95,6 +99,8 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
     eraserSize, setEraserSize,
     selectedDisplayItem, setSelectedDisplayItem, displayItems,
     watermarkType = 'text', setWatermarkType,
+    watermarkShapeType = 'rectangle', setWatermarkShapeType,
+    watermarkShapeColor = '#cccccc', setWatermarkShapeColor,
     watermarkImageFile = null, onWatermarkImageUpload,
     watermarkText = 'Bloom PDF', setWatermarkText,
     watermarkFontName = 'Arial', setWatermarkFontName,
@@ -535,18 +541,25 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
           <div className="flex border-b border-zinc-700/50 mt-2">
             <button
               onClick={() => setWatermarkType?.('text')}
-              className={`flex-1 py-4 flex flex-col items-center gap-2 text-[11px] font-medium transition-colors ${watermarkType === 'text' ? 'text-zinc-100 bg-zinc-800/50' : 'text-zinc-400 hover:text-zinc-200'}`}
+              className={`flex-1 py-3 flex flex-col items-center gap-2 text-[11px] font-medium transition-colors ${watermarkType === 'text' ? 'text-zinc-100 bg-zinc-800/50' : 'text-zinc-400 hover:text-zinc-200'}`}
             >
-              <div className={`text-2xl font-serif ${watermarkType === 'text' ? 'border-b-2 border-zinc-200 text-zinc-200' : 'border-b-2 border-zinc-500 text-zinc-500'}`}>A</div>
-              Place text
+              <div className={`text-xl font-serif ${watermarkType === 'text' ? 'border-b-2 border-zinc-200 text-zinc-200' : 'border-b-2 border-zinc-500 text-zinc-500'}`}>A</div>
+              Text
             </button>
             <button
               onClick={() => setWatermarkType?.('image')}
-              className={`flex-1 py-4 flex flex-col items-center gap-2 text-[11px] font-medium relative transition-colors ${watermarkType === 'image' ? 'text-zinc-100 bg-zinc-800/50' : 'text-zinc-400 hover:text-zinc-200'}`}
+              className={`flex-1 py-3 flex flex-col items-center gap-2 text-[11px] font-medium relative transition-colors ${watermarkType === 'image' ? 'text-zinc-100 bg-zinc-800/50' : 'text-zinc-400 hover:text-zinc-200'}`}
             >
               {watermarkType === 'image' && <div className="absolute top-2 left-4 w-3 h-3 bg-green-500 rounded-full flex items-center justify-center text-white text-[8px]">✓</div>}
-              <Image size={24} className={watermarkType === 'image' ? 'text-zinc-200' : 'text-zinc-500'} />
-              Place image
+              <Image size={20} className={watermarkType === 'image' ? 'text-zinc-200' : 'text-zinc-500'} />
+              Image
+            </button>
+            <button
+              onClick={() => setWatermarkType?.('shape')}
+              className={`flex-1 py-3 flex flex-col items-center gap-2 text-[11px] font-medium transition-colors ${watermarkType === 'shape' ? 'text-zinc-100 bg-zinc-800/50' : 'text-zinc-400 hover:text-zinc-200'}`}
+            >
+              <div className={`w-5 h-5 rounded border-2 ${watermarkType === 'shape' ? 'border-zinc-200' : 'border-zinc-500'}`} />
+              Shape
             </button>
           </div>
           
@@ -598,6 +611,54 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                       className="w-8 h-8 cursor-pointer rounded overflow-hidden"
                     />
                     <span className="text-[11px] text-zinc-400 font-mono uppercase">{watermarkColor}</span>
+                  </div>
+                </div>
+              </>
+            ) : watermarkType === 'shape' ? (
+              <>
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-medium text-zinc-300">Shape:</label>
+                  <select
+                    value={watermarkShapeType}
+                    onChange={(e) => setWatermarkShapeType?.(e.target.value as any)}
+                    className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-xs text-zinc-200 outline-none focus:border-blue-500 transition-colors appearance-none cursor-pointer"
+                  >
+                    <option value="rectangle">Rectangle</option>
+                    <option value="circle">Circle</option>
+                    <option value="pill">Pill</option>
+                  </select>
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-medium text-zinc-300">Text (inside shape):</label>
+                  <input
+                    type="text"
+                    value={watermarkText}
+                    onChange={(e) => setWatermarkText?.(e.target.value)}
+                    className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-xs text-zinc-200 outline-none focus:border-blue-500 transition-colors"
+                  />
+                </div>
+                <div className="flex gap-4">
+                  <div className="space-y-1.5 flex-1">
+                    <label className="text-[11px] font-medium text-zinc-300">Text Color:</label>
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="color"
+                        value={watermarkColor}
+                        onChange={(e) => setWatermarkColor?.(e.target.value)}
+                        className="w-8 h-8 cursor-pointer rounded overflow-hidden"
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-1.5 flex-1">
+                    <label className="text-[11px] font-medium text-zinc-300">Border Color:</label>
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="color"
+                        value={watermarkShapeColor}
+                        onChange={(e) => setWatermarkShapeColor?.(e.target.value)}
+                        className="w-8 h-8 cursor-pointer rounded overflow-hidden"
+                      />
+                    </div>
                   </div>
                 </div>
               </>

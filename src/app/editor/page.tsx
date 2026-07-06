@@ -20,7 +20,7 @@ import { PropertiesSidebar } from './components/PropertiesSidebar';
 const WatermarkPreview = ({
   doc, currentPage, scale, watermarkType, watermarkText, watermarkFontName, watermarkSize,
   watermarkColor, watermarkOpacity, watermarkRotation, watermarkMosaic, watermarkPosition,
-  watermarkImageDims, watermarkImageFile
+  watermarkImageDims, watermarkImageFile, watermarkShapeType, watermarkShapeColor
 }: any) => {
   const [imgUrl, setImgUrl] = useState<string | null>(null);
 
@@ -45,8 +45,16 @@ const WatermarkPreview = ({
   const imgHeightCss = watermarkImageDims?.height ? (watermarkImageDims.height * (watermarkSize / 100)) * scale : 0;
   const padCss = 30 * scale;
 
-  let wmWidthCss = watermarkType === 'text' ? (watermarkText.length * (fontSizeCss / scale) * 0.5 * scale) : imgWidthCss;
-  let wmHeightCss = watermarkType === 'text' ? fontSizeCss : imgHeightCss;
+  let textWidthCss = (watermarkText.length * (fontSizeCss / scale) * 0.5 * scale);
+  let textHeightCss = fontSizeCss;
+  
+  let wmWidthCss = watermarkType === 'text' ? textWidthCss : watermarkType === 'shape' ? textWidthCss + 40 * scale : imgWidthCss;
+  let wmHeightCss = watermarkType === 'text' ? textHeightCss : watermarkType === 'shape' ? textHeightCss + 40 * scale : imgHeightCss;
+  if (watermarkType === 'shape' && watermarkShapeType === 'circle') {
+    const maxDim = Math.max(wmWidthCss, wmHeightCss);
+    wmWidthCss = maxDim;
+    wmHeightCss = maxDim;
+  }
 
   const renderItem = (cx: number, cy: number, key: string) => (
     <div
@@ -67,8 +75,23 @@ const WatermarkPreview = ({
         <span style={{ fontSize: fontSizeCss, color: watermarkColor, fontFamily: watermarkFontName, whiteSpace: 'pre', lineHeight: 1 }}>
           {watermarkText}
         </span>
-      ) : imgUrl ? (
+      ) : watermarkType === 'image' && imgUrl ? (
         <img src={imgUrl} style={{ width: imgWidthCss, height: imgHeightCss }} alt="watermark" />
+      ) : watermarkType === 'shape' ? (
+        <div style={{
+          position: 'relative',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: wmWidthCss,
+          height: wmHeightCss,
+          border: `2px solid ${watermarkShapeColor}`,
+          borderRadius: watermarkShapeType === 'circle' ? '50%' : watermarkShapeType === 'pill' ? `${Math.min(wmWidthCss, wmHeightCss) / 2}px` : '0',
+        }}>
+          <span style={{ fontSize: fontSizeCss, color: watermarkColor, fontFamily: watermarkFontName, whiteSpace: 'pre', lineHeight: 1, zIndex: 1 }}>
+            {watermarkText}
+          </span>
+        </div>
       ) : null}
     </div>
   );
@@ -172,12 +195,14 @@ export default function EditorPage() {
   const [eraserSize, setEraserSize] = useState(20);
 
   // Watermark tool properties
-  const [watermarkType, setWatermarkType] = useState<'text' | 'image'>('text');
+  const [watermarkType, setWatermarkType] = useState<'text' | 'image' | 'shape'>('text');
+  const [watermarkShapeType, setWatermarkShapeType] = useState<'rectangle' | 'circle' | 'pill'>('circle');
+  const [watermarkShapeColor, setWatermarkShapeColor] = useState('#000000');
   const [watermarkText, setWatermarkText] = useState('Bloom PDF');
   const [watermarkFontName, setWatermarkFontName] = useState('Arial');
-  const [watermarkOpacity, setWatermarkOpacity] = useState(25);
+  const [watermarkOpacity, setWatermarkOpacity] = useState(50);
   const [watermarkRotation, setWatermarkRotation] = useState(45);
-  const [watermarkSize, setWatermarkSize] = useState(100);
+  const [watermarkSize, setWatermarkSize] = useState(50);
   const [watermarkPosition, setWatermarkPosition] = useState('center');
   const [watermarkMosaic, setWatermarkMosaic] = useState(false);
   const [watermarkLivePreview, setWatermarkLivePreview] = useState(true);
@@ -1393,6 +1418,44 @@ export default function EditorPage() {
           position: watermarkPosition as any,
           pageIndices
         };
+      } else if (watermarkType === 'shape') {
+        const r = parseInt(watermarkColor.slice(1, 3), 16) / 255;
+        const g = parseInt(watermarkColor.slice(3, 5), 16) / 255;
+        const b = parseInt(watermarkColor.slice(5, 7), 16) / 255;
+
+        const sr = parseInt(watermarkShapeColor.slice(1, 3), 16) / 255;
+        const sg = parseInt(watermarkShapeColor.slice(3, 5), 16) / 255;
+        const sb = parseInt(watermarkShapeColor.slice(5, 7), 16) / 255;
+
+        const fontSizePt = Math.round(72 * (watermarkSize / 100));
+        const textWidth = watermarkText.length * fontSizePt * 0.5;
+        
+        let finalWidth = textWidth + 40;
+        let finalHeight = fontSizePt + 40;
+        if (watermarkShapeType === 'circle') {
+          const maxDim = Math.max(finalWidth, finalHeight);
+          finalWidth = maxDim;
+          finalHeight = maxDim;
+        }
+        
+        wm = {
+          id: `wm-${Date.now()}`,
+          type: 'shape',
+          shape: watermarkShapeType,
+          text: watermarkText,
+          fontName: watermarkFontName,
+          fontSize: fontSizePt,
+          textColor: [r, g, b],
+          shapeColor: [sr, sg, sb],
+          width: finalWidth,
+          height: finalHeight,
+          opacity: watermarkOpacity / 100,
+          rotation: watermarkRotation,
+          tile: watermarkMosaic,
+          layer: watermarkLayer,
+          position: watermarkPosition as any,
+          pageIndices
+        } as any;
       } else {
         if (!watermarkImageBytes || !watermarkImageDims || !watermarkImageFile) {
           setError('Please upload an image first');
@@ -1440,7 +1503,7 @@ export default function EditorPage() {
       console.error('[Editor] Apply watermark failed:', e);
       setError(`Failed to apply watermark: ${e instanceof Error ? e.message : String(e)}`);
     }
-  }, [doc, watermarkType, watermarkText, watermarkFontName, watermarkOpacity, watermarkRotation, watermarkSize, watermarkPosition, watermarkMosaic, watermarkPageFrom, watermarkPageTo, watermarkLayer, watermarkColor, watermarkImageBytes, watermarkImageDims, watermarkImageFile]);
+  }, [doc, watermarkType, watermarkText, watermarkFontName, watermarkOpacity, watermarkRotation, watermarkSize, watermarkPosition, watermarkMosaic, watermarkPageFrom, watermarkPageTo, watermarkLayer, watermarkColor, watermarkShapeColor, watermarkShapeType, watermarkImageBytes, watermarkImageDims, watermarkImageFile]);
 
   const handleScanWatermarks = useCallback(() => {
     if (!doc || !engineRef.current) return;
@@ -1688,6 +1751,10 @@ export default function EditorPage() {
           displayItems={displayItems}
           watermarkType={watermarkType}
           setWatermarkType={setWatermarkType}
+          watermarkShapeType={watermarkShapeType}
+          setWatermarkShapeType={setWatermarkShapeType}
+          watermarkShapeColor={watermarkShapeColor}
+          setWatermarkShapeColor={setWatermarkShapeColor}
           watermarkImageFile={watermarkImageFile}
           onWatermarkImageUpload={handleWatermarkImageUpload}
           watermarkText={watermarkText}
@@ -1777,6 +1844,8 @@ export default function EditorPage() {
                 watermarkPosition={watermarkPosition}
                 watermarkImageDims={watermarkImageDims}
                 watermarkImageFile={watermarkImageFile}
+                watermarkShapeType={watermarkShapeType}
+                watermarkShapeColor={watermarkShapeColor}
               />
             )}
             

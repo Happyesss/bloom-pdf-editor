@@ -1386,6 +1386,12 @@ export default function EditorPage() {
     e.target.value = '';
   }, []);
 
+  const handleWatermarkImageClear = useCallback(() => {
+    setWatermarkImageFile(null);
+    setWatermarkImageBytes(null);
+    setWatermarkImageDims(null);
+  }, []);
+
   const handleApplyWatermark = useCallback(() => {
     if (!doc || !engineRef.current) return;
     try {
@@ -1757,6 +1763,7 @@ export default function EditorPage() {
           setWatermarkShapeColor={setWatermarkShapeColor}
           watermarkImageFile={watermarkImageFile}
           onWatermarkImageUpload={handleWatermarkImageUpload}
+          onWatermarkImageClear={handleWatermarkImageClear}
           watermarkText={watermarkText}
           setWatermarkText={setWatermarkText}
           watermarkFontName={watermarkFontName}

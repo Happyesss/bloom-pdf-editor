@@ -78,6 +78,7 @@ interface PropertiesSidebarProps {
   setWatermarkShapeColor?: (v: string) => void;
   watermarkImageFile?: File | null;
   onWatermarkImageUpload?: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onWatermarkImageClear?: () => void;
   hasScannedWatermarks?: boolean;
   onScanWatermarks?: () => void;
   onApplyWatermark?: () => void;
@@ -99,9 +100,9 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
     eraserSize, setEraserSize,
     selectedDisplayItem, setSelectedDisplayItem, displayItems,
     watermarkType = 'text', setWatermarkType,
-    watermarkShapeType = 'rectangle', setWatermarkShapeType,
-    watermarkShapeColor = '#cccccc', setWatermarkShapeColor,
-    watermarkImageFile = null, onWatermarkImageUpload,
+    watermarkShapeType = 'circle', setWatermarkShapeType,
+    watermarkShapeColor = '#000000', setWatermarkShapeColor,
+    watermarkImageFile = null, onWatermarkImageUpload, onWatermarkImageClear,
     watermarkText = 'Bloom PDF', setWatermarkText,
     watermarkFontName = 'Arial', setWatermarkFontName,
     watermarkOpacity = 25, setWatermarkOpacity,
@@ -550,7 +551,6 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
               onClick={() => setWatermarkType?.('image')}
               className={`flex-1 py-3 flex flex-col items-center gap-2 text-[11px] font-medium relative transition-colors ${watermarkType === 'image' ? 'text-zinc-100 bg-zinc-800/50' : 'text-zinc-400 hover:text-zinc-200'}`}
             >
-              {watermarkType === 'image' && <div className="absolute top-2 left-4 w-3 h-3 bg-green-500 rounded-full flex items-center justify-center text-white text-[8px]">✓</div>}
               <Image size={20} className={watermarkType === 'image' ? 'text-zinc-200' : 'text-zinc-500'} />
               Image
             </button>
@@ -663,23 +663,33 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 </div>
               </>
             ) : (
-              <div className="flex justify-center relative">
-                <button 
-                  onClick={() => {
-                    const fileInput = document.createElement('input');
-                    fileInput.type = 'file';
-                    fileInput.accept = 'image/png, image/jpeg';
-                    fileInput.onchange = (e) => onWatermarkImageUpload?.(e as any);
-                    fileInput.click();
-                  }}
-                  className="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white px-8 py-3 rounded text-xs font-medium transition-colors"
-                >
-                  <Image size={16} /> ADD IMAGE
-                </button>
+              <div className="flex flex-col gap-4">
+                <div className="flex justify-center relative">
+                  <button 
+                    onClick={() => {
+                      const fileInput = document.createElement('input');
+                      fileInput.type = 'file';
+                      fileInput.accept = 'image/png, image/jpeg';
+                      fileInput.onchange = (e) => onWatermarkImageUpload?.(e as any);
+                      fileInput.click();
+                    }}
+                    className="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white px-8 py-3 rounded text-xs font-medium transition-colors"
+                  >
+                    <Image size={16} /> ADD IMAGE
+                  </button>
+                  {watermarkImageFile && (
+                    <p className="text-[10px] text-green-400 mt-2 truncate w-full text-center absolute top-12">
+                      Loaded: {watermarkImageFile.name}
+                    </p>
+                  )}
+                </div>
                 {watermarkImageFile && (
-                  <p className="text-[10px] text-green-400 mt-2 truncate w-full text-center absolute top-12">
-                    Loaded: {watermarkImageFile.name}
-                  </p>
+                  <button 
+                    onClick={onWatermarkImageClear}
+                    className="w-full py-1.5 bg-red-500/10 text-red-400 border border-red-500/30 rounded text-[11px] hover:bg-red-500/20 transition-colors"
+                  >
+                    Remove Image
+                  </button>
                 )}
               </div>
             )}

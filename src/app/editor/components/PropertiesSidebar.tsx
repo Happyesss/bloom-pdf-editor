@@ -80,6 +80,7 @@ interface PropertiesSidebarProps {
   onWatermarkImageUpload?: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onWatermarkImageClear?: () => void;
   hasScannedWatermarks?: boolean;
+  detectedWatermarksCount?: number;
   onScanWatermarks?: () => void;
   onApplyWatermark?: () => void;
   onRemoveWatermarks?: () => void;
@@ -114,7 +115,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
     watermarkPageTo = 1, setWatermarkPageTo,
     watermarkLayer = 'above', setWatermarkLayer,
     watermarkColor = '#000000', setWatermarkColor,
-    hasScannedWatermarks, onScanWatermarks,
+    hasScannedWatermarks, detectedWatermarksCount = 0, onScanWatermarks,
     onApplyWatermark, onRemoveWatermarks, onCancelScan,
     watermarkLivePreview = true, setWatermarkLivePreview
   } = props;
@@ -835,19 +836,29 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   Scan for Watermarks
                 </button>
               ) : (
-                <div className="flex gap-2">
-                  <button
-                    onClick={onCancelScan}
-                    className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700 rounded py-2 text-xs font-semibold transition-colors"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={onRemoveWatermarks}
-                    className="flex-1 bg-red-600 hover:bg-red-700 text-white rounded py-2 text-xs font-semibold transition-colors"
-                  >
-                    Remove Selected
-                  </button>
+                <div className="flex flex-col gap-2">
+                  <div className="flex gap-2">
+                    <button
+                      onClick={onCancelScan}
+                      className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700 rounded py-2 text-xs font-semibold transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    {detectedWatermarksCount > 0 && (
+                      <button
+                        onClick={onRemoveWatermarks}
+                        className="flex-1 bg-red-600 hover:bg-red-700 text-white rounded py-2 text-xs font-semibold transition-colors"
+                      >
+                        Remove Selected
+                      </button>
+                    )}
+                  </div>
+                  {detectedWatermarksCount === 0 && (
+                    <div className="text-center p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-md">
+                      <p className="text-yellow-400 text-xs font-medium mb-1">no watermark found in scan process</p>
+                      <p className="text-zinc-400 text-[10px]">if you are seeing any watermark, it may be image, so please go to image section to remove</p>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

@@ -811,15 +811,14 @@ export default function EditorPage() {
         }, 0);
       } else {
         // Clicked on empty space — check display items or deselect
-        if (activeTool === 'select') {
-          const itemHit = hitTestDisplayItems(pdfX, pdfY, displayItems);
-          if (itemHit) {
-            if (editingRun) handleEditSubmit();
-            setSelectedDisplayItem(itemHit);
-            setSelectedRun(null);
-            setEditingRun(null);
-            return;
-          }
+        const itemHit = hitTestDisplayItems(pdfX, pdfY, displayItems);
+        if (itemHit) {
+          if (editingRun) handleEditSubmit();
+          setSelectedDisplayItem(itemHit);
+          setSelectedRun(null);
+          setEditingRun(null);
+          setActiveTool('select');
+          return;
         }
         setSelectedDisplayItem(null);
         if (editingRun) {
@@ -1790,6 +1789,7 @@ export default function EditorPage() {
           setWatermarkLivePreview={setWatermarkLivePreview}
           onApplyWatermark={handleApplyWatermark}
           hasScannedWatermarks={detectedWatermarks !== null}
+          detectedWatermarksCount={detectedWatermarks?.length}
           onScanWatermarks={handleScanWatermarks}
           onRemoveWatermarks={handleConfirmRemoveWatermarks}
           onCancelScan={handleCancelScan}
@@ -1867,11 +1867,21 @@ export default function EditorPage() {
                   doc?.pages[currentPage]?.mediaBox.x || 0,
                   doc?.pages[currentPage]?.mediaBox.y || 0
                 );
+                const boxW = (pos.width || 120) * scale;
+                const boxH = (pos.height || 60) * scale;
+                const rot = pos.rotation ?? dw.rotation ?? 0;
+                
                 return (
                   <div 
                     key={`det-${dw.id}-${i}`}
                     className="absolute border-2 border-red-500 border-dashed bg-red-500/20 rounded z-50 pointer-events-none animate-in fade-in zoom-in duration-200"
-                    style={{ left: cssX, top: cssY, width: 120 * scale, height: 60 * scale, transform: 'translate(-50%, -50%)' }}
+                    style={{ 
+                      left: cssX, 
+                      top: cssY, 
+                      width: boxW, 
+                      height: boxH, 
+                      transform: `translate(-50%, -50%) rotate(${-rot}deg)` 
+                    }}
                   />
                 );
               })

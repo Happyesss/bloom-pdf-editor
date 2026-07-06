@@ -65,7 +65,7 @@ export interface DetectedWatermark {
   /** Whether the watermark is tiled/repeated */
   isTiled: boolean;
   /** Approximate position(s) on the page */
-  positions: Array<{ x: number; y: number }>;
+  positions: Array<{ x: number; y: number; width?: number; height?: number; rotation?: number }>;
   /** Page index where found */
   pageIndex: number;
   /** The raw content region (byte offset range) for removal */
@@ -458,7 +458,7 @@ function extractTextOccurrences(
           parseFloat(stateMatch[4]), parseFloat(stateMatch[5]),
           parseFloat(stateMatch[6]), parseFloat(stateMatch[7]),
         ];
-        ctm = multiplyCTM(ctm, newCm);
+        ctm = multiplyCTM(newCm, ctm);
       }
     }
     return ctm;
@@ -775,7 +775,18 @@ function scoreTextCandidates(
       opacity: rep.opacity,
       rotation: rep.rotation,
       isTiled,
-      positions: occs.map(o => ({ x: o.x, y: o.y })),
+      positions: occs.map(o => {
+        const rad = (o.rotation * Math.PI) / 180;
+        const cx = o.x + (o.estimatedWidth / 2) * Math.cos(rad) - (o.fontSize * 0.3) * Math.sin(rad);
+        const cy = o.y + (o.estimatedWidth / 2) * Math.sin(rad) + (o.fontSize * 0.3) * Math.cos(rad);
+        return { 
+          x: cx, 
+          y: cy,
+          width: o.estimatedWidth + o.fontSize * 0.5,
+          height: o.fontSize * 1.2,
+          rotation: o.rotation
+        };
+      }),
       pageIndex,
       detectionMethod: 'content-analysis',
       metadata: {
@@ -985,7 +996,13 @@ function detectTiledImages(
         confidence: 0.8,
         opacity: occs[0].opacity,
         isTiled: true,
-        positions: occs.map(o => ({ x: o.x, y: o.y })),
+        positions: occs.map(o => ({ 
+          x: o.x + o.width / 2, 
+          y: o.y + o.height / 2,
+          width: o.width,
+          height: o.height,
+          rotation: 0
+        })),
         pageIndex,
         detectionMethod: 'content-analysis',
         metadata: { imageName: name, occurrenceCount: occs.length },
@@ -1245,7 +1262,7 @@ function extractRotationFromMatrix(
   tm: [number, number, number, number, number, number],
   ctm: [number, number, number, number, number, number],
 ): number {
-  const combined = multiplyCTM(ctm, tm);
+  const combined = multiplyCTM(tm, ctm);
   const a = combined[0];
   const b = combined[1];
   const radians = Math.atan2(b, a);
@@ -1258,7 +1275,7 @@ function computeEffectiveFontSize(
   tm: [number, number, number, number, number, number],
   ctm: [number, number, number, number, number, number],
 ): number {
-  const combined = multiplyCTM(ctm, tm);
+  const combined = multiplyCTM(tm, ctm);
   const yScale = Math.sqrt(combined[2] * combined[2] + combined[3] * combined[3]);
   return nominalSize * (yScale > 0 ? yScale : 1);
 }

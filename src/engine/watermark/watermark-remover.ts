@@ -338,6 +338,28 @@ function removeContentStreamWatermarks(
     return results;
   }
 
+  // Collect all watermark indicators from detections
+  const wmTexts = new Set<string>();
+  const wmGSNames = new Set<string>();
+  const wmImageNames = new Set<string>();
+
+  for (const det of detections) {
+    if (det.text && det.text.trim().length > 0) {
+      wmTexts.add(det.text.trim());
+    }
+    // Collect ExtGState names from detection metadata
+    const gsName = det.metadata?.gsName as string | undefined;
+    if (gsName) wmGSNames.add(gsName);
+    const extGStateName = det.metadata?.extGStateName as string | undefined;
+    if (extGStateName) wmGSNames.add(extGStateName);
+    // Collect image names
+    const imgName = det.metadata?.imageName as string | undefined;
+    if (imgName) wmImageNames.add(imgName);
+  }
+
+  // Also include our engine's naming conventions
+  // (GS_wm_* and ImWM_* are always watermark-related)
+
   // For each content stream, attempt watermark removal
   for (const ref of contentRefs) {
     const streamObj = objects.get(ref.toKey());
@@ -346,38 +368,54 @@ function removeContentStreamWatermarks(
     const rawBytes = streamObj.decodedBytes || streamObj.rawBytes;
     const contentStr = bytesToString(rawBytes);
 
-    // Apply removal strategies
     let modifiedStr = contentStr;
     let modifications = 0;
 
-    // Strategy A: Remove q/Q blocks that contain watermark text
-    const { result: cleanedFromBlocks, count: blockCount } = removeWatermarkBlocks(modifiedStr, detections);
-    modifiedStr = cleanedFromBlocks;
+    // ── PRIMARY STRATEGY: Remove entire q...Q blocks that contain
+    //    watermark indicators (GS names, watermark text, or watermark images).
+    //    This removes both the transparency AND the content in one shot.
+    const { result: afterBlockRemoval, count: blockCount } = removeWatermarkQBlocks(
+      modifiedStr, wmTexts, wmGSNames, wmImageNames,
+    );
+    modifiedStr = afterBlockRemoval;
     modifications += blockCount;
 
-    // Strategy B: Remove specific text operations (Tj/TJ) with watermark text
-    const { result: cleanedFromText, count: textCount } = removeWatermarkTextOps(modifiedStr, detections);
-    modifiedStr = textCount > blockCount ? cleanedFromText : modifiedStr; // Use whichever removed more
-    modifications = Math.max(modifications, textCount);
-
-    // Strategy C: Remove image Do operations for watermark images
-    const { result: cleanedFromImages, count: imgCount } = removeWatermarkImageOps(modifiedStr, detections);
-    if (imgCount > modifications) {
-      modifiedStr = cleanedFromImages;
-      modifications = imgCount;
+    // ── FALLBACK: If block removal didn't find anything, try removing
+    //    individual BT...ET text blocks containing watermark text
+    if (modifications === 0) {
+      const { result: afterBTRemoval, count: btCount } = removeWatermarkBTBlocks(
+        modifiedStr, wmTexts,
+      );
+      modifiedStr = afterBTRemoval;
+      modifications += btCount;
     }
 
-    // Strategy D: Remove ExtGState references for watermark opacity
-    const { result: cleanedFromGS, count: gsCount } = removeWatermarkGSOps(modifiedStr, detections);
-    modifiedStr = cleanedFromGS;
-    modifications += gsCount;
+    // ── FALLBACK: Remove individual text operations (Tj/TJ) with watermark text
+    if (modifications === 0) {
+      const { result: afterTextRemoval, count: textCount } = removeWatermarkTextOps(
+        modifiedStr, wmTexts,
+      );
+      modifiedStr = afterTextRemoval;
+      modifications += textCount;
+    }
+
+    // ── CLEANUP: Remove any remaining orphaned GS_wm_*/ImWM_* references
+    //    (only our engine's naming convention — safe to remove)
+    const { result: afterGSCleanup, count: gsCleanupCount } = removeOrphanedWatermarkOps(modifiedStr);
+    modifiedStr = afterGSCleanup;
+    modifications += gsCleanupCount;
+
+    // ── FORM XOBJECT SCAN: Also process form XObjects that may contain watermarks
+    const formModCount = removeWatermarksFromFormXObjects(
+      page, objects, wmTexts, wmGSNames, wmImageNames,
+    );
+    modifications += formModCount;
 
     // Update the stream if modified
-    if (modifications > 0) {
+    if (modifiedStr !== contentStr) {
       const newBytes = stringToBytes(modifiedStr);
       streamObj.rawBytes = newBytes;
       streamObj.decodedBytes = newBytes;
-      // Update /Length
       streamObj.dict.set('Length', new PDFNumber(newBytes.length));
     }
 
@@ -401,43 +439,147 @@ function removeContentStreamWatermarks(
 // ── Content surgery helpers ─────────────────────────────────────────────────
 
 /**
- * Remove q/Q blocks that contain watermark text.
- * A watermark block is: q ... (watermark text) Tj ... Q
+ * PRIMARY STRATEGY: Remove entire q...Q graphics state blocks that contain
+ * watermark indicators. This is the most robust approach because it removes
+ * both the opacity settings AND the content rendered with them.
+ *
+ * A typical watermark block looks like:
+ *   q                          ← save graphics state
+ *   /GS1 gs                   ← set watermark opacity
+ *   1 0 0 1 300 400 cm        ← position transform
+ *   BT /F1 48 Tf ... (Bloom PDF) Tj ET  ← text
+ *   Q                          ← restore graphics state
+ *
+ * We find q...Q blocks that contain ANY of:
+ *   - A /GSName gs where GSName is a known watermark ExtGState
+ *   - A text string matching detected watermark text
+ *   - A /ImName Do where ImName is a known watermark image
  */
-function removeWatermarkBlocks(
+function removeWatermarkQBlocks(
   contentStr: string,
-  detections: DetectedWatermark[],
+  wmTexts: Set<string>,
+  wmGSNames: Set<string>,
+  wmImageNames: Set<string>,
 ): { result: string; count: number } {
   let result = contentStr;
   let count = 0;
 
-  // Collect watermark text strings to look for
-  const watermarkTexts = new Set<string>();
-  for (const det of detections) {
-    if (det.text && det.text.trim().length > 0) {
-      watermarkTexts.add(det.text.trim());
+  // Find all q...Q blocks (including nested ones — match outermost)
+  // Use a stack-based approach to properly handle nesting
+  const blocksToRemove: Array<{ start: number; end: number }> = [];
+
+  // Find all q and Q positions
+  const qPositions: number[] = [];
+  const qStack: number[] = [];
+
+  // Tokenize to find standalone q and Q operators (not inside strings)
+  const opRegex = /(?:^|\s)(q|Q)(?:\s|$)/g;
+  let opMatch: RegExpExecArray | null;
+  // More reliable: split into q/Q tokens
+  const tokenRegex = /\bq\b|\bQ\b/g;
+  while ((opMatch = tokenRegex.exec(result)) !== null) {
+    // Make sure this isn't inside a string literal
+    const before = result.substring(Math.max(0, opMatch.index - 1), opMatch.index);
+    // Simple check: not preceded by ( which would indicate inside a string
+    if (before === '(') continue;
+
+    if (opMatch[0] === 'q') {
+      qStack.push(opMatch.index);
+    } else if (opMatch[0] === 'Q' && qStack.length > 0) {
+      const qStart = qStack.pop()!;
+      const qEnd = opMatch.index + 1;
+      const blockContent = result.substring(qStart, qEnd);
+
+      // Check if this block contains watermark indicators
+      let isWatermarkBlock = false;
+
+      // Check for watermark ExtGState references
+      for (const gsName of wmGSNames) {
+        const gsPattern = new RegExp(`/${gsName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s+gs`);
+        if (gsPattern.test(blockContent)) {
+          isWatermarkBlock = true;
+          break;
+        }
+      }
+
+      // Check for our engine's GS naming convention
+      if (!isWatermarkBlock && /\/GS_wm_[\w-]+\s+gs/.test(blockContent)) {
+        isWatermarkBlock = true;
+      }
+
+      // Check for watermark text
+      if (!isWatermarkBlock) {
+        for (const text of wmTexts) {
+          const escaped = escapePDFStringForRegex(text);
+          const textPattern = new RegExp(`\\(${escaped}\\)`);
+          if (textPattern.test(blockContent)) {
+            isWatermarkBlock = true;
+            break;
+          }
+        }
+      }
+
+      // Check for watermark images
+      if (!isWatermarkBlock) {
+        for (const imgName of wmImageNames) {
+          const imgPattern = new RegExp(`/${imgName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s+Do`);
+          if (imgPattern.test(blockContent)) {
+            isWatermarkBlock = true;
+            break;
+          }
+        }
+        // Also check our engine naming
+        if (/\/ImWM_\w+\s+Do/.test(blockContent)) {
+          isWatermarkBlock = true;
+        }
+      }
+
+      if (isWatermarkBlock) {
+        // Only add if not overlapping with an already-found block
+        const overlaps = blocksToRemove.some(b =>
+          (qStart >= b.start && qStart <= b.end) ||
+          (qEnd >= b.start && qEnd <= b.end),
+        );
+        if (!overlaps) {
+          blocksToRemove.push({ start: qStart, end: qEnd });
+        }
+      }
     }
   }
 
-  if (watermarkTexts.size === 0) return { result, count };
+  // Remove blocks from end to start to maintain offsets
+  blocksToRemove.sort((a, b) => b.start - a.start);
+  for (const block of blocksToRemove) {
+    result = result.substring(0, block.start) + result.substring(block.end);
+    count++;
+  }
 
-  for (const text of watermarkTexts) {
+  return { result, count };
+}
+
+/**
+ * FALLBACK: Remove entire BT...ET text blocks that contain watermark text.
+ * Used when the watermark isn't wrapped in a q...Q block.
+ */
+function removeWatermarkBTBlocks(
+  contentStr: string,
+  wmTexts: Set<string>,
+): { result: string; count: number } {
+  let result = contentStr;
+  let count = 0;
+
+  if (wmTexts.size === 0) return { result, count };
+
+  for (const text of wmTexts) {
     const escaped = escapePDFStringForRegex(text);
-
-    // Find q ... (text) Tj ... Q blocks
-    // Pattern: q followed by anything, then the text in parens with Tj, then Q
-    const blockRegex = new RegExp(
-      `q\\s[^qQ]*?\\(${escaped}\\)\\s*Tj[^qQ]*?Q`,
-      'gs',
-    );
+    // Match BT ... (text) Tj ... ET or BT ... with TJ containing text ... ET
+    const btRegex = new RegExp(`BT[\\s\\S]*?\\(${escaped}\\)[\\s\\S]*?ET`, 'g');
 
     let match: RegExpExecArray | null;
-    while ((match = blockRegex.exec(result)) !== null) {
-      // Replace the entire block with nothing (or a whitespace placeholder)
+    while ((match = btRegex.exec(result)) !== null) {
       result = result.substring(0, match.index) + result.substring(match.index + match[0].length);
       count++;
-      // Reset regex lastIndex since string changed
-      blockRegex.lastIndex = match.index;
+      btRegex.lastIndex = match.index;
     }
   }
 
@@ -445,25 +587,18 @@ function removeWatermarkBlocks(
 }
 
 /**
- * Remove individual text operations (Tj/TJ) that contain watermark text.
+ * FALLBACK: Remove individual text operations (Tj/TJ) that contain watermark text.
  */
 function removeWatermarkTextOps(
   contentStr: string,
-  detections: DetectedWatermark[],
+  wmTexts: Set<string>,
 ): { result: string; count: number } {
   let result = contentStr;
   let count = 0;
 
-  const watermarkTexts = new Set<string>();
-  for (const det of detections) {
-    if (det.text && det.text.trim().length > 0) {
-      watermarkTexts.add(det.text.trim());
-    }
-  }
+  if (wmTexts.size === 0) return { result, count };
 
-  if (watermarkTexts.size === 0) return { result, count };
-
-  for (const text of watermarkTexts) {
+  for (const text of wmTexts) {
     const escaped = escapePDFStringForRegex(text);
 
     // Remove Tj operations with this text
@@ -488,6 +623,141 @@ function removeWatermarkTextOps(
 }
 
 /**
+ * CLEANUP: Remove orphaned watermark-engine-specific operators.
+ * Only removes operators with our engine's naming convention (GS_wm_*, ImWM_*).
+ * These are safe to remove because they were created by our watermark engine.
+ */
+function removeOrphanedWatermarkOps(
+  contentStr: string,
+): { result: string; count: number } {
+  let result = contentStr;
+  let count = 0;
+
+  // Remove /GS_wm_* gs operations
+  const gsRegex = /\/GS_wm_[\w-]+\s+gs/g;
+  let match: RegExpExecArray | null;
+  while ((match = gsRegex.exec(result)) !== null) {
+    result = result.substring(0, match.index) + result.substring(match.index + match[0].length);
+    count++;
+    gsRegex.lastIndex = match.index;
+  }
+
+  // Remove /ImWM_* Do operations
+  const imgRegex = /\/ImWM_[\w-]+\s+Do/g;
+  while ((match = imgRegex.exec(result)) !== null) {
+    result = result.substring(0, match.index) + result.substring(match.index + match[0].length);
+    count++;
+    imgRegex.lastIndex = match.index;
+  }
+
+  return { result, count };
+}
+
+/**
+ * Remove watermark content from form XObjects referenced by the page.
+ * Watermarks are often placed in separate form XObjects.
+ */
+function removeWatermarksFromFormXObjects(
+  page: PDFPageInfo,
+  objects: Map<string, PDFObject>,
+  wmTexts: Set<string>,
+  wmGSNames: Set<string>,
+  wmImageNames: Set<string>,
+): number {
+  let modifications = 0;
+
+  const resources = page.dict.get('Resources');
+  if (!resources) return modifications;
+
+  let resDict: PDFDict | undefined;
+  if (resources instanceof PDFRef) {
+    const resolved = objects.get(resources.toKey());
+    if (resolved instanceof PDFDict) resDict = resolved;
+  } else if (resources instanceof PDFDict) {
+    resDict = resources;
+  }
+  if (!resDict) return modifications;
+
+  const xObjects = resDict.get('XObject');
+  if (!xObjects) return modifications;
+
+  let xObjDict: PDFDict | undefined;
+  if (xObjects instanceof PDFRef) {
+    const resolved = objects.get(xObjects.toKey());
+    if (resolved instanceof PDFDict) xObjDict = resolved;
+  } else if (xObjects instanceof PDFDict) {
+    xObjDict = xObjects;
+  }
+  if (!xObjDict) return modifications;
+
+  const keysToRemove: string[] = [];
+
+  for (const [name, value] of xObjDict.entries()) {
+    let stream: PDFStream | undefined;
+    let streamRef: PDFRef | undefined;
+    if (value instanceof PDFRef) {
+      streamRef = value;
+      const resolved = objects.get(value.toKey());
+      if (resolved instanceof PDFStream) stream = resolved;
+    } else if (value instanceof PDFStream) {
+      stream = value;
+    }
+    if (!stream) continue;
+
+    // Check if it's a Form XObject
+    const subtype = stream.dict.get('Subtype');
+    if (!(subtype instanceof PDFName) || subtype.name !== 'Form') continue;
+
+    const formBytes = stream.decodedBytes || stream.rawBytes;
+    const formStr = bytesToString(formBytes);
+
+    // Check if this form XObject contains watermark content
+    let isWatermarkForm = false;
+
+    // Check for watermark ExtGState references
+    for (const gsName of wmGSNames) {
+      const gsPattern = new RegExp(`/${gsName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s+gs`);
+      if (gsPattern.test(formStr)) {
+        isWatermarkForm = true;
+        break;
+      }
+    }
+
+    // Check for watermark text
+    if (!isWatermarkForm) {
+      for (const text of wmTexts) {
+        const escaped = escapePDFStringForRegex(text);
+        const textPattern = new RegExp(`\\(${escaped}\\)`);
+        if (textPattern.test(formStr)) {
+          isWatermarkForm = true;
+          break;
+        }
+      }
+    }
+
+    // Check engine naming conventions
+    if (!isWatermarkForm && /\/GS_wm_[\w-]+\s+gs/.test(formStr)) {
+      isWatermarkForm = true;
+    }
+
+    if (isWatermarkForm) {
+      // Option 1: Remove the form XObject reference from the page
+      keysToRemove.push(name);
+      // Also delete the object from the object map
+      if (streamRef) objects.delete(streamRef.toKey());
+      modifications++;
+    }
+  }
+
+  // Remove watermark form XObjects from the XObject dictionary
+  for (const key of keysToRemove) {
+    xObjDict.delete(key);
+  }
+
+  return modifications;
+}
+
+/**
  * Remove image Do operations for watermark images.
  */
 function removeWatermarkImageOps(
@@ -507,7 +777,7 @@ function removeWatermarkImageOps(
   }
 
   // Also look for watermark-like image names (ImWM_ prefix from our engine)
-  const wmImageRegex = /\/ImWM_\w+\s+Do/g;
+  const wmImageRegex = /\/ImWM_[\w-]+\s+Do/g;
   let match: RegExpExecArray | null;
   while ((match = wmImageRegex.exec(result)) !== null) {
     result = result.substring(0, match.index) + result.substring(match.index + match[0].length);
@@ -522,42 +792,6 @@ function removeWatermarkImageOps(
       result = result.substring(0, match.index) + result.substring(match.index + match[0].length);
       count++;
       doRegex.lastIndex = match.index;
-    }
-  }
-
-  return { result, count };
-}
-
-/**
- * Remove ExtGState references for watermark opacity (/GS_wm_... gs).
- */
-function removeWatermarkGSOps(
-  contentStr: string,
-  detections: DetectedWatermark[],
-): { result: string; count: number } {
-  let result = contentStr;
-  let count = 0;
-
-  // Remove /GS_wm_* gs operations (our watermark engine's naming convention)
-  const gsRegex = /\/GS_wm_\w+\s+gs/g;
-  let match: RegExpExecArray | null;
-  while ((match = gsRegex.exec(result)) !== null) {
-    result = result.substring(0, match.index) + result.substring(match.index + match[0].length);
-    count++;
-    gsRegex.lastIndex = match.index;
-  }
-
-  // Also check detection metadata for specific ExtGState names
-  for (const det of detections) {
-    const gsName = det.metadata?.extGStateName as string | undefined;
-    if (gsName) {
-      const escapedName = gsName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const specificRegex = new RegExp(`/${escapedName}\\s+gs`, 'g');
-      while ((match = specificRegex.exec(result)) !== null) {
-        result = result.substring(0, match.index) + result.substring(match.index + match[0].length);
-        count++;
-        specificRegex.lastIndex = match.index;
-      }
     }
   }
 
@@ -744,13 +978,24 @@ export function detectAndRemoveAllWatermarks(
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function bytesToString(bytes: Uint8Array): string {
-  const decoder = new TextDecoder('utf-8', { fatal: false });
-  return decoder.decode(bytes);
+  // PDF content streams are raw byte data (Latin-1), NOT UTF-8.
+  // We must preserve each byte value exactly as a char code point.
+  // Using TextDecoder('utf-8') would corrupt bytes > 127.
+  let s = '';
+  for (let i = 0; i < bytes.length; i++) {
+    s += String.fromCharCode(bytes[i]);
+  }
+  return s;
 }
 
 function stringToBytes(s: string): Uint8Array {
-  const encoder = new TextEncoder();
-  return encoder.encode(s);
+  // Convert back from Latin-1 string to raw bytes.
+  // Each char's code point maps directly to a byte value.
+  const bytes = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) {
+    bytes[i] = s.charCodeAt(i) & 0xFF;
+  }
+  return bytes;
 }
 
 function escapePDFStringForRegex(text: string): string {

@@ -202,7 +202,9 @@ function analyzeContentStream(
 
   // Get decoded content bytes
   const contentBytes = getPageContentBytes(page, objects);
-  if (!contentBytes || contentBytes.length === 0) return results;
+  if (!contentBytes || contentBytes.length === 0) {
+    return results;
+  }
 
   const contentStr = bytesToString(contentBytes);
 
@@ -211,6 +213,7 @@ function analyzeContentStream(
 
   // Parse text occurrences with robust full-string regex parsing
   const textOccurrences = extractTextOccurrences(contentStr, opacityMap);
+
   const imageOccurrences = extractImageOccurrences(contentStr, opacityMap);
 
   // Also scan form XObjects referenced from the page for watermark text
@@ -398,8 +401,9 @@ function extractTextOccurrences(
   const occurrences: TextOccurrence[] = [];
 
   // ── Step 1: Pre-scan for gs (opacity) state changes and their positions ──
+  // NOTE: ExtGState names can contain hyphens (e.g. GS_wm_wm-17832), so use [\\w-]+
   const gsChanges: Array<{ pos: number; gsName: string; opacity: number }> = [];
-  const gsRegex = /\/(\w+)\s+gs/g;
+  const gsRegex = /\/([\w-]+)\s+gs/g;
   let gsM: RegExpExecArray | null;
   while ((gsM = gsRegex.exec(contentStr)) !== null) {
     const gsName = gsM[1];
@@ -424,34 +428,37 @@ function extractTextOccurrences(
     return { opacity, gsName };
   }
 
-  // ── Step 2: Pre-scan for cm (CTM) changes to track position transforms ──
-  // We track the most recent cm before each BT block to get position offsets
-  const cmChanges: Array<{ pos: number; matrix: [number, number, number, number, number, number] }> = [];
-  const cmRegex = /([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+cm/g;
-  let cmM: RegExpExecArray | null;
-  while ((cmM = cmRegex.exec(contentStr)) !== null) {
-    cmChanges.push({
-      pos: cmM.index,
-      matrix: [
-        parseFloat(cmM[1]), parseFloat(cmM[2]),
-        parseFloat(cmM[3]), parseFloat(cmM[4]),
-        parseFloat(cmM[5]), parseFloat(cmM[6]),
-      ],
-    });
-  }
-
-  /** Get the most recent CTM at a given position. Simplified: returns the last cm before pos. */
+  // ── Step 2: Build a proper q/Q-aware CTM state tracker ──
+  // We need to track the graphics state stack to properly accumulate
+  // CTMs. The watermark often uses: q / cm (translate) / cm (rotate) / BT...ET / Q
+  // where the two cm operators multiply together.
   function getCTMAt(pos: number): [number, number, number, number, number, number] {
-    // Walk backwards through q/Q stack isn't feasible with simple regex scanning,
-    // so we use the last cm before this position as an approximation.
-    // For watermark detection this is sufficient — watermarks typically have their
-    // own q/cm/Q block with the transform we need.
+    // Replay all graphics state operators up to `pos` to build the CTM
     let ctm: [number, number, number, number, number, number] = [1, 0, 0, 1, 0, 0];
-    for (const c of cmChanges) {
-      if (c.pos <= pos) {
-        ctm = c.matrix;
-      } else {
-        break;
+    const ctmStack: Array<[number, number, number, number, number, number]> = [];
+
+    // q/Q operators: standalone single-char graphic state operators.
+    // They can appear adjacent (e.g. "Qq" = Q then q), so use word-boundary matching.
+    // cm operators: 6 numbers followed by cm.
+    const stateRegex = /(?:^|[^a-zA-Z])(q|Q)(?=[^a-zA-Z]|$)|([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+([\d.\-e]+)\s+cm/g;
+    let stateMatch: RegExpExecArray | null;
+    while ((stateMatch = stateRegex.exec(contentStr)) !== null) {
+      if (stateMatch.index > pos) break;
+
+      if (stateMatch[1] === 'q') {
+        ctmStack.push([...ctm] as [number, number, number, number, number, number]);
+      } else if (stateMatch[1] === 'Q') {
+        if (ctmStack.length > 0) {
+          ctm = ctmStack.pop()!;
+        }
+      } else if (stateMatch[2] !== undefined) {
+        // cm operator — multiply into current CTM
+        const newCm: [number, number, number, number, number, number] = [
+          parseFloat(stateMatch[2]), parseFloat(stateMatch[3]),
+          parseFloat(stateMatch[4]), parseFloat(stateMatch[5]),
+          parseFloat(stateMatch[6]), parseFloat(stateMatch[7]),
+        ];
+        ctm = multiplyCTM(ctm, newCm);
       }
     }
     return ctm;
@@ -469,13 +476,22 @@ function extractTextOccurrences(
     const { opacity, gsName } = getOpacityAt(blockStart);
     const ctm = getCTMAt(blockStart);
 
-    // Parse font setting within this block: /FontName Size Tf
+    // Parse font setting: First check within this BT...ET block
     let fontName = 'Helvetica';
     let fontSize = 12;
     const tfMatch = blockContent.match(/\/(\S+)\s+([\d.]+)\s+Tf/);
     if (tfMatch) {
       fontName = tfMatch[1];
       fontSize = parseFloat(tfMatch[2]);
+    } else {
+      // Tf can appear BEFORE the BT block (e.g. in watermark: /Arial 72 Tf ... BT ... ET)
+      // Search backwards from blockStart in the content stream
+      const preContent = contentStr.substring(Math.max(0, blockStart - 200), blockStart);
+      const preTfMatch = preContent.match(/\/(\S+)\s+([\d.]+)\s+Tf/);
+      if (preTfMatch) {
+        fontName = preTfMatch[1];
+        fontSize = parseFloat(preTfMatch[2]);
+      }
     }
 
     // Parse text matrix: a b c d e f Tm
@@ -621,8 +637,9 @@ function extractImageOccurrences(
   const occurrences: ImageOccurrence[] = [];
 
   // Pre-scan gs operators for opacity tracking
+  // NOTE: ExtGState names can contain hyphens, so use [\w-]+
   const gsPositions: Array<{ pos: number; opacity: number }> = [];
-  const gsRegex = /\/(\w+)\s+gs/g;
+  const gsRegex = /\/([\w-]+)\s+gs/g;
   let gsMatch: RegExpExecArray | null;
   while ((gsMatch = gsRegex.exec(contentStr)) !== null) {
     const gsName = gsMatch[1];
@@ -632,8 +649,8 @@ function extractImageOccurrences(
     }
   }
 
-  // Match: /ImName Do
-  const doRegex = /\/(\w+)\s+Do/g;
+  // Match: /ImName Do — image names can also contain hyphens
+  const doRegex = /\/([\w-]+)\s+Do/g;
   let match: RegExpExecArray | null;
   while ((match = doRegex.exec(contentStr)) !== null) {
     // Find the most recent gs before this Do
@@ -1309,8 +1326,13 @@ function getPageContentBytes(page: PDFPageInfo, objects: Map<string, PDFObject>)
 }
 
 function bytesToString(bytes: Uint8Array): string {
-  const decoder = new TextDecoder('utf-8', { fatal: false });
-  return decoder.decode(bytes);
+  // PDF content streams are raw byte data (Latin-1), NOT UTF-8.
+  // We must preserve each byte value exactly as a char code point.
+  let s = '';
+  for (let i = 0; i < bytes.length; i++) {
+    s += String.fromCharCode(bytes[i]);
+  }
+  return s;
 }
 
 function unescapePDFString(s: string): string {

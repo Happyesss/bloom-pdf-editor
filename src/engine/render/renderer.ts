@@ -377,6 +377,18 @@ function drawTextRun(
     // Set font at the effective size
     ctx.font = `${style} ${weight} ${effFontSize}px ${family}`;
 
+    // Force character to fit its exact PDF width to prevent overlapping
+    // when using fallback fonts that don't match the original font's metrics.
+    const actualWidth = ctx.measureText(glyph.unicode).width;
+    const targetWidth = glyph.textSpaceWidth * effFontSize;
+    
+    // Only apply correction if the width is significantly different (e.g., > 5%)
+    // and both widths are valid, to avoid distorting perfectly fine fonts.
+    if (actualWidth > 0 && targetWidth > 0 && Math.abs(actualWidth - targetWidth) > targetWidth * 0.05) {
+      const scaleX = targetWidth / actualWidth;
+      ctx.scale(scaleX, 1);
+    }
+
     ctx.fillText(glyph.unicode, 0, 0);
     
     // Draw underline if enabled
@@ -570,7 +582,7 @@ async function registerEmbeddedFonts(fonts: Map<string, FontData>): Promise<void
       }
       
       if (!alreadyLoaded) {
-        const fontFace = new FontFace(familyName, fontData.fontBytes.buffer as ArrayBuffer);
+        const fontFace = new FontFace(familyName, fontData.fontBytes);
         const p = fontFace.load().then((loadedFace) => {
           document.fonts.add(loadedFace);
         }).catch((e) => {

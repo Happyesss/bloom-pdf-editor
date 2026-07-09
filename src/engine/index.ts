@@ -70,10 +70,56 @@ export type { ColorSpace, RGBColor } from './render/color-space';
 export { decodeImage } from './render/image-decoder';
 export type { DecodedImage } from './render/image-decoder';
 
+// ── Flow (line/paragraph model) ──
+export {
+  buildDocumentFlow,
+  reconstructLines,
+  reconstructParagraphs,
+  applyLineTextEdit,
+  hitTestTextLine,
+  findNearestTextLine,
+  caretIndexFromLineX,
+  lineXFromCaretIndex,
+  distributeTextToSegments,
+  segmentAtIndex,
+  computeLineWidthDelta,
+  analyzeJustification,
+  distributeJustifiedSpace,
+  computeBaseline,
+  getRunBounds,
+  averageCharWidth,
+  estimateTextWidth,
+  greedyWrap,
+  previewWrap,
+  computeLayoutPlan,
+  computeEditPreview,
+  computeHorizontalShifts,
+  computeLineHeight,
+  findParagraphForLine,
+  computeFlowDrawPositions,
+  buildLineDrawMap,
+  buildFlowDrawIndex,
+  shapeText,
+  measureText,
+  layoutShapedGlyphs,
+} from './flow';
+export type {
+  DocumentFlow,
+  TextLine,
+  Paragraph,
+  StyledSegment,
+  SegmentEdit,
+  LayoutPlan,
+  LineTextEdit,
+  RunShift,
+  FlowGlyphDraw,
+  ShapedGlyph,
+} from './flow';
+
 // ── Editor ──
-export { applyTextEdits, findTextInPage, findAndReplace, insertTextRun } from './editor/text-editor';
+export { applyTextEdits, applyRunPositionShifts, findTextInPage, findAndReplace, insertTextRun } from './editor/text-editor';
 export { insertImageRun } from './editor/image-editor';
-export type { TextEdit, EditResult } from './editor/text-editor';
+export type { TextEdit, EditResult, RunPositionShift } from './editor/text-editor';
 export {
   compileContentStream,
   updatePageContent,

@@ -35,7 +35,7 @@ export function StatusBar({
         )}
       </span>
       <span className="text-[10px] font-medium tracking-wider text-zinc-500">
-        {renderResult ? `${renderResult.textRuns.length} RUNS` : ''}
+        {renderResult ? `${renderResult.textLines.length} LINES` : ''}
         {doc ? ` • ${totalPages} PAGES • v${doc.version}` : ''}
       </span>
     </footer>

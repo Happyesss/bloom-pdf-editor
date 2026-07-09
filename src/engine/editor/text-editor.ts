@@ -17,7 +17,7 @@
  */
 
 import { parseContentStream, type CSInstruction } from '../content/operator-lexer';
-import { interpretPage, type TextRun, type GlyphPosition } from '../content/interpreter';
+import { interpretPage, type TextRun } from '../content/interpreter';
 import {
   PDFArray,
   PDFDict,
@@ -52,6 +52,12 @@ export interface EditResult {
   missingCharCodes: number[];
 }
 
+export interface RunPositionShift {
+  run: TextRun;
+  dx: number;
+  dy: number;
+}
+
 // ─── Main editing function ──────────────────────────────────────────────────
 
 /**
@@ -77,22 +83,10 @@ export function applyTextEdits(
 
   let needsFontAugmentation = false;
   const missingCharCodes: number[] = [];
+  let indexOffset = 0;
 
   // Apply each edit
   for (const edit of edits) {
-    const matched = matchTextRunToInstruction(
-      edit.targetRun,
-      textInstructions,
-      contentBytes,
-      page,
-      objects,
-    );
-
-    if (!matched) {
-      console.warn('[TextEditor] Could not match text run to instruction');
-      continue;
-    }
-
     // Load font data for encoding
     const fontData = loadFontForRun(edit.targetRun, page, objects);
 
@@ -104,10 +98,77 @@ export function applyTextEdits(
       missingCharCodes.push(...encoded.missing);
     }
 
+    const rawIndices = edit.targetRun.sourceInstructionIndices ?? [];
+
+    // Erase the old text region before replacing (prevents overlap with neighbors)
+    if (edit.newText !== edit.targetRun.text && rawIndices.length > 0) {
+      const inserted = insertEraseRectForRun(
+        instructions,
+        edit.targetRun,
+        edit.newText,
+        Math.min(...rawIndices) + indexOffset,
+      );
+      indexOffset += inserted;
+    }
+
+    const sourceInstructionIndices = rawIndices.map(i => i + indexOffset);
+
+    if (sourceInstructionIndices.length > 1) {
+      applyGroupedTextEdit(
+        instructions,
+        sourceInstructionIndices,
+        edit.targetRun.text,
+        edit.newText,
+        fontData,
+        page,
+        objects,
+      );
+      continue;
+    }
+
+    // Prefer stable index-based matching (immune to fuzzy text match failures)
+    let matched: TextInstruction | null = null;
+    if (sourceInstructionIndices.length === 1) {
+      const idx = sourceInstructionIndices[0];
+      const inst = instructions[idx];
+      if (inst && isTextShowingOperator(inst.operator)) {
+        matched = {
+          index: idx,
+          instruction: inst,
+          fontInstruction: null,
+          fontName: edit.targetRun.fontName,
+          fontSize: edit.targetRun.fontSize,
+          tmX: edit.targetRun.x,
+          tmY: edit.targetRun.y,
+        };
+      }
+    }
+
+    if (!matched) {
+      matched = matchTextRunToInstruction(
+        edit.targetRun,
+        textInstructions,
+        contentBytes,
+        page,
+        objects,
+      );
+    }
+
+    if (!matched) {
+      console.warn('[TextEditor] Could not match text run to instruction');
+      continue;
+    }
+
     // Replace the operand in the matched instruction
     if (matched.instruction.operator === 'TJ') {
-      const arr = new PDFArray([encoded.pdfString]);
-      matched.instruction.operands = [arr];
+      // Smart TJ editing — preserve spacing pattern from original array
+      const oldArr = matched.instruction.operands[0];
+      if (oldArr instanceof PDFArray) {
+        const newArr = buildSmartTJArray(oldArr, edit.targetRun.text, edit.newText, encoded.pdfString, fontData);
+        matched.instruction.operands = [newArr];
+      } else {
+        matched.instruction.operands = [new PDFArray([encoded.pdfString])];
+      }
     } else {
       matched.instruction.operands = [encoded.pdfString];
     }
@@ -121,6 +182,76 @@ export function applyTextEdits(
     needsFontAugmentation,
     missingCharCodes,
   };
+}
+
+/**
+ * Shift text runs by modifying Tm/Td operands in their BT block.
+ * Used by the flow layout layer for horizontal reflow and line push-down.
+ */
+export function applyRunPositionShifts(
+  contentBytes: Uint8Array,
+  shifts: RunPositionShift[],
+): Uint8Array {
+  if (shifts.length === 0) return contentBytes;
+
+  const instructions = parseContentStream(contentBytes);
+  const merged = new Map<TextRun, { dx: number; dy: number }>();
+  for (let i = 0; i < shifts.length; i++) {
+    const s = shifts[i];
+    const prev = merged.get(s.run) ?? { dx: 0, dy: 0 };
+    prev.dx += s.dx;
+    prev.dy += s.dy;
+    merged.set(s.run, prev);
+  }
+
+  const shiftedOps = new Set<number>();
+
+  merged.forEach((delta, run) => {
+    const indices = run.sourceInstructionIndices;
+    if (!indices || indices.length === 0) return;
+
+    const textIndex = indices[0];
+    const pos = findTextPositionInstruction(instructions, textIndex);
+    if (!pos || shiftedOps.has(pos.index)) return;
+
+    const inst = instructions[pos.index];
+    if (pos.kind === 'Tm' && inst.operands.length >= 6) {
+      inst.operands[4] = new PDFNumber(numVal(inst.operands[4]) + delta.dx);
+      inst.operands[5] = new PDFNumber(numVal(inst.operands[5]) + delta.dy);
+    } else if (inst.operands.length >= 2) {
+      inst.operands[0] = new PDFNumber(numVal(inst.operands[0]) + delta.dx);
+      inst.operands[1] = new PDFNumber(numVal(inst.operands[1]) + delta.dy);
+    }
+    shiftedOps.add(pos.index);
+  });
+
+  return compileInstructions(instructions);
+}
+
+function findTextPositionInstruction(
+  instructions: CSInstruction[],
+  textIndex: number,
+): { index: number; kind: 'Tm' | 'Td' } | null {
+  if (textIndex < 0 || textIndex >= instructions.length) return null;
+
+  let btIndex = -1;
+  for (let i = textIndex; i >= 0; i--) {
+    if (instructions[i].operator === 'ET') return null;
+    if (instructions[i].operator === 'BT') {
+      btIndex = i;
+      break;
+    }
+  }
+  if (btIndex < 0) return null;
+
+  let last: { index: number; kind: 'Tm' | 'Td' } | null = null;
+  for (let i = btIndex; i < textIndex; i++) {
+    const op = instructions[i].operator;
+    if (op === 'Tm') last = { index: i, kind: 'Tm' };
+    else if (op === 'Td' || op === 'TD') last = { index: i, kind: 'Td' };
+  }
+
+  return last;
 }
 
 /**
@@ -208,6 +339,14 @@ interface TextInstruction {
   fontName: string;
   /** Font size from the most recent Tf */
   fontSize: number;
+  /** Approximate X position from text matrix (user space) */
+  tmX: number;
+  /** Approximate Y position from text matrix (user space) */
+  tmY: number;
+}
+
+function numVal(obj: PDFObject | undefined): number {
+  return obj instanceof PDFNumber ? obj.value : 0;
 }
 
 function findTextInstructions(instructions: CSInstruction[]): TextInstruction[] {
@@ -216,13 +355,72 @@ function findTextInstructions(instructions: CSInstruction[]): TextInstruction[] 
   let currentFontSize = 12;
   let lastTfInstruction: CSInstruction | null = null;
 
+  // Track text matrix for position-based matching
+  // tm = [a, b, c, d, e, f] where e=x, f=y in user space
+  let tmE = 0, tmF = 0;     // text matrix translation (position)
+  let tlmE = 0, tlmF = 0;   // text line matrix translation
+  let tmA = 1, tmB = 0, tmC = 0, tmD = 1;  // text matrix rotation/scale
+  let tlmA = 1, tlmB = 0, tlmC = 0, tlmD = 1;
+  let textLeading = 0;
+
   for (let i = 0; i < instructions.length; i++) {
     const inst = instructions[i];
 
-    if (inst.operator === 'Tf') {
-      currentFont = inst.operands[0] instanceof PDFName ? inst.operands[0].name : '';
-      currentFontSize = inst.operands[1] instanceof PDFNumber ? inst.operands[1].value : 12;
-      lastTfInstruction = inst;
+    switch (inst.operator) {
+      case 'BT':
+        tmA = 1; tmB = 0; tmC = 0; tmD = 1; tmE = 0; tmF = 0;
+        tlmA = 1; tlmB = 0; tlmC = 0; tlmD = 1; tlmE = 0; tlmF = 0;
+        break;
+
+      case 'Tm': {
+        tmA = numVal(inst.operands[0]); tmB = numVal(inst.operands[1]);
+        tmC = numVal(inst.operands[2]); tmD = numVal(inst.operands[3]);
+        tmE = numVal(inst.operands[4]); tmF = numVal(inst.operands[5]);
+        tlmA = tmA; tlmB = tmB; tlmC = tmC; tlmD = tmD;
+        tlmE = tmE; tlmF = tmF;
+        break;
+      }
+
+      case 'Td': {
+        const tx = numVal(inst.operands[0]);
+        const ty = numVal(inst.operands[1]);
+        // textLineMatrix = translate(tx,ty) * textLineMatrix
+        tlmE = tlmA * tx + tlmC * ty + tlmE;
+        tlmF = tlmB * tx + tlmD * ty + tlmF;
+        tmA = tlmA; tmB = tlmB; tmC = tlmC; tmD = tlmD;
+        tmE = tlmE; tmF = tlmF;
+        break;
+      }
+
+      case 'TD': {
+        const tx = numVal(inst.operands[0]);
+        const ty = numVal(inst.operands[1]);
+        textLeading = -ty;
+        tlmE = tlmA * tx + tlmC * ty + tlmE;
+        tlmF = tlmB * tx + tlmD * ty + tlmF;
+        tmA = tlmA; tmB = tlmB; tmC = tlmC; tmD = tlmD;
+        tmE = tlmE; tmF = tlmF;
+        break;
+      }
+
+      case 'T*': {
+        const ty = -textLeading;
+        tlmE = tlmC * ty + tlmE;
+        tlmF = tlmD * ty + tlmF;
+        tmA = tlmA; tmB = tlmB; tmC = tlmC; tmD = tlmD;
+        tmE = tlmE; tmF = tlmF;
+        break;
+      }
+
+      case 'TL':
+        textLeading = numVal(inst.operands[0]);
+        break;
+
+      case 'Tf':
+        currentFont = inst.operands[0] instanceof PDFName ? inst.operands[0].name : '';
+        currentFontSize = inst.operands[1] instanceof PDFNumber ? inst.operands[1].value : 12;
+        lastTfInstruction = inst;
+        break;
     }
 
     if (inst.operator === 'Tj' || inst.operator === 'TJ' ||
@@ -233,6 +431,8 @@ function findTextInstructions(instructions: CSInstruction[]): TextInstruction[] 
         fontInstruction: lastTfInstruction,
         fontName: currentFont,
         fontSize: currentFontSize,
+        tmX: tmE,
+        tmY: tmF,
       });
     }
   }
@@ -253,9 +453,16 @@ function matchTextRunToInstruction(
   page: PDFPageInfo,
   objects: Map<string, PDFObject>,
 ): TextInstruction | null {
+  // Helper: check if font names are compatible
+  const fontsMatch = (tiFontName: string, runFontName: string): boolean => {
+    if (runFontName === '' || tiFontName === '') return true;
+    if (tiFontName === runFontName) return true;
+    return false;
+  };
+
   // 1) Try exact or trimmed match first
   for (const ti of textInstructions) {
-    if (ti.fontName !== run.fontName && run.fontName !== '') continue;
+    if (!fontsMatch(ti.fontName, run.fontName)) continue;
 
     const decoded = decodeInstructionText(ti.instruction, ti.fontName, page, objects);
     if (decoded === null) continue;
@@ -269,7 +476,7 @@ function matchTextRunToInstruction(
   const runClean = run.text.replace(/\s+/g, '');
   if (runClean.length > 0) {
     for (const ti of textInstructions) {
-      if (ti.fontName !== run.fontName && run.fontName !== '') continue;
+      if (!fontsMatch(ti.fontName, run.fontName)) continue;
 
       const decoded = decodeInstructionText(ti.instruction, ti.fontName, page, objects);
       if (decoded === null) continue;
@@ -284,13 +491,45 @@ function matchTextRunToInstruction(
   // 3) Try substring match ONLY if decoded instruction contains the run text (e.g. multi-line TJ array)
   // NEVER check if run.text.includes(decoded), as short/single-character instructions would falsely match!
   for (const ti of textInstructions) {
-    if (ti.fontName !== run.fontName && run.fontName !== '') continue;
+    if (!fontsMatch(ti.fontName, run.fontName)) continue;
 
     const decoded = decodeInstructionText(ti.instruction, ti.fontName, page, objects);
     if (decoded === null) continue;
 
     if (decoded.includes(run.text) && run.text.trim().length > 1) {
       return ti;
+    }
+  }
+
+  // 4) Normalized comparison — strip all non-alphanumeric characters and compare
+  const runNorm = run.text.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+  if (runNorm.length > 2) {
+    for (const ti of textInstructions) {
+      if (!fontsMatch(ti.fontName, run.fontName)) continue;
+
+      const decoded = decodeInstructionText(ti.instruction, ti.fontName, page, objects);
+      if (decoded === null) continue;
+
+      const decNorm = decoded.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+      if (decNorm === runNorm) {
+        return ti;
+      }
+    }
+  }
+
+  // 5) For single/short text (brackets, special chars, bullet points), try
+  //    matching by font name alone when there's a single instruction with that font
+  //    that produces similar-length text
+  if (run.text.trim().length <= 2 && run.text.trim().length > 0) {
+    const candidates = textInstructions.filter(ti => {
+      if (!fontsMatch(ti.fontName, run.fontName)) return false;
+      const decoded = decodeInstructionText(ti.instruction, ti.fontName, page, objects);
+      if (decoded === null) return false;
+      return decoded.trim().length <= 3 && decoded.trim().length > 0;
+    });
+    // If exactly one candidate, return it
+    if (candidates.length === 1) {
+      return candidates[0];
     }
   }
 
@@ -488,6 +727,225 @@ function buildReverseUnicodeMap(fontData: FontData): Map<string, number> {
   }
 
   return reverse;
+}
+
+// ─── Text region erase ────────────────────────────────────────────────────────
+
+function isTextShowingOperator(op: string): boolean {
+  return op === 'Tj' || op === 'TJ' || op === "'" || op === '"';
+}
+
+/**
+ * Paint a white rectangle over the text run's bounding box before replacing text.
+ * Prevents longer edits from visually overlapping adjacent content.
+ */
+function insertEraseRectForRun(
+  instructions: CSInstruction[],
+  run: TextRun,
+  newText: string,
+  hintIndex: number,
+): number {
+  if (hintIndex < 0 || hintIndex >= instructions.length) return 0;
+
+  let btIndex = hintIndex;
+  for (let i = hintIndex; i >= 0; i--) {
+    if (instructions[i].operator === 'BT') {
+      btIndex = i;
+      break;
+    }
+    if (instructions[i].operator === 'ET') break;
+  }
+
+  const fontSize = run.fontSize || run.glyphs[0]?.fontSize || 12;
+  const pad = Math.max(2, fontSize * 0.2);
+  const oldLen = Math.max(1, run.text.length);
+  const widthScale = Math.max(1, newText.length / oldLen);
+  const eraseWidth = run.width * widthScale + pad * 2;
+  const eraseHeight = (run.height || fontSize) + pad * 2;
+
+  const eraseOps: CSInstruction[] = [
+    { operator: 'q', operands: [], offset: 0 },
+    { operator: 'rg', operands: [new PDFNumber(1), new PDFNumber(1), new PDFNumber(1)], offset: 0 },
+    {
+      operator: 're',
+      operands: [
+        new PDFNumber(run.x - pad),
+        new PDFNumber(run.y - pad),
+        new PDFNumber(eraseWidth),
+        new PDFNumber(eraseHeight),
+      ],
+      offset: 0,
+    },
+    { operator: 'f', operands: [], offset: 0 },
+    { operator: 'Q', operands: [], offset: 0 },
+  ];
+
+  instructions.splice(btIndex, 0, ...eraseOps);
+  return eraseOps.length;
+}
+
+// ─── Grouped text edit (multi-instruction spans) ────────────────────────────
+
+/**
+ * Distribute new text across multiple source instructions proportionally,
+ * preserving each instruction's operator (Tj/TJ) and spacing arrays.
+ */
+function applyGroupedTextEdit(
+  instructions: CSInstruction[],
+  sourceIndices: number[],
+  oldText: string,
+  newText: string,
+  fontData: FontData | null,
+  page: PDFPageInfo,
+  objects: Map<string, PDFObject>,
+): void {
+  const sortedIndices = Array.from(new Set(sourceIndices)).sort((a, b) => a - b);
+  const segments: { index: number; text: string }[] = [];
+
+  for (let i = 0; i < sortedIndices.length; i++) {
+    const idx = sortedIndices[i];
+    const inst = instructions[idx];
+    if (!inst) continue;
+
+    const fontName = findFontNameForInstruction(instructions, idx);
+    const decoded = decodeInstructionText(inst, fontName, page, objects);
+    if (decoded !== null) {
+      segments.push({ index: idx, text: decoded });
+    }
+  }
+
+  if (segments.length === 0) return;
+
+  const totalOldLen = segments.reduce((sum, s) => sum + s.text.length, 0);
+  let newPos = 0;
+
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    const inst = instructions[seg.index];
+    if (!inst) continue;
+
+    let segNewText: string;
+    if (i === segments.length - 1) {
+      segNewText = newText.substring(newPos);
+    } else if (totalOldLen > 0) {
+      const ratio = seg.text.length / totalOldLen;
+      const segLen = Math.round(ratio * newText.length);
+      segNewText = newText.substring(newPos, newPos + segLen);
+      newPos += segLen;
+    } else {
+      const evenLen = Math.floor(newText.length / segments.length);
+      segNewText = newText.substring(newPos, newPos + evenLen);
+      newPos += evenLen;
+    }
+
+    const encoded = encodeTextForFont(segNewText, fontData);
+
+    if (inst.operator === 'TJ') {
+      const oldArr = inst.operands[0];
+      if (oldArr instanceof PDFArray) {
+        inst.operands = [buildSmartTJArray(oldArr, seg.text, segNewText, encoded.pdfString, fontData)];
+      } else {
+        inst.operands = [new PDFArray([encoded.pdfString])];
+      }
+    } else {
+      inst.operands = [encoded.pdfString];
+    }
+  }
+}
+
+function findFontNameForInstruction(instructions: CSInstruction[], index: number): string {
+  for (let i = index; i >= 0; i--) {
+    if (instructions[i].operator === 'Tf') {
+      const op = instructions[i].operands[0];
+      return op instanceof PDFName ? op.name : '';
+    }
+  }
+  return '';
+}
+
+// ─── Smart TJ array building ────────────────────────────────────────────────
+
+/**
+ * Build a new TJ array that preserves the spacing pattern from the original.
+ * 
+ * TJ arrays look like: [(Hello) -80 (World) -120 (!)]
+ * The numbers between strings are kerning/spacing adjustments in thousandths
+ * of a unit of text space. Destroying these numbers (as the old code did)
+ * causes text to render with wrong spacing.
+ * 
+ * Strategy:
+ * - Extract the text fragments and spacing numbers from the old array
+ * - If the new text has the same length, apply character-level diff
+ * - Otherwise, emit the new text as a single string but inject the average
+ *   spacing at word boundaries to maintain readable spacing
+ */
+function buildSmartTJArray(
+  oldArr: PDFArray,
+  oldText: string,
+  newText: string,
+  encodedNewText: PDFObject,
+  fontData: FontData | null,
+): PDFArray {
+  // Collect spacing numbers and their decoded fragment texts
+  const fragments: { text: string }[] = [];
+  const spacings: number[] = [];
+
+  for (let i = 0; i < oldArr.length; i++) {
+    const item = oldArr.get(i)!;
+    if (item instanceof PDFNumber) {
+      spacings.push(item.value);
+    } else if (item instanceof PDFString) {
+      fragments.push({ text: item.value });
+    } else if (item instanceof PDFHexString) {
+      fragments.push({ text: item.hex });
+    }
+  }
+
+  if (spacings.length === 0 || fragments.length <= 1) {
+    return new PDFArray([encodedNewText]);
+  }
+
+  // Same-length text: replace fragments in-place, keep all spacing numbers
+  if (newText.length === oldText.length && fragments.length === spacings.length + 1) {
+    const newItems: PDFObject[] = [];
+    let charPos = 0;
+    for (let fi = 0; fi < fragments.length; fi++) {
+      const fragLen = fragments[fi].text.length;
+      const fragText = newText.substring(charPos, charPos + fragLen);
+      newItems.push(encodeTextForFont(fragText, fontData).pdfString);
+      charPos += fragLen;
+      if (fi < spacings.length) {
+        newItems.push(new PDFNumber(spacings[fi]));
+      }
+    }
+    return new PDFArray(newItems);
+  }
+
+  // Different length: split at word boundaries and distribute spacing proportionally
+  const words = newText.split(/(\s+)/);
+  if (words.length > 1 && spacings.length > 0) {
+    const newItems: PDFObject[] = [];
+    const spacingPerGap = spacings.reduce((s, v) => s + v, 0) / spacings.length;
+    let wordIdx = 0;
+
+    for (let wi = 0; wi < words.length; wi++) {
+      const word = words[wi];
+      if (word.length === 0) continue;
+      newItems.push(encodeTextForFont(word, fontData).pdfString);
+      if (wi < words.length - 1 && wordIdx < spacings.length) {
+        // Use original spacing when available, average otherwise
+        newItems.push(new PDFNumber(spacings[wordIdx] ?? spacingPerGap));
+        wordIdx++;
+      }
+    }
+
+    if (newItems.length > 0) {
+      return new PDFArray(newItems);
+    }
+  }
+
+  // Last resort: single string (loses justification but avoids orphan spacing)
+  return new PDFArray([encodedNewText]);
 }
 
 // ─── Instruction compilation ────────────────────────────────────────────────

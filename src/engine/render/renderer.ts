@@ -19,7 +19,9 @@
  */
 
 import { parsePDF, getPageContentBytes, resolveRef, getResource } from '../parser/parser';
-import { interpretPage, type DisplayItem, type TextRun, type PathItem, type ImageItem } from '../content/interpreter';
+import { interpretPage, type DisplayItem, type TextRun, type PathItem, type ImageItem, type GlyphPosition } from '../content/interpreter';
+import { buildDocumentFlow, buildFlowDrawIndex, type DocumentFlow, type TextLine } from '../flow';
+import type { FlowGlyphDraw } from '../flow/flow-draw';
 import { loadPageFonts, type FontData } from '../fonts/font-parser';
 import { getCSSFontFamily, getStandardFont } from '../fonts/standard14';
 import { decodeImage } from './image-decoder';
@@ -56,8 +58,12 @@ export interface RenderOptions {
 export interface RenderResult {
   /** The rendered canvas */
   canvas: HTMLCanvasElement;
-  /** Text runs with positions (for text selection / editing) */
+  /** Raw text runs from the content stream */
   textRuns: TextRun[];
+  /** Logical lines (bold + regular grouped) for Word-style editing */
+  textLines: TextLine[];
+  /** Full document flow model */
+  documentFlow: DocumentFlow;
   /** Font data loaded for this page */
   fonts: Map<string, FontData>;
   /** Page dimensions in PDF points */
@@ -138,6 +144,9 @@ export async function renderPageToCanvas(
   // Interpret content stream
   const interpreted = interpretPage(contentBytes, page, objects);
 
+  // Build flow model before drawing — justified lines use flow positions
+  const documentFlow = buildDocumentFlow(interpreted.textRuns);
+
   // Load detailed font data
   const fonts = loadPageFonts(page.resources, objects);
 
@@ -145,6 +154,9 @@ export async function renderPageToCanvas(
   if (typeof window !== 'undefined') {
     await registerEmbeddedFonts(fonts);
   }
+
+  const flowDraw = buildFlowDrawIndex(documentFlow.lines, fonts);
+  const drawnJustifiedRuns = new Set<TextRun>();
 
   // Render display list
   for (let i = 0; i < interpreted.displayList.length; i++) {
@@ -155,7 +167,9 @@ export async function renderPageToCanvas(
         if (renderPaths) drawPath(ctx, item);
         break;
       case 'text':
-        if (renderText) drawTextRun(ctx, item, fonts);
+        if (renderText) {
+          drawTextRunWithFlow(ctx, item, fonts, flowDraw, drawnJustifiedRuns);
+        }
         break;
       case 'image':
         if (renderImages) await drawImage(ctx, item, page, objects);
@@ -175,6 +189,12 @@ export async function renderPageToCanvas(
       if (!(annotRef instanceof PDFRef)) continue;
       const annotDict = resolveRef(annotRef, objects);
       if (!(annotDict instanceof PDFDict)) continue;
+
+      // Link annotations duplicate page text in hyperref/LaTeX PDFs — skip their
+      // appearance streams to avoid rendering text twice on top of itself.
+      const subtype = annotDict.get('Subtype');
+      const subtypeName = subtype instanceof PDFName ? subtype.name : '';
+      if (subtypeName === 'Link' || subtypeName === 'Widget') continue;
       
       const apRef = annotDict.get('AP');
       let apDict = apRef;
@@ -247,6 +267,8 @@ export async function renderPageToCanvas(
   return {
     canvas,
     textRuns: interpreted.textRuns,
+    textLines: documentFlow.lines,
+    documentFlow,
     fonts,
     pageWidth,
     pageHeight,
@@ -330,6 +352,80 @@ function drawPath(ctx: CanvasRenderingContext2D, item: PathItem): void {
 
 // ─── Text rendering ─────────────────────────────────────────────────────────
 
+/** Strip PDF subset prefix (e.g. "ABCDEF+TimesNewRomanPSMT" → "TimesNewRomanPSMT"). */
+function stripFontSubsetPrefix(baseFont: string): string {
+  const plus = baseFont.indexOf('+');
+  return plus >= 0 ? baseFont.slice(plus + 1) : baseFont;
+}
+
+type FlowDrawIndex = ReturnType<typeof buildFlowDrawIndex>;
+
+function drawTextRunWithFlow(
+  ctx: CanvasRenderingContext2D,
+  run: TextRun,
+  fonts: Map<string, FontData>,
+  flowDraw: FlowDrawIndex,
+  drawnJustifiedRuns: Set<TextRun>,
+): void {
+  if (drawnJustifiedRuns.has(run)) return;
+
+  const line = flowDraw.runToLine.get(run);
+  if (line && flowDraw.justifiedLines.has(line)) {
+    drawJustifiedTextLine(ctx, line, flowDraw, fonts, drawnJustifiedRuns);
+    return;
+  }
+
+  drawTextRun(ctx, run, fonts);
+}
+
+function drawJustifiedTextLine(
+  ctx: CanvasRenderingContext2D,
+  line: TextLine,
+  flowDraw: FlowDrawIndex,
+  fonts: Map<string, FontData>,
+  drawnJustifiedRuns: Set<TextRun>,
+): void {
+  const drawMap = flowDraw.drawMaps.get(line);
+  if (!drawMap) {
+    for (let r = 0; r < line.runs.length; r++) {
+      drawTextRun(ctx, line.runs[r], fonts);
+      drawnJustifiedRuns.add(line.runs[r]);
+    }
+    return;
+  }
+
+  for (let r = 0; r < line.runs.length; r++) {
+    const run = line.runs[r];
+    const positions = drawMap.get(run);
+    if (positions && positions.length > 0) {
+      drawTextRunAtPositions(ctx, run, fonts, positions);
+    } else {
+      drawTextRun(ctx, run, fonts);
+    }
+    drawnJustifiedRuns.add(run);
+  }
+}
+
+function drawTextRunAtPositions(
+  ctx: CanvasRenderingContext2D,
+  run: TextRun,
+  fonts: Map<string, FontData>,
+  positions: FlowGlyphDraw[],
+): void {
+  if (positions.length === 0) return;
+
+  ctx.save();
+  const fontData = fonts.get(run.fontName);
+  const fillColor = rgbToCSSColor(run.fillColor, run.fillAlpha);
+  const { family, weight, style } = getCanvasFontProperties(run.fontName, fontData);
+  ctx.fillStyle = fillColor;
+
+  for (let i = 0; i < positions.length; i++) {
+    drawGlyph(ctx, positions[i].glyph, run, family, weight, style, fillColor, positions[i].x, positions[i].f);
+  }
+
+  ctx.restore();
+}
 
 function drawTextRun(
   ctx: CanvasRenderingContext2D,
@@ -342,84 +438,52 @@ function drawTextRun(
 
   const fontData = fonts.get(run.fontName);
   const fillColor = rgbToCSSColor(run.fillColor, run.fillAlpha);
-
-  // Get CSS font properties
   const { family, weight, style } = getCanvasFontProperties(run.fontName, fontData);
   ctx.fillStyle = fillColor;
 
   for (let i = 0; i < run.glyphs.length; i++) {
     const glyph = run.glyphs[i];
-    const { tRm } = glyph;
+    drawGlyph(ctx, glyph, run, family, weight, style, fillColor, glyph.tRm.e, glyph.tRm.f);
+  }
 
-    // Extract the effective font size from the text rendering matrix.
-    // The tRm encodes: fontSize * hScale in 'a' component, fontSize in 'd' component
-    // (for non-rotated text). The effective visual height comes from the d column.
-    const effFontSize = Math.sqrt(tRm.c * tRm.c + tRm.d * tRm.d);
-    if (effFontSize < 0.1) continue; // Skip invisible text
+  ctx.restore();
+}
 
-    ctx.save();
+function drawGlyph(
+  ctx: CanvasRenderingContext2D,
+  glyph: GlyphPosition,
+  run: TextRun,
+  family: string,
+  weight: string,
+  style: string,
+  fillColor: string,
+  x: number,
+  f: number,
+): void {
+  const { tRm } = glyph;
+  const effFontSize = Math.sqrt(tRm.c * tRm.c + tRm.d * tRm.d);
+  if (effFontSize < 0.1) return;
 
-    // Position at the glyph's exact location in user space.
-    // Then set up the local coordinate system from the tRm, but only
-    // use the rotational/scaling part (a,b,c,d), not translation (e,f)
-    // — we handle translation explicitly via (tRm.e, tRm.f).
-    ctx.transform(
-      tRm.a / effFontSize,  tRm.b / effFontSize,
-      tRm.c / effFontSize,  tRm.d / effFontSize,
-      tRm.e,                tRm.f,
-    );
+  ctx.save();
+  ctx.transform(
+    tRm.a / effFontSize, tRm.b / effFontSize,
+    tRm.c / effFontSize, tRm.d / effFontSize,
+    x, f,
+  );
+  ctx.scale(1, -1);
+  ctx.font = `${style} ${weight} ${effFontSize}px ${family}`;
+  ctx.fillText(glyph.unicode, 0, 0);
 
-    // Flip Y for text (PDF Y-up has already been flipped by the parent
-    // transform, but the text rendering matrix re-introduces the PDF
-    // orientation, so we need to flip once more for canvas fillText).
-    ctx.scale(1, -1);
-
-    // Set font at the effective size
-    ctx.font = `${style} ${weight} ${effFontSize}px ${family}`;
-
-    // Force character to fit its exact PDF width to prevent overlapping
-    // when using fallback fonts that don't match the original font's metrics.
-    const actualWidth = ctx.measureText(glyph.unicode).width;
-    const targetWidth = glyph.textSpaceWidth * effFontSize;
-    
-    // Only apply correction if the width is significantly different (e.g., > 5%)
-    // and both widths are valid, to avoid distorting perfectly fine fonts.
-    if (actualWidth > 0 && targetWidth > 0 && Math.abs(actualWidth - targetWidth) > targetWidth * 0.05) {
-      const scaleX = targetWidth / actualWidth;
-      ctx.scale(scaleX, 1);
-    }
-
-    ctx.fillText(glyph.unicode, 0, 0);
-    
-    // Draw underline if enabled
-    if (run.isUnderline) {
-      ctx.beginPath();
-      // Draw a line slightly below the baseline (e.g. at y = 0.1 * effFontSize)
-      // Note that Y is flipped (scale(1, -1)) so positive Y is down in visual space
-      // but in the current coordinate system, after scale(1, -1), Y points down,
-      // and baseline is 0. So y = 0.1 draws below baseline.
-      // Wait, the font size is effective, so 0.1 is 10% of font size.
-      // Actually, since we scale the context by effFontSize by passing it to font size,
-      // the coordinates passed to fillText are 0, 0.
-      // The context is not scaled by effFontSize, but the font size is set to effFontSizepx.
-      // So the y coordinate for the line should be relative to effFontSize.
-      const underlineY = effFontSize * 0.15;
-      const underlineThickness = Math.max(1, effFontSize * 0.05);
-      
-      // Calculate visual width of the character
-      // glyph.textSpaceWidth is the width of the glyph in Text Space (w0/1000).
-      // Or we can just use the next glyph's x position, but that might include spacing.
-      // We can also measure the text using ctx.measureText.
-      const charWidth = ctx.measureText(glyph.unicode).width;
-      
-      ctx.moveTo(0, underlineY);
-      ctx.lineTo(charWidth, underlineY);
-      ctx.lineWidth = underlineThickness;
-      ctx.strokeStyle = fillColor;
-      ctx.stroke();
-    }
-
-    ctx.restore();
+  if (run.isUnderline) {
+    const underlineY = effFontSize * 0.15;
+    const underlineThickness = Math.max(1, effFontSize * 0.05);
+    const charWidth = ctx.measureText(glyph.unicode).width;
+    ctx.beginPath();
+    ctx.moveTo(0, underlineY);
+    ctx.lineTo(charWidth, underlineY);
+    ctx.lineWidth = underlineThickness;
+    ctx.strokeStyle = fillColor;
+    ctx.stroke();
   }
 
   ctx.restore();
@@ -438,8 +502,13 @@ function getCanvasFontProperties(
   let style = 'normal';
 
   if (fontData) {
-    if (fontData.fontBytes && fontData.baseFont) {
-      family = `"${fontData.baseFont}"`;
+    const stripped = stripFontSubsetPrefix(fontData.baseFont);
+    if (fontData.fontBytes && stripped) {
+      // Prefer the stripped name — matches how registerEmbeddedFonts registers faces.
+      family = `"${stripped}", "${fontData.baseFont}"`;
+      const lower = stripped.toLowerCase();
+      weight = lower.includes('bold') ? 'bold' : 'normal';
+      style = (lower.includes('italic') || lower.includes('oblique')) ? 'italic' : 'normal';
       return { family, weight, style };
     }
 
@@ -449,16 +518,21 @@ function getCanvasFontProperties(
       weight = std.isBold ? 'bold' : 'normal';
       style = std.isItalic ? 'italic' : 'normal';
     } else {
-      const lower = fontData.baseFont.toLowerCase();
+      const lower = stripped.toLowerCase();
       weight = lower.includes('bold') ? 'bold' : 'normal';
       style = (lower.includes('italic') || lower.includes('oblique')) ? 'italic' : 'normal';
 
-      if (lower.includes('courier') || lower.includes('mono')) {
-        family = '"Courier New", monospace';
-      } else if (lower.includes('times') || lower.includes('roman')) {
-        family = '"Times New Roman", serif';
-      } else {
+      if (lower.includes('courier') || lower.includes('mono') || lower.includes('cmtt') || lower.includes('lmtt')) {
+        family = '"Courier New", Courier, monospace';
+      } else if (
+        lower.includes('times') || lower.includes('roman') ||
+        lower.includes('cmr') || lower.includes('lmr') || lower.includes('ptm')
+      ) {
+        family = '"Times New Roman", Times, serif';
+      } else if (lower.includes('helv') || lower.includes('arial') || lower.includes('cms') || lower.includes('lmss')) {
         family = 'Helvetica, Arial, sans-serif';
+      } else {
+        family = `"${stripped}", serif`;
       }
     }
   } else {
@@ -570,28 +644,44 @@ export async function renderAllPages(
 
 async function registerEmbeddedFonts(fonts: Map<string, FontData>): Promise<void> {
   const promises: Promise<void>[] = [];
+  const registered = new Set<string>();
+
   for (const [, fontData] of fonts.entries()) {
-    if (fontData.fontBytes && fontData.baseFont) {
-      const familyName = fontData.baseFont;
-      
+    if (!fontData.fontBytes || !fontData.baseFont) continue;
+
+    const names = new Set<string>();
+    names.add(fontData.baseFont);
+    const stripped = stripFontSubsetPrefix(fontData.baseFont);
+    if (stripped) names.add(stripped);
+
+    for (const familyName of names) {
+      if (registered.has(familyName)) continue;
+
       let alreadyLoaded = false;
       try {
         alreadyLoaded = document.fonts.check(`12px "${familyName}"`);
       } catch {
         // ignore
       }
-      
+
       if (!alreadyLoaded) {
-        const fontFace = new FontFace(familyName, fontData.fontBytes);
+        const fontFace = new FontFace(familyName, fontData.fontBytes.buffer.slice(
+          fontData.fontBytes.byteOffset,
+          fontData.fontBytes.byteOffset + fontData.fontBytes.byteLength,
+        ) as ArrayBuffer);
         const p = fontFace.load().then((loadedFace) => {
           document.fonts.add(loadedFace);
+          registered.add(familyName);
         }).catch((e) => {
-          console.warn(`[Renderer] Failed to load font face for "${fontData.baseFont}":`, e);
+          console.warn(`[Renderer] Failed to load font face for "${familyName}":`, e);
         });
         promises.push(p);
+      } else {
+        registered.add(familyName);
       }
     }
   }
+
   if (promises.length > 0) {
     await Promise.all(promises);
   }

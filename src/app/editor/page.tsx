@@ -7,11 +7,15 @@ import { X, Loader2, ChevronLeft, Image } from 'lucide-react';
 
 // We import types only — the engine modules are loaded dynamically
 // because they require browser APIs (canvas, DecompressionStream)
-import type { PDFDocumentData, RenderResult, TextRun, ImageItem, PathItem, DisplayItem, TextWatermark, ImageWatermark, Watermark, DetectedWatermark } from '@/engine';
+import type { PDFDocumentData, RenderResult, TextRun, TextLine, ImageItem, PathItem, DisplayItem, TextWatermark, ImageWatermark, Watermark, DetectedWatermark } from '@/engine';
 
 import type { EditorTool, ToolDef, PathType, DrawnPath, FloatingText, FloatingImage } from './types';
 import { TOOLS } from './types';
-import { canvasToPdf, pdfToCanvas, hitTestTextRuns, hitTestDisplayItems, caretIndexFromPdfX, hexToRGB } from './utils';
+import {
+  canvasToPdf, pdfToCanvas, hitTestDisplayItems, hexToRGB,
+  hitTestTextLine, findNearestTextLine, caretIndexFromLineX, lineXFromCaretIndex,
+  getLineBounds, getOverlayFontFamily, computeEditPreview, computeLineHeight,
+} from './utils';
 
 import { Toolbar } from './components/Toolbar';
 import { ToolsSidebar } from './components/ToolsSidebar';
@@ -151,23 +155,24 @@ export default function EditorPage() {
 
   // ── Phase 4 state ──
   const [activeTool, setActiveTool] = useState<EditorTool>('text');
-  const [selectedRun, setSelectedRun] = useState<TextRun | null>(null);
-  const [editingRunState, setEditingRunState] = useState<TextRun | null>(null);
-  const editingRunRef = useRef<TextRun | null>(null);
-  const editingRun = editingRunState;
-  const setEditingRun = useCallback((run: TextRun | null | ((prev: TextRun | null) => TextRun | null)) => {
-    if (typeof run === 'function') {
-      setEditingRunState((prev: TextRun | null) => {
-        const next = run(prev);
-        editingRunRef.current = next;
+  const [selectedLine, setSelectedLine] = useState<TextLine | null>(null);
+  const [editingLineState, setEditingLineState] = useState<TextLine | null>(null);
+  const editingLineRef = useRef<TextLine | null>(null);
+  const editingLine = editingLineState;
+  const setEditingLine = useCallback((line: TextLine | null | ((prev: TextLine | null) => TextLine | null)) => {
+    if (typeof line === 'function') {
+      setEditingLineState((prev: TextLine | null) => {
+        const next = line(prev);
+        editingLineRef.current = next;
         return next;
       });
     } else {
-      editingRunRef.current = run;
-      setEditingRunState(run);
+      editingLineRef.current = line;
+      setEditingLineState(line);
     }
   }, []);
   const initialRunTextRef = useRef<string>('');
+  const editAnchorLineRef = useRef<TextLine | null>(null);
   const [editText, setEditText] = useState('');
   const [caretPos, setCaretPos] = useState(0); // character index for caret
   const [isSaving, setIsSaving] = useState(false);
@@ -318,25 +323,26 @@ export default function EditorPage() {
 
   // Reset edit state when doc or page changes
   useEffect(() => {
-    setEditingRun(null);
-    setSelectedRun(null);
+    setEditingLine(null);
+    setSelectedLine(null);
     setEditText('');
     setSelectedDisplayItem(null);
     setDisplayItems([]);
-  }, [doc, currentPage, setEditingRun]);
+  }, [doc, currentPage, setEditingLine]);
 
-  // Sync text properties sidebar from selected text run
+  // Sync text properties sidebar from selected line (use first run's style)
   useEffect(() => {
-    if (selectedRun) {
-      if (selectedRun.fontSize) setTextFontSize(Math.round(selectedRun.fontSize));
-      if (selectedRun.fontName) setTextFontFamily(selectedRun.fontName);
-      if (selectedRun.fillColor) {
-        const [r, g, b] = selectedRun.fillColor;
+    if (selectedLine && selectedLine.runs.length > 0) {
+      const run = selectedLine.runs[0];
+      if (run.fontSize) setTextFontSize(Math.round(run.fontSize));
+      if (run.fontName) setTextFontFamily(run.fontName);
+      if (run.fillColor) {
+        const [r, g, b] = run.fillColor;
         const hex = '#' + [r, g, b].map(c => Math.round(c * 255).toString(16).padStart(2, '0')).join('');
         setTextColor(hex);
       }
     }
-  }, [selectedRun]);
+  }, [selectedLine]);
 
   // ── Render current page ──
   useEffect(() => {
@@ -371,20 +377,19 @@ export default function EditorPage() {
           if (!cancelled) setDisplayItems([]);
         }
 
-        // If we were editing a run, find its updated instance in result.textRuns
-        if (editingRunRef.current) {
-          const oldRun = editingRunRef.current;
-          const newRun = result.textRuns.find((r: TextRun) =>
-            r.fontName === oldRun.fontName &&
-            Math.abs(r.y - oldRun.y) < 20 &&
-            Math.abs(r.x - oldRun.x) < 50
+        // Re-sync editing line only when not in overlay preview mode
+        if (editingLineRef.current && !editAnchorLineRef.current) {
+          const oldLine = editingLineRef.current;
+          const newLine = result.textLines.find((l: TextLine) =>
+            l.id === oldLine.id ||
+            (Math.abs(l.baseline - oldLine.baseline) < 5 && Math.abs(l.x - oldLine.x) < 30)
           );
-          if (newRun) {
-            setEditingRun(newRun);
-            setSelectedRun(newRun);
+          if (newLine) {
+            setEditingLine(newLine);
+            setSelectedLine(newLine);
           } else {
-            setEditingRun(null);
-            setSelectedRun(null);
+            setEditingLine(null);
+            setSelectedLine(null);
           }
         }
 
@@ -438,47 +443,79 @@ export default function EditorPage() {
     if (!page) return;
     const { mediaBox } = page;
 
-    // ── If editing: ONLY show blinking caret (no box, no text masking, real PDF engine renders the font!) ──
-    if (editingRun) {
-      const glyphs = editingRun.glyphs;
-      const fontSize = glyphs[0]?.fontSize || editingRun.fontSize || 12;
+    // ── If editing a line: mask original and show live preview (Word-style) ──
+    if (editingLine && editAnchorLineRef.current) {
+      const anchor = editAnchorLineRef.current;
+      const bounds = getLineBounds(anchor);
+      const fontSize = anchor.fontSize;
+      const primaryRun = anchor.runs[0];
+      const fontData = primaryRun ? renderResult.fonts.get(primaryRun.fontName) : undefined;
+      const pad = Math.max(2, fontSize * 0.15);
+      const previewLines = computeEditPreview(renderResult.documentFlow, anchor, editText);
+      const lineHeight = computeLineHeight(anchor);
+      const fillColor = primaryRun?.fillColor || [0, 0, 0];
 
       ctx.save();
       ctx.scale(dpr, dpr);
 
-      // Draw blinking caret exactly at character position
+      const previewHeight = previewLines.length * lineHeight;
+      const maskTopLeft = pdfToCanvas(
+        bounds.x - pad,
+        bounds.y + Math.max(bounds.height, previewHeight) + pad,
+        scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
+      );
+      const maskBottomRight = pdfToCanvas(
+        bounds.x + bounds.width + pad,
+        bounds.y - pad,
+        scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
+      );
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(
+        maskTopLeft.cssX,
+        maskTopLeft.cssY,
+        maskBottomRight.cssX - maskTopLeft.cssX,
+        maskBottomRight.cssY - maskTopLeft.cssY,
+      );
+
+      const [r, g, b] = fillColor;
+      ctx.fillStyle = `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)})`;
+      ctx.font = `${fontSize * scale}px ${getOverlayFontFamily(primaryRun?.fontName || '', fontData)}`;
+      ctx.textBaseline = 'alphabetic';
+
+      for (let li = 0; li < previewLines.length; li++) {
+        const lineY = anchor.baseline - li * lineHeight;
+        const textPos = pdfToCanvas(
+          bounds.x,
+          lineY,
+          scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
+        );
+        ctx.fillText(previewLines[li], textPos.cssX, textPos.cssY);
+      }
+
       if (caretVisibleRef.current) {
-        let pdfX = editingRun.x;
-        if (glyphs.length > 0) {
-          if (caretPos <= 0) {
-            pdfX = glyphs[0].tRm.e;
-          } else if (caretPos <= glyphs.length) {
-            const g = glyphs[caretPos - 1];
-            pdfX = g.tRm.e + g.width;
-          } else {
-            const last = glyphs[glyphs.length - 1];
-            pdfX = last.tRm.e + last.width + (caretPos - glyphs.length) * (fontSize * 0.5);
-          }
-        }
-
-        const topCanvas = pdfToCanvas(
-          pdfX,
-          editingRun.y + fontSize * 0.85,
+        const caretLineIndex = Math.min(
+          previewLines.length - 1,
+          Math.max(0, Math.floor(caretPos / Math.max(1, editText.length / previewLines.length))),
+        );
+        const caretPdfX = lineXFromCaretIndex(anchor, caretPos);
+        const caretBaseline = anchor.baseline - caretLineIndex * lineHeight;
+        const caretCanvas = pdfToCanvas(
+          caretPdfX, caretBaseline,
           scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
         );
-        const bottomCanvas = pdfToCanvas(
-          pdfX,
-          editingRun.y - fontSize * 0.25,
+        const caretTop = pdfToCanvas(
+          caretPdfX, caretBaseline + fontSize * 0.85,
           scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
         );
-
-        const [r, g, b] = editingRun.fillColor || [0, 0, 0];
+        const caretBottom = pdfToCanvas(
+          caretPdfX, caretBaseline - fontSize * 0.25,
+          scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
+        );
         ctx.strokeStyle = `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)})`;
         ctx.lineWidth = 1.5;
-        ctx.setLineDash([]);
         ctx.beginPath();
-        ctx.moveTo(topCanvas.cssX, topCanvas.cssY);
-        ctx.lineTo(bottomCanvas.cssX, bottomCanvas.cssY);
+        ctx.moveTo(caretCanvas.cssX, caretTop.cssY);
+        ctx.lineTo(caretCanvas.cssX, caretBottom.cssY);
         ctx.stroke();
       }
 
@@ -581,14 +618,14 @@ export default function EditorPage() {
       }
       ctx.restore();
     }
-  }, [editingRun, editText, caretPos, renderResult, doc, currentPage, scale, drawnPaths, activeTool, displayItems, selectedDisplayItem]);
+  }, [editingLine, editText, caretPos, renderResult, doc, currentPage, scale, drawnPaths, activeTool, displayItems, selectedDisplayItem]);
 
   // Re-draw overlay whenever edit state changes
   useEffect(() => { drawOverlay(); }, [drawOverlay]);
 
   // ── Caret blink timer ──
   useEffect(() => {
-    if (editingRun) {
+    if (editingLine) {
       caretVisibleRef.current = true;
       caretTimerRef.current = setInterval(() => {
         caretVisibleRef.current = !caretVisibleRef.current;
@@ -601,11 +638,11 @@ export default function EditorPage() {
       caretVisibleRef.current = false;
       if (caretTimerRef.current) clearInterval(caretTimerRef.current);
     }
-  }, [editingRun, drawOverlay]);
+  }, [editingLine, drawOverlay]);
 
   // ── Focus hidden input when entering edit mode ──
   useEffect(() => {
-    if (editingRun && hiddenInputRef.current) {
+    if (editingLine && hiddenInputRef.current) {
       if (blurTimeoutRef.current) {
         clearTimeout(blurTimeoutRef.current);
         blurTimeoutRef.current = null;
@@ -614,11 +651,41 @@ export default function EditorPage() {
       const pos = caretPos;
       hiddenInputRef.current.setSelectionRange(pos, pos);
     }
-  }, [editingRun, caretPos]);
+  }, [editingLine, caretPos]);
+
+  // ── Begin an edit session with frozen line anchor + undo snapshot ──
+  const beginEditSession = useCallback((line: TextLine, caretAt?: number) => {
+    initialRunTextRef.current = line.text;
+    editAnchorLineRef.current = {
+      ...line,
+      runs: line.runs.map(r => ({
+        ...r,
+        glyphs: r.glyphs.map(g => ({ ...g, tRm: { ...g.tRm } })),
+        sourceInstructionIndices: r.sourceInstructionIndices
+          ? [...r.sourceInstructionIndices]
+          : undefined,
+      })),
+      segments: line.segments.map(s => ({ ...s, run: s.run })),
+    };
+    setActiveTool('text');
+    setSelectedLine(line);
+    setEditingLine(line);
+    setEditText(line.text);
+    setCaretPos(caretAt ?? line.text.length);
+
+    if (doc && engineRef.current) {
+      const page = doc.pages[currentPage];
+      const contentBytes = engineRef.current.getPageContentBytes(page, doc.objects);
+      undoSnapshotRef.current = {
+        pageIndex: currentPage,
+        contentBytes: new Uint8Array(contentBytes),
+      };
+    }
+  }, [doc, currentPage, setEditingLine]);
 
   // ── Text edit submit ──
   const handleEditSubmit = useCallback(async (closeEdit: boolean = true) => {
-    if (!editingRun || !doc || !engineRef.current) return;
+    if (!editingLine || !doc || !engineRef.current) return;
     if (blurTimeoutRef.current) {
       clearTimeout(blurTimeoutRef.current);
       blurTimeoutRef.current = null;
@@ -627,25 +694,28 @@ export default function EditorPage() {
       setIsSaving(true);
       const engine = engineRef.current;
       const page = doc.pages[currentPage];
-      const contentBytes = engine.getPageContentBytes(page, doc.objects);
 
-      // Push undo snapshot (taken when editing began, or now if not yet taken)
+      const targetLine = editAnchorLineRef.current ?? editingLine;
       const snapshot = undoSnapshotRef.current;
+      const baseBytes = snapshot?.pageIndex === currentPage
+        ? snapshot.contentBytes
+        : engine.getPageContentBytes(page, doc.objects);
+
       if (snapshot) {
         undoStackRef.current.push(snapshot);
-        undoSnapshotRef.current = null;
       } else {
-        // Fallback: snapshot current state
-        undoStackRef.current.push({ pageIndex: currentPage, contentBytes: new Uint8Array(contentBytes) });
+        undoStackRef.current.push({
+          pageIndex: currentPage,
+          contentBytes: new Uint8Array(engine.getPageContentBytes(page, doc.objects)),
+        });
       }
-      // Limit undo stack to 50 entries
       if (undoStackRef.current.length > 50) undoStackRef.current.shift();
-      // Clear redo stack on new edit
       redoStackRef.current = [];
 
-      const editResult = engine.applyTextEdits(
-        contentBytes, page, doc.objects,
-        [{ targetRun: editingRun, newText: editText }],
+      const editResult = engine.applyLineTextEdit(
+        baseBytes, page, doc.objects,
+        targetLine, editText,
+        renderResult?.documentFlow,
       );
       if (editResult.needsFontAugmentation) {
         console.warn('[Editor] Font augmentation needed for:', editResult.missingCharCodes);
@@ -653,9 +723,11 @@ export default function EditorPage() {
       await engine.updatePageContent(
         page.contentRefs, editResult.newContentBytes, doc.objects,
       );
+      editAnchorLineRef.current = null;
+      undoSnapshotRef.current = null;
       if (closeEdit) {
-        setEditingRun(null);
-        setSelectedRun(null);
+        setEditingLine(null);
+        setSelectedLine(null);
       }
       setRenderKey(k => k + 1);
     } catch (e) {
@@ -664,7 +736,7 @@ export default function EditorPage() {
     } finally {
       setIsSaving(false);
     }
-  }, [editingRun, editText, doc, currentPage]);
+  }, [editingLine, editText, doc, currentPage, setEditingLine, renderResult]);
 
   // ── Edit cancel ──
   const handleEditCancel = useCallback(async () => {
@@ -672,14 +744,19 @@ export default function EditorPage() {
       clearTimeout(blurTimeoutRef.current);
       blurTimeoutRef.current = null;
     }
-    if (editingRun && doc && engineRef.current && editText !== initialRunTextRef.current && initialRunTextRef.current !== '') {
+    if (editingLine && doc && engineRef.current && editText !== initialRunTextRef.current && initialRunTextRef.current !== '') {
       try {
         const engine = engineRef.current;
         const page = doc.pages[currentPage];
-        const contentBytes = engine.getPageContentBytes(page, doc.objects);
-        const editResult = engine.applyTextEdits(
-          contentBytes, page, doc.objects,
-          [{ targetRun: editingRun, newText: initialRunTextRef.current }],
+        const targetLine = editAnchorLineRef.current ?? editingLine;
+        const snapshot = undoSnapshotRef.current;
+        const baseBytes = snapshot?.pageIndex === currentPage
+          ? snapshot.contentBytes
+          : engine.getPageContentBytes(page, doc.objects);
+        const editResult = engine.applyLineTextEdit(
+          baseBytes, page, doc.objects,
+          targetLine, initialRunTextRef.current,
+          renderResult?.documentFlow,
         );
         await engine.updatePageContent(
           page.contentRefs, editResult.newContentBytes, doc.objects,
@@ -689,12 +766,13 @@ export default function EditorPage() {
         console.warn('[Editor] Revert on cancel failed:', e);
       }
     }
+    editAnchorLineRef.current = null;
     undoSnapshotRef.current = null;
-    setEditingRun(null);
-    setSelectedRun(null);
+    setEditingLine(null);
+    setSelectedLine(null);
     setEditText('');
     setCaretPos(0);
-  }, [editingRun, editText, doc, currentPage, setEditingRun]);
+  }, [editingLine, editText, doc, currentPage, setEditingLine, renderResult]);
 
   // ── Undo ──
   const handleUndo = useCallback(async () => {
@@ -711,15 +789,15 @@ export default function EditorPage() {
       await engine.updatePageContent(page.contentRefs, entry.contentBytes, doc.objects);
       // Exit editing mode and re-render
       undoSnapshotRef.current = null;
-      setEditingRun(null);
-      setSelectedRun(null);
+      setEditingLine(null);
+      setSelectedLine(null);
       setEditText('');
       setCaretPos(0);
       setRenderKey(k => k + 1);
     } catch (e) {
       console.error('[Editor] Undo failed:', e);
     }
-  }, [doc, setEditingRun]);
+  }, [doc, setEditingLine]);
 
   // ── Redo ──
   const handleRedo = useCallback(async () => {
@@ -729,22 +807,19 @@ export default function EditorPage() {
     try {
       const engine = engineRef.current;
       const page = doc.pages[entry.pageIndex];
-      // Save current state to undo stack
       const currentBytes = engine.getPageContentBytes(page, doc.objects);
       undoStackRef.current.push({ pageIndex: entry.pageIndex, contentBytes: new Uint8Array(currentBytes) });
-      // Restore the redo content bytes
       await engine.updatePageContent(page.contentRefs, entry.contentBytes, doc.objects);
-      // Exit editing mode and re-render
       undoSnapshotRef.current = null;
-      setEditingRun(null);
-      setSelectedRun(null);
+      setEditingLine(null);
+      setSelectedLine(null);
       setEditText('');
       setCaretPos(0);
       setRenderKey(k => k + 1);
     } catch (e) {
       console.error('[Editor] Redo failed:', e);
     }
-  }, [doc, setEditingRun]);
+  }, [doc, setEditingLine]);
 
   // ── Global keyboard shortcuts for undo/redo ──
   useEffect(() => {
@@ -782,27 +857,29 @@ export default function EditorPage() {
         clearTimeout(blurTimeoutRef.current);
         blurTimeoutRef.current = null;
       }
-      const hit = hitTestTextRuns(pdfX, pdfY, renderResult.textRuns);
+      const hit = hitTestTextLine(pdfX, pdfY, renderResult.textLines);
       if (hit) {
-        const newCaret = caretIndexFromPdfX(pdfX, hit);
-        if (editingRun === hit) {
-          // Already editing this run — reposition caret
+        const newCaret = caretIndexFromLineX(pdfX, hit);
+        if (editingLine?.id === hit.id) {
           setCaretPos(newCaret);
-          caretVisibleRef.current = true; // reset blink
+          caretVisibleRef.current = true;
         } else {
-          // Commit any previous edit first without closing edit mode
-          if (editingRun) {
-            handleEditSubmit(false);
+          const startNew = () => {
+            beginEditSession(hit, newCaret);
+            setTimeout(() => {
+              if (hiddenInputRef.current) {
+                hiddenInputRef.current.focus({ preventScroll: true });
+                hiddenInputRef.current.setSelectionRange(newCaret, newCaret);
+              }
+            }, 0);
+          };
+          if (editingLine) {
+            void handleEditSubmit(false).then(startNew);
+          } else {
+            startNew();
           }
-          // Enter editing on the new run
-          initialRunTextRef.current = hit.text;
-          setActiveTool('text');
-          setSelectedRun(hit);
-          setEditingRun(hit);
-          setEditText(hit.text);
-          setCaretPos(newCaret);
+          return;
         }
-        // Focus the hidden input and sync selection position
         setTimeout(() => {
           if (hiddenInputRef.current) {
             hiddenInputRef.current.focus({ preventScroll: true });
@@ -810,25 +887,55 @@ export default function EditorPage() {
           }
         }, 0);
       } else {
-        // Clicked on empty space — check display items or deselect
-        const itemHit = hitTestDisplayItems(pdfX, pdfY, displayItems);
-        if (itemHit) {
-          if (editingRun) handleEditSubmit();
-          setSelectedDisplayItem(itemHit);
-          setSelectedRun(null);
-          setEditingRun(null);
-          setActiveTool('select');
-          return;
-        }
-        setSelectedDisplayItem(null);
-        if (editingRun) {
-          handleEditSubmit();
+        const nearHit = findNearestTextLine(pdfX, pdfY, renderResult.textLines, 12);
+        if (nearHit) {
+          const newCaret = caretIndexFromLineX(pdfX, nearHit);
+          if (editingLine?.id === nearHit.id) {
+            setCaretPos(newCaret);
+            caretVisibleRef.current = true;
+          } else {
+            const startNew = () => {
+              beginEditSession(nearHit, newCaret);
+              setTimeout(() => {
+                if (hiddenInputRef.current) {
+                  hiddenInputRef.current.focus({ preventScroll: true });
+                  hiddenInputRef.current.setSelectionRange(newCaret, newCaret);
+                }
+              }, 0);
+            };
+            if (editingLine) {
+              void handleEditSubmit(false).then(startNew);
+            } else {
+              startNew();
+            }
+            return;
+          }
+          setTimeout(() => {
+            if (hiddenInputRef.current) {
+              hiddenInputRef.current.focus({ preventScroll: true });
+              hiddenInputRef.current.setSelectionRange(newCaret, newCaret);
+            }
+          }, 0);
         } else {
-          setEditingRun(null);
-          setSelectedRun(null);
+          const itemHit = hitTestDisplayItems(pdfX, pdfY, displayItems);
+          if (itemHit) {
+            if (editingLine) handleEditSubmit();
+            setSelectedDisplayItem(itemHit);
+            setSelectedLine(null);
+            setEditingLine(null);
+            setActiveTool('select');
+            return;
+          }
+          setSelectedDisplayItem(null);
+          if (editingLine) {
+            handleEditSubmit();
+          } else {
+            setEditingLine(null);
+            setSelectedLine(null);
+          }
+          setActiveFloatingTextId(null);
+          setActiveFloatingImageId(null);
         }
-        setActiveFloatingTextId(null);
-        setActiveFloatingImageId(null);
       }
     } else if (activeTool === 'addtext') {
       if (blurTimeoutRef.current) {
@@ -854,10 +961,10 @@ export default function EditorPage() {
       setActiveTool('text');
 
     } else if (activeTool === 'highlight') {
-      const hit = hitTestTextRuns(pdfX, pdfY, renderResult.textRuns);
-      if (hit) setSelectedRun(hit);
+      const hit = hitTestTextLine(pdfX, pdfY, renderResult.textLines);
+      if (hit && hit.runs[0]) setSelectedLine(hit);
     }
-  }, [renderResult, doc, currentPage, scale, activeTool, editingRun, handleEditSubmit, setEditingRun, displayItems, textFontSize, textColor]);
+  }, [renderResult, doc, currentPage, scale, activeTool, editingLine, handleEditSubmit, beginEditSession, displayItems, textFontSize, textColor]);
 
   // Double-click in select mode → enter text edit
   const handleCanvasDoubleClick = useCallback((e: React.MouseEvent) => {
@@ -875,22 +982,18 @@ export default function EditorPage() {
       renderResult.pageWidth, renderResult.pageHeight,
       mediaBox.x, mediaBox.y,
     );
-    const hit = hitTestTextRuns(pdfX, pdfY, renderResult.textRuns);
+    const hit = hitTestTextLine(pdfX, pdfY, renderResult.textLines);
     if (hit) {
       if (blurTimeoutRef.current) {
         clearTimeout(blurTimeoutRef.current);
         blurTimeoutRef.current = null;
       }
-      if (editingRun && editingRun !== hit) {
-        handleEditSubmit(false);
+      const newCaret = caretIndexFromLineX(pdfX, hit);
+      if (editingLine && editingLine.id !== hit.id) {
+        void handleEditSubmit(false).then(() => beginEditSession(hit, newCaret));
+        return;
       }
-      const newCaret = caretIndexFromPdfX(pdfX, hit);
-      initialRunTextRef.current = hit.text;
-      setActiveTool('text');
-      setSelectedRun(hit);
-      setEditingRun(hit);
-      setEditText(hit.text);
-      setCaretPos(newCaret);
+      beginEditSession(hit, newCaret);
       setTimeout(() => {
         if (hiddenInputRef.current) {
           hiddenInputRef.current.focus({ preventScroll: true });
@@ -898,7 +1001,7 @@ export default function EditorPage() {
         }
       }, 0);
     }
-  }, [renderResult, doc, currentPage, scale, activeTool, editingRun, handleEditSubmit, setEditingRun]);
+  }, [renderResult, doc, currentPage, scale, activeTool, editingLine, handleEditSubmit, beginEditSession]);
 
   const applyEraser = useCallback((x: number, y: number) => {
     const eraserRadius = eraserSize / 2;
@@ -1238,50 +1341,17 @@ export default function EditorPage() {
   }, [doc, currentPage, renderResult]);
 
 
-  // ── Hidden input handler — this is where all typing is captured ──
+  // ── Hidden input handler — overlay preview only; PDF commits on submit ──
   const handleHiddenInput = useCallback((e: React.FormEvent<HTMLTextAreaElement>) => {
-    if (!editingRun || !doc || !engineRef.current) return;
+    if (!editingLine) return;
     const newVal = (e.target as HTMLTextAreaElement).value;
     setEditText(newVal);
-    // Sync caret to the hidden textarea's selectionStart
     const sel = (e.target as HTMLTextAreaElement).selectionStart ?? newVal.length;
     setCaretPos(sel);
-    caretVisibleRef.current = true; // reset blink on typing
-
-    const updatedRun = { ...editingRun, text: newVal };
-
-    // Live update the PDF stream and re-render using the real PDF engine!
-    try {
-      const engine = engineRef.current;
-      const page = doc.pages[currentPage];
-      const contentBytes = engine.getPageContentBytes(page, doc.objects);
-
-      // Snapshot content bytes BEFORE the first live keystroke for undo
-      if (!undoSnapshotRef.current) {
-        undoSnapshotRef.current = { pageIndex: currentPage, contentBytes: new Uint8Array(contentBytes) };
-      }
-
-      const editResult = engine.applyTextEdits(
-        contentBytes, page, doc.objects,
-        [{ targetRun: editingRun, newText: newVal }],
-      );
-      if (editResult.needsFontAugmentation) {
-        console.warn('[Editor] Font augmentation needed for:', editResult.missingCharCodes);
-      }
-      engine.updatePageContent(
-        page.contentRefs, editResult.newContentBytes, doc.objects,
-      ).then(() => {
-        setRenderKey(k => k + 1);
-      });
-    } catch (err) {
-      console.warn('[Editor] Live edit apply failed:', err);
-    }
-
-    setEditingRun(updatedRun);
-  }, [editingRun, doc, currentPage, setEditingRun]);
+    caretVisibleRef.current = true;
+  }, [editingLine]);
 
   const handleHiddenKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // Undo/Redo — intercept before other handlers
     if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
       e.preventDefault();
       handleUndo();
@@ -1292,7 +1362,7 @@ export default function EditorPage() {
       handleRedo();
       return;
     }
-    if (!editingRun) return;
+    if (!editingLine) return;
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleEditSubmit();
@@ -1300,28 +1370,26 @@ export default function EditorPage() {
       e.preventDefault();
       handleEditCancel();
     } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-      // Let the hidden textarea handle cursor movement, then sync
       setTimeout(() => {
         const sel = hiddenInputRef.current?.selectionStart ?? caretPos;
         setCaretPos(sel);
         caretVisibleRef.current = true;
       }, 0);
     }
-  }, [editingRun, caretPos, handleEditSubmit, handleEditCancel, handleUndo, handleRedo]);
+  }, [editingLine, caretPos, handleEditSubmit, handleEditCancel, handleUndo, handleRedo]);
 
   const handleHiddenBlur = useCallback(() => {
-    if (!editingRun) return;
+    if (!editingLine) return;
     if (blurTimeoutRef.current) {
       clearTimeout(blurTimeoutRef.current);
     }
-    // Small delay so clicks on canvas can be processed first without terminating edit mode
     blurTimeoutRef.current = setTimeout(() => {
       blurTimeoutRef.current = null;
-      if (editingRunRef.current) {
+      if (editingLineRef.current) {
         handleEditSubmit();
       }
     }, 150);
-  }, [editingRun, handleEditSubmit]);
+  }, [editingLine, handleEditSubmit]);
 
   // ── Navigation handlers ──
   const goToPrev = useCallback(() => {
@@ -1623,7 +1691,7 @@ export default function EditorPage() {
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       // Don't intercept when the hidden input has focus (editing)
-      if (editingRun) return;
+      if (editingLine) return;
 
       // Don't intercept when the user is typing in any text box or input
       if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA') return;
@@ -1650,7 +1718,7 @@ export default function EditorPage() {
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [goToPrev, goToNext, zoomIn, zoomOut, editingRun]);
+  }, [goToPrev, goToNext, zoomIn, zoomOut, editingLine]);
 
   // ── Loading state ──
   if (isLoading) {
@@ -1722,7 +1790,7 @@ export default function EditorPage() {
         <PropertiesSidebar
           activeTool={activeTool}
           setActiveTool={setActiveTool}
-          selectedRun={selectedRun}
+          selectedRun={selectedLine?.runs[0] ?? null}
           textFontFamily={textFontFamily}
           setTextFontFamily={setTextFontFamily}
           textFontSize={textFontSize}
@@ -2109,7 +2177,7 @@ export default function EditorPage() {
       <StatusBar
         renderResult={renderResult}
         activeTool={activeTool}
-        selectedRun={selectedRun}
+        selectedRun={selectedLine?.runs[0] ?? null}
         doc={doc}
         totalPages={totalPages}
       />

@@ -11,6 +11,7 @@
  */
 
 import { parseContentStream, type CSInstruction } from './operator-lexer';
+import { parseCMap } from '../fonts/cmap-parser';
 import {
   PDFArray,
   PDFDict,
@@ -127,6 +128,8 @@ export interface TextRun {
   text: string;
   /** Individual glyph positions */
   glyphs: GlyphPosition[];
+  /** Original text-showing instruction indices that produced this run */
+  sourceInstructionIndices?: number[];
   /** Bounding box in page space (PDF coordinates: origin bottom-left) */
   x: number;
   y: number;
@@ -207,6 +210,8 @@ export interface FontInfo {
   isComposite: boolean;
   /** Maps char code → Unicode string */
   toUnicode: Map<number, string> | null;
+  /** Maps char code → CID for composite fonts */
+  toCID: Map<number, number> | null;
   /** Glyph widths: code → width in 1/1000 units of font size */
   widths: Map<number, number>;
   /** Default width for missing entries */
@@ -370,7 +375,7 @@ export function interpretPage(
 ): InterpreterResult {
   const instructions = parseContentStream(contentBytes);
   const displayList: DisplayItem[] = [];
-  const textRuns: TextRun[] = [];
+  const rawTextRuns: TextRun[] = [];
   const fonts = new Map<string, FontInfo>();
 
   // State machine
@@ -587,10 +592,10 @@ export function interpretPage(
         // Show a text string
         const strObj = ops[0];
         if (strObj) {
-          const result = showTextString(strObj, gs, textMatrix, fonts, objects, page);
+          const result = showTextString(strObj, gs, textMatrix, fonts, objects, page, i);
           if (result) {
             displayList.push(result.run);
-            textRuns.push(result.run);
+            rawTextRuns.push(result.run);
             textMatrix = result.newTextMatrix;
           }
         }
@@ -618,7 +623,7 @@ export function interpretPage(
                 f: textMatrix.f + displacement * textMatrix.b,
               };
             } else {
-              const result = showTextString(item, gs, textMatrix, fonts, objects, page);
+              const result = showTextString(item, gs, textMatrix, fonts, objects, page, i);
               if (result) {
                 if (!firstRun) firstRun = result.run;
                 lastRun = result.run;
@@ -648,7 +653,7 @@ export function interpretPage(
               height: maxY - minY,
             };
             displayList.push(combinedRun);
-            textRuns.push(combinedRun);
+            rawTextRuns.push(combinedRun);
           }
         }
         break;
@@ -661,10 +666,10 @@ export function interpretPage(
         textMatrix = { ...textLineMatrix };
         const strObj = ops[0];
         if (strObj) {
-          const result = showTextString(strObj, gs, textMatrix, fonts, objects, page);
+          const result = showTextString(strObj, gs, textMatrix, fonts, objects, page, i);
           if (result) {
             displayList.push(result.run);
-            textRuns.push(result.run);
+            rawTextRuns.push(result.run);
             textMatrix = result.newTextMatrix;
           }
         }
@@ -680,10 +685,10 @@ export function interpretPage(
         textMatrix = { ...textLineMatrix };
         const strObj = ops[2];
         if (strObj) {
-          const result = showTextString(strObj, gs, textMatrix, fonts, objects, page);
+          const result = showTextString(strObj, gs, textMatrix, fonts, objects, page, i);
           if (result) {
             displayList.push(result.run);
-            textRuns.push(result.run);
+            rawTextRuns.push(result.run);
             textMatrix = result.newTextMatrix;
           }
         }
@@ -825,7 +830,7 @@ export function interpretPage(
     currentPath = [];
   }
 
-  return { displayList, textRuns, fonts };
+  return { displayList, textRuns: rawTextRuns, fonts };
 }
 
 // ─── Text rendering helpers ─────────────────────────────────────────────────
@@ -842,6 +847,7 @@ function showTextString(
   fonts: Map<string, FontInfo>,
   objects: Map<string, PDFObject>,
   page: PDFPageInfo,
+  sourceInstructionIndex?: number,
 ): ShowTextResult | null {
   const font = fonts.get(gs.textFont);
 
@@ -900,13 +906,21 @@ function showTextString(
     }
 
     // Get glyph width (in 1/1000 units of font size)
-    let glyphWidth1000 = font?.widths.get(charCode);
+    const widthKey = isComposite
+      ? (font?.encoding !== 'Identity-H' && font?.toCID?.has(charCode)
+          ? font.toCID.get(charCode)!
+          : charCode)
+      : charCode;
+    let glyphWidth1000 = font?.widths.get(widthKey);
+    if (glyphWidth1000 === undefined && isComposite) {
+      glyphWidth1000 = font?.widths.get(charCode);
+    }
     if (glyphWidth1000 === undefined && unicode && font?.widths) {
       // If widths were populated from TTF cmap, they are keyed by Unicode, not charCode/CID
       const unicodeCodePoint = unicode.charCodeAt(0);
       glyphWidth1000 = font.widths.get(unicodeCodePoint);
     }
-    glyphWidth1000 = glyphWidth1000 ?? font?.defaultWidth ?? 600;
+    glyphWidth1000 = glyphWidth1000 ?? font?.defaultWidth ?? 500;
 
     const glyphWidth = (glyphWidth1000 / 1000) * fontSize * hScale;
 
@@ -934,7 +948,8 @@ function showTextString(
 
     // Advance text position
     let advance = (glyphWidth1000 / 1000) * fontSize + gs.charSpacing;
-    if (unicode === ' ') advance += gs.wordSpacing;
+    // PDF spec: word spacing applies to character code 32 only
+    if (charCode === 32) advance += gs.wordSpacing;
     advance *= hScale;
 
     totalWidth += advance;
@@ -962,6 +977,7 @@ function showTextString(
       type: 'text',
       text,
       glyphs,
+      sourceInstructionIndices: sourceInstructionIndex !== undefined ? [sourceInstructionIndex] : undefined,
       x: startX,
       y: startY,
       width: Math.abs(runWidth) || totalWidth,
@@ -974,6 +990,86 @@ function showTextString(
     },
     newTextMatrix: textMatrix,
   };
+}
+
+function mergeEditableTextRuns(runs: TextRun[]): TextRun[] {
+  const merged: TextRun[] = [];
+
+  for (let i = 0; i < runs.length; i++) {
+    const run = runs[i];
+    const previous = merged[merged.length - 1];
+
+    if (!previous || !canMergeTextRuns(previous, run)) {
+      merged.push({
+        ...run,
+        glyphs: [...run.glyphs],
+        sourceInstructionIndices: run.sourceInstructionIndices ? [...run.sourceInstructionIndices] : undefined,
+      });
+      continue;
+    }
+
+    const glyphs = [...previous.glyphs, ...run.glyphs];
+    const sourceInstructionIndices = [
+      ...(previous.sourceInstructionIndices ?? []),
+      ...(run.sourceInstructionIndices ?? []),
+    ];
+
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (let g = 0; g < glyphs.length; g++) {
+      const glyph = glyphs[g];
+      if (glyph.x < minX) minX = glyph.x;
+      if (glyph.y < minY) minY = glyph.y;
+      if (glyph.x + glyph.width > maxX) maxX = glyph.x + glyph.width;
+      if (glyph.y + glyph.fontSize > maxY) maxY = glyph.y + glyph.fontSize;
+    }
+
+    merged[merged.length - 1] = {
+      ...previous,
+      text: previous.text + run.text,
+      glyphs,
+      sourceInstructionIndices,
+      x: minX,
+      y: minY,
+      width: maxX - minX,
+      height: maxY - minY,
+      textMatrix: run.textMatrix,
+    };
+  }
+
+  return merged;
+}
+
+function canMergeTextRuns(previous: TextRun, next: TextRun): boolean {
+  if (previous.fontName !== next.fontName) return false;
+  if (previous.fontSize !== next.fontSize) return false;
+  if (previous.fillAlpha !== next.fillAlpha) return false;
+  if (previous.isUnderline !== next.isUnderline) return false;
+
+  const prevColor = previous.fillColor;
+  const nextColor = next.fillColor;
+  if (prevColor[0] !== nextColor[0] || prevColor[1] !== nextColor[1] || prevColor[2] !== nextColor[2]) {
+    return false;
+  }
+
+  if (previous.glyphs.length === 0 || next.glyphs.length === 0) return false;
+
+  const prevLast = previous.glyphs[previous.glyphs.length - 1];
+  const nextFirst = next.glyphs[0];
+  const baselineDelta = Math.abs(prevLast.y - nextFirst.y);
+  const lineThreshold = Math.max(2, Math.max(previous.fontSize, next.fontSize) * 0.35);
+  if (baselineDelta > lineThreshold) return false;
+
+  const prevRight = prevLast.x + prevLast.width;
+  const nextLeft = nextFirst.x;
+  const gap = nextLeft - prevRight;
+  // Only merge truly adjacent fragments (same TJ/Tj chunk). Justified inter-word
+  // gaps are often much larger — merging them breaks editing and layout.
+  const gapThreshold = Math.max(3, Math.max(previous.fontSize, next.fontSize) * 0.35);
+
+  return gap >= -1 && gap <= gapThreshold;
 }
 
 // advanceTextMatrix removed — text matrix is now returned from showTextString
@@ -1075,6 +1171,8 @@ function parseFontDict(
     }
   }
 
+  let toCID: Map<number, number> | null = null;
+
   // Parse encoding for simple fonts
   let encoding = 'StandardEncoding';
   const differences = new Map<number, string>();
@@ -1083,6 +1181,12 @@ function parseFontDict(
     const resolved = resolveRef(encodingObj, objects);
     if (resolved instanceof PDFName) {
       encoding = resolved.name;
+    } else if (resolved instanceof PDFStream) {
+      const cmap = parseCMap(resolved.getBytes());
+      toCID = cmap.toCID;
+      if (!toUnicode && cmap.toUnicode.size > 0) {
+        toUnicode = cmap.toUnicode;
+      }
     } else if (resolved instanceof PDFDict) {
       encoding = resolved.getName('BaseEncoding') ?? 'WinAnsiEncoding';
       // Parse /Differences array for custom encoding
@@ -1110,6 +1214,7 @@ function parseFontDict(
     encoding,
     isComposite,
     toUnicode,
+    toCID,
     widths,
     defaultWidth,
     firstChar,

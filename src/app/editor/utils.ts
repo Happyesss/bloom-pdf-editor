@@ -1,4 +1,57 @@
-import type { TextRun, ImageItem, PathItem } from '@/engine';
+import type { TextRun, ImageItem, PathItem, FontData, TextLine } from '@/engine';
+import {
+  hitTestTextLine,
+  findNearestTextLine,
+  caretIndexFromLineX,
+  lineXFromCaretIndex,
+  computeEditPreview,
+  computeLineHeight,
+} from '@/engine';
+
+export { hitTestTextLine, findNearestTextLine, caretIndexFromLineX, lineXFromCaretIndex, computeEditPreview, computeLineHeight };
+
+/** Bounds for a logical text line. */
+export function getLineBounds(line: TextLine): { x: number; y: number; width: number; height: number } {
+  return { x: line.x, y: line.y, width: line.width, height: line.height };
+}
+
+/** Compute bounding box for a text run in PDF coordinates. */
+export function getRunBounds(run: TextRun): { x: number; y: number; width: number; height: number } {
+  if (run.glyphs.length > 0) {
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    const fontSize = run.glyphs[0].fontSize || run.fontSize || 12;
+    for (let g = 0; g < run.glyphs.length; g++) {
+      const glyph = run.glyphs[g];
+      if (glyph.tRm.e < minX) minX = glyph.tRm.e;
+      if (glyph.tRm.e + glyph.width > maxX) maxX = glyph.tRm.e + glyph.width;
+      if (glyph.tRm.f < minY) minY = glyph.tRm.f;
+      if (glyph.tRm.f > maxY) maxY = glyph.tRm.f;
+    }
+    return {
+      x: minX,
+      y: minY - fontSize * 0.2,
+      width: maxX - minX,
+      height: (maxY - minY) + fontSize * 1.1,
+    };
+  }
+  return { x: run.x, y: run.y, width: run.width, height: run.height || run.fontSize || 12 };
+}
+
+/** Build a CSS font string for overlay text preview. */
+export function getOverlayFontFamily(fontName: string, fontData?: FontData): string {
+  if (fontData?.fontBytes && fontData.baseFont) {
+    const plus = fontData.baseFont.indexOf('+');
+    const stripped = plus >= 0 ? fontData.baseFont.slice(plus + 1) : fontData.baseFont;
+    return `"${stripped}", "${fontData.baseFont}", serif`;
+  }
+  const lower = (fontData?.baseFont || fontName).toLowerCase();
+  if (lower.includes('courier') || lower.includes('mono')) return '"Courier New", monospace';
+  if (lower.includes('times') || lower.includes('roman') || lower.includes('cmr')) {
+    return '"Times New Roman", Times, serif';
+  }
+  if (lower.includes('helv') || lower.includes('arial')) return 'Helvetica, Arial, sans-serif';
+  return '"Times New Roman", Times, serif';
+}
 
 /** Convert a canvas CSS‐pixel mouse position to PDF user‐space coordinates. */
 export function canvasToPdf(
@@ -39,19 +92,108 @@ export function hitTestTextRuns(
 ): TextRun | null {
   for (let i = textRuns.length - 1; i >= 0; i--) {
     const run = textRuns[i];
-    if (run.glyphs.length === 0) continue;
-    const first = run.glyphs[0];
-    const last  = run.glyphs[run.glyphs.length - 1];
-    const fontSize = first.fontSize || 12;
-    const left   = Math.min(first.tRm.e, last.tRm.e) - 2;
-    const right  = Math.max(first.tRm.e, last.tRm.e) + last.width + 2;
-    const bottom = Math.min(first.tRm.f, last.tRm.f) - fontSize * 0.3;
-    const top    = Math.max(first.tRm.f, last.tRm.f) + fontSize * 0.85;
-    if (pdfX >= left && pdfX <= right && pdfY >= bottom && pdfY <= top) {
-      return run;
+
+    // For runs with glyphs, compute bounds from glyph positions
+    if (run.glyphs.length > 0) {
+      const first = run.glyphs[0];
+      const last  = run.glyphs[run.glyphs.length - 1];
+      const fontSize = first.fontSize || 12;
+
+      // Compute horizontal bounds from all glyphs (not just first/last)
+      // This handles cases where glyphs aren't strictly left-to-right
+      let minX = Infinity, maxX = -Infinity;
+      let minY = Infinity, maxY = -Infinity;
+      for (let g = 0; g < run.glyphs.length; g++) {
+        const glyph = run.glyphs[g];
+        const gx = glyph.tRm.e;
+        const gy = glyph.tRm.f;
+        if (gx < minX) minX = gx;
+        if (gx + glyph.width > maxX) maxX = gx + glyph.width;
+        if (gy < minY) minY = gy;
+        if (gy > maxY) maxY = gy;
+      }
+
+      // Generous padding — crucial for headings, brackets, small text
+      const hPad = Math.max(4, fontSize * 0.15);
+      const left   = minX - hPad;
+      const right  = maxX + hPad;
+      // Ensure minimum width for narrow/single-char runs
+      const minWidth = fontSize * 0.6;
+      const width = right - left;
+      const adjustedLeft = width < minWidth ? left - (minWidth - width) / 2 : left;
+      const adjustedRight = width < minWidth ? right + (minWidth - width) / 2 : right;
+
+      const bottom = minY - fontSize * 0.4;
+      const top    = maxY + fontSize * 1.0;
+
+      if (pdfX >= adjustedLeft && pdfX <= adjustedRight && pdfY >= bottom && pdfY <= top) {
+        return run;
+      }
+    } else if (run.width > 0 && run.height > 0) {
+      // Fallback for runs with no glyphs — use the run's own bounding box
+      const pad = 4;
+      if (
+        pdfX >= run.x - pad && pdfX <= run.x + run.width + pad &&
+        pdfY >= run.y - pad && pdfY <= run.y + run.height + pad
+      ) {
+        return run;
+      }
     }
   }
   return null;
+}
+
+/**
+ * Find the nearest TextRun to a PDF coordinate within a proximity threshold.
+ * Used as fallback when direct hit testing fails — enables "click near text" editing.
+ */
+export function findNearestTextRun(
+  pdfX: number,
+  pdfY: number,
+  textRuns: TextRun[],
+  maxDistance: number = 15,
+): TextRun | null {
+  let bestRun: TextRun | null = null;
+  let bestDist = maxDistance;
+
+  for (let i = 0; i < textRuns.length; i++) {
+    const run = textRuns[i];
+    if (run.glyphs.length === 0 && run.width <= 0) continue;
+
+    let runLeft: number, runRight: number, runBottom: number, runTop: number;
+
+    if (run.glyphs.length > 0) {
+      const fontSize = run.glyphs[0].fontSize || 12;
+      runLeft = Infinity; runRight = -Infinity;
+      runBottom = Infinity; runTop = -Infinity;
+      for (let g = 0; g < run.glyphs.length; g++) {
+        const glyph = run.glyphs[g];
+        if (glyph.tRm.e < runLeft) runLeft = glyph.tRm.e;
+        if (glyph.tRm.e + glyph.width > runRight) runRight = glyph.tRm.e + glyph.width;
+        if (glyph.tRm.f < runBottom) runBottom = glyph.tRm.f;
+        if (glyph.tRm.f > runTop) runTop = glyph.tRm.f;
+      }
+      runBottom -= fontSize * 0.3;
+      runTop += fontSize * 0.85;
+    } else {
+      runLeft = run.x;
+      runRight = run.x + run.width;
+      runBottom = run.y;
+      runTop = run.y + run.height;
+    }
+
+    // Distance from point to bounding box
+    const dx = pdfX < runLeft ? runLeft - pdfX : pdfX > runRight ? pdfX - runRight : 0;
+    const dy = pdfY < runBottom ? runBottom - pdfY : pdfY > runTop ? pdfY - runTop : 0;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestRun = run;
+    }
+  }
+
+  return bestRun;
 }
 
 /** Hit-test: find an ImageItem or PathItem under a PDF coordinate. */

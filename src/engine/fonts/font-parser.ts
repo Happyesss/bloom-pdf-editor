@@ -65,6 +65,10 @@ export interface FontData {
   flags: number;
   /** CSS font string for canvas rendering */
   cssFontString: string;
+  /** Type 3 Font Matrix */
+  fontMatrix: number[] | null;
+  /** Type 3 Character Procedures: charName → PDFStream */
+  charProcs: Map<string, PDFStream> | null;
 }
 
 // ─── Main font loading function ─────────────────────────────────────────────
@@ -130,6 +134,8 @@ export function loadFont(
     italicAngle: 0,
     flags: 0,
     cssFontString: '12px sans-serif',
+    fontMatrix: null,
+    charProcs: null,
   };
 
   // 1. Check for standard 14 font
@@ -163,6 +169,26 @@ export function loadFont(
   // 6. For composite fonts, also parse descendant CIDFont
   if (isComposite) {
     loadDescendantFont(dict, objects, fontData);
+  }
+
+  // 6.5 For Type3 fonts, parse FontMatrix and CharProcs
+  if (subtype === 'Type3') {
+    const matrixArr = dict.getArray('FontMatrix');
+    if (matrixArr) {
+      fontData.fontMatrix = matrixArr.asNumbers();
+    }
+    const charProcsDictRef = dict.get('CharProcs');
+    const charProcsDict = charProcsDictRef ? resolveRef(charProcsDictRef, objects) : undefined;
+    if (charProcsDict instanceof PDFDict) {
+      fontData.charProcs = new Map();
+      const entries = Array.from(charProcsDict.entries());
+      for (const [charName, streamRef] of entries) {
+        const stream = resolveRef(streamRef, objects);
+        if (stream instanceof PDFStream) {
+          fontData.charProcs.set(charName, stream);
+        }
+      }
+    }
   }
 
   // 7. Build CSS font string

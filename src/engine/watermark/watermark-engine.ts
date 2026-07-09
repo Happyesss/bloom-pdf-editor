@@ -52,6 +52,8 @@ export interface WatermarkBase {
   layer: 'above' | 'below';
   /** Page indices to apply to (empty = all pages) */
   pageIndices?: number[];
+  /** Blend mode (e.g. 'Normal', 'Multiply', etc.) */
+  blendMode?: string;
 }
 
 export interface TextWatermark extends WatermarkBase {
@@ -141,7 +143,7 @@ export function buildTextWatermarkContent(wm: TextWatermark, pageWidth: number, 
   const lines: string[] = [];
   lines.push('q');
 
-  if (wm.opacity < 1) {
+  if (wm.opacity < 1 || (wm.blendMode && wm.blendMode !== 'Normal')) {
     lines.push(`/${getExtGStateName(wm.id)} gs`);
   }
 
@@ -215,7 +217,7 @@ export function buildImageWatermarkContent(
   const lines: string[] = [];
   lines.push('q');
 
-  if (wm.opacity < 1) {
+  if (wm.opacity < 1 || (wm.blendMode && wm.blendMode !== 'Normal')) {
     lines.push(`/${getExtGStateName(wm.id)} gs`);
   }
 
@@ -269,7 +271,7 @@ export function buildPatternWatermarkContent(wm: PatternWatermark, pageWidth: nu
 
   lines.push('q');
 
-  if (wm.opacity < 1) {
+  if (wm.opacity < 1 || (wm.blendMode && wm.blendMode !== 'Normal')) {
     lines.push(`/${getExtGStateName(wm.id)} gs`);
   }
 
@@ -315,7 +317,7 @@ export function buildShapeWatermarkContent(wm: ShapeWatermark, pageWidth: number
   const lines: string[] = [];
   lines.push('q');
 
-  if (wm.opacity < 1) {
+  if (wm.opacity < 1 || (wm.blendMode && wm.blendMode !== 'Normal')) {
     lines.push(`/${getExtGStateName(wm.id)} gs`);
   }
 
@@ -423,12 +425,13 @@ export function buildShapeWatermarkContent(wm: ShapeWatermark, pageWidth: number
 export function createOpacityExtGState(
   opacity: number,
   gsName: string,
+  blendMode: string = 'Normal',
 ): { dict: PDFDict; name: string } {
   const dict = new PDFDict();
   dict.set('Type', new PDFName('ExtGState'));
   dict.set('ca', new PDFNumber(opacity));   // non-stroking alpha
   dict.set('CA', new PDFNumber(opacity));   // stroking alpha
-  dict.set('BM', new PDFName('Normal'));
+  dict.set('BM', new PDFName(blendMode));
 
   return { dict, name: gsName };
 }
@@ -484,7 +487,7 @@ export function applyWatermarkToPage(
   getNextObjNum: () => number,
 ): Uint8Array {
   let watermarkContent: Uint8Array;
-  let needsExtGState = watermark.opacity < 1;
+  let needsExtGState = watermark.opacity < 1 || (watermark.blendMode !== undefined && watermark.blendMode !== 'Normal');
   let needsImageXObject = watermark.type === 'image';
 
   // Build the watermark content operators
@@ -522,7 +525,7 @@ export function applyWatermarkToPage(
   // Create ExtGState for opacity if needed
   if (needsExtGState) {
     const gsName = getExtGStateName(watermark.id);
-    const { dict } = createOpacityExtGState(watermark.opacity, gsName);
+    const { dict } = createOpacityExtGState(watermark.opacity, gsName, watermark.blendMode || 'Normal');
     const objNum = getNextObjNum();
     const objRef = new PDFRef(objNum, 0);
     objects.set(objRef.toKey(), dict);

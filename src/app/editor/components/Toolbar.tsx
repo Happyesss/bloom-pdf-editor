@@ -1,5 +1,5 @@
 import React from 'react';
-import { ChevronLeft, ChevronRight, ZoomOut, ZoomIn, Download, X, Loader2 } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ZoomOut, ZoomIn, Download, X, Loader2, Undo2, Redo2 } from 'lucide-react';
 import type { DrawnPath } from '../types';
 
 interface ToolbarProps {
@@ -9,11 +9,15 @@ interface ToolbarProps {
   scale: number;
   drawnPaths: DrawnPath[];
   isSaving: boolean;
+  canUndo: boolean;
+  canRedo: boolean;
   onClose: () => void;
   onPrevPage: () => void;
   onNextPage: () => void;
   onZoomIn: () => void;
   onZoomOut: () => void;
+  onUndo: () => void;
+  onRedo: () => void;
   onClearPaths: () => void;
   onDownload: () => void;
 }
@@ -25,11 +29,15 @@ export function Toolbar({
   scale,
   drawnPaths,
   isSaving,
+  canUndo,
+  canRedo,
   onClose,
   onPrevPage,
   onNextPage,
   onZoomIn,
   onZoomOut,
+  onUndo,
+  onRedo,
   onClearPaths,
   onDownload
 }: ToolbarProps) {
@@ -47,6 +55,25 @@ export function Toolbar({
       </div>
 
       <div className="flex items-center gap-2 bg-zinc-900 px-2 py-1.5 rounded-lg border border-zinc-800 shadow-sm">
+        <button
+          onClick={onUndo}
+          disabled={!canUndo}
+          className="p-1 text-zinc-400 hover:text-zinc-100 disabled:opacity-30 disabled:hover:text-zinc-400 transition-colors"
+          title="Undo (Ctrl+Z)"
+        >
+          <Undo2 size={16} />
+        </button>
+        <button
+          onClick={onRedo}
+          disabled={!canRedo}
+          className="p-1 text-zinc-400 hover:text-zinc-100 disabled:opacity-30 disabled:hover:text-zinc-400 transition-colors"
+          title="Redo (Ctrl+Shift+Z)"
+        >
+          <Redo2 size={16} />
+        </button>
+
+        <div className="w-[1px] h-4 bg-zinc-800 mx-1" />
+
         <button onClick={onPrevPage} disabled={currentPage === 0} className="p-1 text-zinc-400 hover:text-zinc-100 disabled:opacity-30 disabled:hover:text-zinc-400 transition-colors">
           <ChevronLeft size={18} />
         </button>
@@ -82,10 +109,10 @@ export function Toolbar({
         <button
           onClick={onDownload}
           disabled={isSaving}
-          className="flex items-center gap-2 text-xs font-semibold px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-md shadow-sm transition-all disabled:opacity-50"
+          className="flex items-center gap-2 text-xs font-medium px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-lg transition-colors shadow-lg shadow-blue-900/20"
         >
           {isSaving ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
-          {isSaving ? 'Saving...' : 'Save PDF'}
+          Download
         </button>
       </div>
     </header>

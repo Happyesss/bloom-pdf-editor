@@ -4,7 +4,7 @@ import {
   X, Trash2, Bold, Italic, Underline, AlignLeft, AlignCenter, AlignRight, Minus, Plus, Stamp
 } from 'lucide-react';
 import type { EditorTool } from '../types';
-import type { TextRun, ImageItem, PathItem } from '@/engine';
+import type { TextRun, ImageItem, PathItem, AcroFormWidget } from '@/engine';
 
 interface PropertiesSidebarProps {
   activeTool: EditorTool;
@@ -48,6 +48,13 @@ interface PropertiesSidebarProps {
   setSelectedDisplayItem: (item: ImageItem | PathItem | null) => void;
   displayItems: (ImageItem | PathItem)[];
 
+  formFields?: AcroFormWidget[];
+  selectedFormField?: AcroFormWidget | null;
+  formFieldDraft?: string;
+  onFormFieldSelect?: (field: AcroFormWidget) => void;
+  onFormFieldChange?: (value: string) => void;
+  onFlattenForms?: () => void;
+
   watermarkText?: string;
   setWatermarkText?: (v: string) => void;
   watermarkFontName?: string;
@@ -87,6 +94,8 @@ interface PropertiesSidebarProps {
   onCancelScan?: () => void;
   watermarkLivePreview?: boolean;
   setWatermarkLivePreview?: (v: boolean) => void;
+  watermarkBlendMode?: string;
+  setWatermarkBlendMode?: (v: string) => void;
 }
 
 export function PropertiesSidebar(props: PropertiesSidebarProps) {
@@ -100,6 +109,8 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
     highlightColor, setHighlightColor, highlightSize, setHighlightSize,
     eraserSize, setEraserSize,
     selectedDisplayItem, setSelectedDisplayItem, displayItems,
+    formFields = [], selectedFormField, formFieldDraft = '',
+    onFormFieldSelect, onFormFieldChange, onFlattenForms,
     watermarkType = 'text', setWatermarkType,
     watermarkShapeType = 'circle', setWatermarkShapeType,
     watermarkShapeColor = '#000000', setWatermarkShapeColor,
@@ -117,7 +128,8 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
     watermarkColor = '#000000', setWatermarkColor,
     hasScannedWatermarks, detectedWatermarksCount = 0, onScanWatermarks,
     onApplyWatermark, onRemoveWatermarks, onCancelScan,
-    watermarkLivePreview = true, setWatermarkLivePreview
+    watermarkLivePreview = true, setWatermarkLivePreview,
+    watermarkBlendMode = 'Normal', setWatermarkBlendMode
   } = props;
 
   if (!['text', 'addtext', 'draw', 'highlight', 'erase', 'select', 'watermark'].includes(activeTool)) return null;
@@ -530,6 +542,54 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
         </div>
       )}
 
+      {/* FORM FIELDS */}
+      {formFields.length > 0 && (
+        <div className="p-4 space-y-3 border-t border-zinc-800 animate-in fade-in slide-in-from-left-4 duration-300">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-bold tracking-widest text-zinc-400 uppercase">
+              Form Fields ({formFields.length})
+            </span>
+            {onFlattenForms && (
+              <button
+                onClick={onFlattenForms}
+                className="text-[10px] font-medium px-2 py-1 rounded bg-amber-500/10 text-amber-400 border border-amber-500/30 hover:bg-amber-500/20 transition-colors"
+              >
+                Flatten All
+              </button>
+            )}
+          </div>
+
+          <div className="space-y-1 max-h-40 overflow-y-auto">
+            {formFields.map((field) => (
+              <button
+                key={field.ref.toKey()}
+                onClick={() => onFormFieldSelect?.(field)}
+                className={`w-full text-left px-2.5 py-2 rounded-lg text-[11px] transition-colors ${
+                  selectedFormField?.ref.toKey() === field.ref.toKey()
+                    ? 'bg-blue-500/15 text-blue-300 border border-blue-500/30'
+                    : 'bg-zinc-800/50 text-zinc-400 border border-zinc-700/50 hover:bg-zinc-800'
+                }`}
+              >
+                <div className="font-medium truncate">{field.fieldName || 'Unnamed'}</div>
+                <div className="text-[10px] text-zinc-500">{field.fieldType}</div>
+              </button>
+            ))}
+          </div>
+
+          {selectedFormField && selectedFormField.fieldType === 'Tx' && onFormFieldChange && (
+            <div className="space-y-2">
+              <label className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase">Value</label>
+              <input
+                type="text"
+                value={formFieldDraft}
+                onChange={(e) => onFormFieldChange(e.target.value)}
+                className="w-full px-3 py-2 text-sm bg-zinc-800 border border-zinc-700 rounded-lg text-zinc-200 focus:outline-none focus:border-blue-500"
+              />
+            </div>
+          )}
+        </div>
+      )}
+
       {/* WATERMARK PROPERTIES */}
       {activeTool === 'watermark' && (
         <div className="flex flex-col h-full bg-zinc-900/95 animate-in fade-in slide-in-from-left-4 duration-300">
@@ -757,6 +817,32 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   <option value="270 degrees">270 degrees</option>
                 </select>
               </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-[11px] font-medium text-zinc-300">Blend Mode:</label>
+              <select
+                value={watermarkBlendMode}
+                onChange={(e) => setWatermarkBlendMode?.(e.target.value)}
+                className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-2 text-[11px] text-zinc-200 outline-none focus:border-blue-500 transition-colors appearance-none cursor-pointer"
+              >
+                <option value="Normal">Normal (source-over)</option>
+                <option value="Multiply">Multiply</option>
+                <option value="Screen">Screen</option>
+                <option value="Overlay">Overlay</option>
+                <option value="Darken">Darken</option>
+                <option value="Lighten">Lighten</option>
+                <option value="ColorDodge">Color Dodge</option>
+                <option value="ColorBurn">Color Burn</option>
+                <option value="HardLight">Hard Light</option>
+                <option value="SoftLight">Soft Light</option>
+                <option value="Difference">Difference</option>
+                <option value="Exclusion">Exclusion</option>
+                <option value="Hue">Hue</option>
+                <option value="Saturation">Saturation</option>
+                <option value="Color">Color</option>
+                <option value="Luminosity">Luminosity</option>
+              </select>
             </div>
 
             <div className="space-y-1.5">

@@ -64,6 +64,8 @@ export interface GraphicsState {
   strokeColor: [number, number, number];
   fillAlpha: number;
   strokeAlpha: number;
+  blendMode: string;
+  softMask: PDFDict | null;
   // Line state
   lineWidth: number;
   lineCap: number;
@@ -81,7 +83,12 @@ export interface GraphicsState {
   textRenderMode: number;       // Tr
   textRise: number;             // Ts
   // Clipping
-  clipPath: PathSegment[] | null;
+  clipPaths: ClipPathNode[];
+}
+
+export interface ClipPathNode {
+  segments: PathSegment[];
+  windingRule: 'nonzero' | 'evenodd';
 }
 
 function defaultGraphicsState(): GraphicsState {
@@ -105,7 +112,9 @@ function defaultGraphicsState(): GraphicsState {
     textLeading: 0,
     textRenderMode: 0,
     textRise: 0,
-    clipPath: null,
+    blendMode: 'Normal',
+    softMask: null,
+    clipPaths: [],
   };
 }
 
@@ -116,7 +125,7 @@ function cloneGraphicsState(gs: GraphicsState): GraphicsState {
     fillColor: [...gs.fillColor] as [number, number, number],
     strokeColor: [...gs.strokeColor] as [number, number, number],
     dashPattern: [...gs.dashPattern],
-    clipPath: gs.clipPath ? [...gs.clipPath] : null,
+    clipPaths: [...gs.clipPaths],
   };
 }
 
@@ -145,6 +154,9 @@ export interface TextRun {
   fillAlpha: number;
   /** Is underlined */
   isUnderline?: boolean;
+  blendMode: string;
+  softMask: PDFDict | null;
+  clipPaths: ClipPathNode[];
 }
 
 export interface GlyphPosition {
@@ -184,6 +196,9 @@ export interface PathItem {
   y: number;
   width: number;
   height: number;
+  blendMode: string;
+  softMask: PDFDict | null;
+  clipPaths: ClipPathNode[];
 }
 
 export interface ImageItem {
@@ -196,9 +211,32 @@ export interface ImageItem {
   y: number;
   width: number;
   height: number;
+  blendMode: string;
+  softMask: PDFDict | null;
+  clipPaths: ClipPathNode[];
 }
 
-export type DisplayItem = TextRun | PathItem | ImageItem;
+export interface FormItem {
+  type: 'form';
+  /** Resource name from /Do operator */
+  name: string;
+  /** Transform matrix positioning the form */
+  ctm: Matrix;
+  blendMode: string;
+  softMask: PDFDict | null;
+  clipPaths: ClipPathNode[];
+}
+
+export interface ShadingItem {
+  type: 'shading';
+  name: string;
+  ctm: Matrix;
+  blendMode: string;
+  softMask: PDFDict | null;
+  clipPaths: ClipPathNode[];
+}
+
+export type DisplayItem = TextRun | PathItem | ImageItem | FormItem | ShadingItem;
 
 // ─── Font info cache ────────────────────────────────────────────────────────
 
@@ -768,6 +806,14 @@ export function interpretPage(
       case 'B*': emitPath('both'); break;
       case 'b': { currentPath.push({ type: 'Z', points: [] }); emitPath('both'); break; }
       case 'b*': { currentPath.push({ type: 'Z', points: [] }); emitPath('both'); break; }
+      case 'W': {
+        gs.clipPaths.push({ segments: [...currentPath], windingRule: 'nonzero' });
+        break;
+      }
+      case 'W*': {
+        gs.clipPaths.push({ segments: [...currentPath], windingRule: 'evenodd' });
+        break;
+      }
       case 'n': { currentPath = []; break; } // Discard path
 
       // ── XObjects ────────────────────────────────────────────────────
@@ -790,10 +836,37 @@ export function interpretPage(
                 y: Math.min(y, y2),
                 width: Math.abs(x2 - x),
                 height: Math.abs(y2 - y),
+                blendMode: gs.blendMode,
+                softMask: gs.softMask,
+                clipPaths: [...gs.clipPaths],
+              });
+            } else if (subtype === 'Form') {
+              displayList.push({
+                type: 'form',
+                name: xobjName,
+                ctm: { ...gs.ctm },
+                blendMode: gs.blendMode,
+                softMask: gs.softMask,
+                clipPaths: [...gs.clipPaths],
               });
             }
-            // Form XObjects would be recursively interpreted here
           }
+        }
+        break;
+      }
+
+      // ── Shading ─────────────────────────────────────────────────────
+      case 'sh': {
+        const shName = nameStr(ops[0]);
+        if (shName) {
+          displayList.push({
+            type: 'shading',
+            name: shName,
+            ctm: { ...gs.ctm },
+            blendMode: gs.blendMode,
+            softMask: gs.softMask,
+            clipPaths: [...gs.clipPaths],
+          });
         }
         break;
       }
@@ -825,6 +898,9 @@ export function interpretPage(
       fillAlpha: gs.fillAlpha,
       lineWidth: gs.lineWidth,
       paintType,
+      blendMode: gs.blendMode,
+      softMask: gs.softMask,
+      clipPaths: [...gs.clipPaths],
       ...bounds,
     });
     currentPath = [];
@@ -987,6 +1063,9 @@ function showTextString(
       textMatrix: { ...effectiveMatrix },
       fillColor: [...gs.fillColor] as [number, number, number],
       fillAlpha: gs.fillAlpha,
+      blendMode: gs.blendMode,
+      softMask: gs.softMask,
+      clipPaths: [...gs.clipPaths],
     },
     newTextMatrix: textMatrix,
   };
@@ -1047,6 +1126,9 @@ function canMergeTextRuns(previous: TextRun, next: TextRun): boolean {
   if (previous.fontSize !== next.fontSize) return false;
   if (previous.fillAlpha !== next.fillAlpha) return false;
   if (previous.isUnderline !== next.isUnderline) return false;
+  if (previous.blendMode !== next.blendMode) return false;
+  if (previous.softMask !== next.softMask) return false;
+  if (previous.clipPaths.length !== next.clipPaths.length) return false;
 
   const prevColor = previous.fillColor;
   const nextColor = next.fillColor;
@@ -1367,6 +1449,26 @@ function applyExtGState(
     const fontSize = fontArr.get(1);
     if (fontName instanceof PDFName) gs.textFont = fontName.name;
     if (fontSize instanceof PDFNumber) gs.textFontSize = fontSize.value;
+  }
+
+  // Blend Mode
+  const bmObj = dict.get('BM');
+  if (bmObj instanceof PDFName) {
+    gs.blendMode = bmObj.name;
+  } else if (bmObj instanceof PDFArray && bmObj.length > 0) {
+    const first = bmObj.get(0);
+    if (first instanceof PDFName) gs.blendMode = first.name;
+  }
+
+  // Soft Mask
+  const smaskObj = dict.get('SMask');
+  if (smaskObj instanceof PDFName && smaskObj.name === 'None') {
+    gs.softMask = null;
+  } else if (smaskObj) {
+    const resolvedSMask = resolveRef(smaskObj, objects);
+    if (resolvedSMask instanceof PDFDict) {
+      gs.softMask = resolvedSMask;
+    }
   }
 }
 

@@ -21,6 +21,8 @@ import {
   PDFStream,
 } from '../types';
 import { resolveRef } from '../parser/parser';
+import { parseICCProfile } from '../color/icc-profile';
+import { transformDeviceToPCS } from '../color/icc-lut';
 
 // ─── Color space types ──────────────────────────────────────────────────────
 
@@ -159,6 +161,23 @@ function parseICCBased(arr: PDFArray, objects: Map<string, PDFObject>): ColorSpa
   if (!(stream instanceof PDFStream)) return DEVICE_RGB;
 
   const n = stream.dict.getNumber('N') ?? 3;
+  const profileBytes = stream.getBytes();
+  const profile = parseICCProfile(profileBytes);
+
+  if (profile) {
+    return {
+      name: 'ICCBased',
+      numComponents: n,
+      toRGB(c: number[]): RGBColor {
+        const pcs = transformDeviceToPCS(profile, c.slice(0, n));
+        if (pcs.length >= 3) {
+          return [Math.max(0, Math.min(1, pcs[0])), Math.max(0, Math.min(1, pcs[1])), Math.max(0, Math.min(1, pcs[2]))];
+        }
+        const g = Math.max(0, Math.min(1, pcs[0] ?? 0));
+        return [g, g, g];
+      },
+    };
+  }
 
   // Use alternate color space if specified
   const alternate = stream.dict.get('Alternate');

@@ -12,6 +12,8 @@ import {
   fontUnitsToTextSpace,
   type TTFFont,
 } from '../fonts/truetype-parser';
+import { parseGSUBLigatures, shapeGlyphIdsWithLigatures } from '../fonts/gsub';
+import { parseGPOSPairAdjustments, lookupGPOSPair } from '../fonts/gpos';
 
 export interface ShapedGlyph {
   unicode: string;
@@ -36,6 +38,13 @@ export function shapeText(
 ): ShapedGlyph[] {
   if (!text) return [];
 
+  if (fontData.ttfFont) {
+    const rules = parseGSUBLigatures(fontData.ttfFont);
+    if (rules.length > 0) {
+      return shapeTextWithGSUB(text, fontData, fontSize, rules);
+    }
+  }
+
   const clusters = splitLigatureClusters(text);
   const glyphs: ShapedGlyph[] = [];
   let prevGlyphId = -1;
@@ -57,6 +66,70 @@ export function shapeText(
     prevGlyphId = glyphId;
   }
 
+  applyGPOSKerning(glyphs, fontData, fontSize);
+  return glyphs;
+}
+
+function applyGPOSKerning(
+  glyphs: ShapedGlyph[],
+  fontData: FontData,
+  fontSize: number,
+): void {
+  if (!fontData.ttfFont || glyphs.length < 2) return;
+  const pairs = parseGPOSPairAdjustments(fontData.ttfFont);
+  if (pairs.length === 0) return;
+
+  const scale = fontSize / fontData.ttfFont.unitsPerEm;
+  for (let i = 0; i < glyphs.length - 1; i++) {
+    const adj = lookupGPOSPair(pairs, glyphs[i].glyphId, glyphs[i + 1].glyphId);
+    if (adj) {
+      glyphs[i + 1].kern += adj.xAdvance * scale;
+      if (adj.yAdvance !== 0) {
+        glyphs[i + 1].advance += adj.yAdvance * scale * 0.01;
+      }
+    }
+  }
+}
+
+function shapeTextWithGSUB(
+  text: string,
+  fontData: FontData,
+  fontSize: number,
+  rules: ReturnType<typeof parseGSUBLigatures>,
+): ShapedGlyph[] {
+  const ttf = fontData.ttfFont!;
+  const glyphIds: number[] = [];
+  const charUnits: string[] = [];
+
+  for (let i = 0; i < text.length; ) {
+    const cp = text.codePointAt(i)!;
+    const unit = String.fromCodePoint(cp);
+    charUnits.push(unit);
+    glyphIds.push(charCodeToGlyphId(ttf, cp));
+    i += unit.length;
+  }
+
+  const shaped = shapeGlyphIdsWithLigatures(glyphIds, charUnits, rules);
+  const glyphs: ShapedGlyph[] = [];
+  let prevGlyphId = -1;
+
+  for (let i = 0; i < shaped.length; i++) {
+    const { glyphId, unicode } = shaped[i];
+    const advance = glyphAdvance(glyphId, fontData, fontSize);
+    let kern = 0;
+
+    if (prevGlyphId >= 0) {
+      const kernFU = lookupKern(ttf, prevGlyphId, glyphId);
+      if (kernFU !== 0) {
+        kern = (kernFU / ttf.unitsPerEm) * fontSize;
+      }
+    }
+
+    glyphs.push({ unicode, glyphId, advance, kern });
+    prevGlyphId = glyphId;
+  }
+
+  applyGPOSKerning(glyphs, fontData, fontSize);
   return glyphs;
 }
 

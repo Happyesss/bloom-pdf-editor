@@ -19,13 +19,16 @@
  */
 
 import { parsePDF, getPageContentBytes, resolveRef, getResource } from '../parser/parser';
-import { interpretPage, type DisplayItem, type TextRun, type PathItem, type ImageItem, type GlyphPosition } from '../content/interpreter';
+import { interpretPage, type DisplayItem, type TextRun, type PathItem, type ImageItem, type FormItem, type ShadingItem, type GlyphPosition, type ClipPathNode } from '../content/interpreter';
 import { buildDocumentFlow, buildFlowDrawIndex, type DocumentFlow, type TextLine } from '../flow';
 import type { FlowGlyphDraw } from '../flow/flow-draw';
 import { loadPageFonts, type FontData } from '../fonts/font-parser';
 import { getCSSFontFamily, getStandardFont } from '../fonts/standard14';
 import { decodeImage } from './image-decoder';
 import { rgbToCSSColor } from './color-space';
+import { applyClipPaths } from './clipping';
+import { toCanvasBlendMode } from './transparency';
+import { parseSoftMask, type SoftMaskSubtype } from './soft-mask';
 import {
   PDFDict,
   PDFName,
@@ -157,6 +160,7 @@ export async function renderPageToCanvas(
 
   const flowDraw = buildFlowDrawIndex(documentFlow.lines, fonts);
   const drawnJustifiedRuns = new Set<TextRun>();
+  const softMaskMap = await buildSoftMaskMap(interpreted.displayList, page, objects, options);
 
   // Render display list
   for (let i = 0; i < interpreted.displayList.length; i++) {
@@ -164,15 +168,21 @@ export async function renderPageToCanvas(
 
     switch (item.type) {
       case 'path':
-        if (renderPaths) drawPath(ctx, item);
+        if (renderPaths) drawPath(ctx, item, softMaskMap);
         break;
       case 'text':
         if (renderText) {
-          drawTextRunWithFlow(ctx, item, fonts, flowDraw, drawnJustifiedRuns);
+          drawTextRunWithFlow(ctx, item, fonts, flowDraw, drawnJustifiedRuns, softMaskMap);
         }
         break;
       case 'image':
-        if (renderImages) await drawImage(ctx, item, page, objects);
+        if (renderImages) await drawImage(ctx, item, page, objects, softMaskMap);
+        break;
+      case 'form':
+        await drawFormItem(ctx, item, page, objects, options);
+        break;
+      case 'shading':
+        if (renderImages) drawShadingItem(ctx, item, page, objects);
         break;
     }
   }
@@ -254,6 +264,8 @@ export async function renderPageToCanvas(
               case 'path': if (renderPaths) drawPath(ctx, item); break;
               case 'text': if (renderText) drawTextRun(ctx, item, annotFonts); break;
               case 'image': if (renderImages) await drawImage(ctx, item, mockPage, objects); break;
+              case 'form': await drawFormItem(ctx, item, mockPage, objects, options); break;
+              case 'shading': if (renderImages) drawShadingItem(ctx, item, mockPage, objects); break;
             }
           }
           ctx.restore();
@@ -301,53 +313,218 @@ function applyPageRotation(
   }
 }
 
-// ─── Path rendering ─────────────────────────────────────────────────────────
+// ─── Soft mask group rendering ────────────────────────────────────────────────
 
-function drawPath(ctx: CanvasRenderingContext2D, item: PathItem): void {
-  if (item.segments.length === 0) return;
+const softMaskCache = new WeakMap<PDFDict, HTMLCanvasElement>();
 
+function maskLuminance(r: number, g: number, b: number): number {
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function maskToAlphaCanvas(source: HTMLCanvasElement, subtype: SoftMaskSubtype): HTMLCanvasElement {
+  const w = source.width;
+  const h = source.height;
+  const out = document.createElement('canvas');
+  out.width = w;
+  out.height = h;
+  const sctx = source.getContext('2d')!;
+  const octx = out.getContext('2d')!;
+  const img = sctx.getImageData(0, 0, w, h);
+  const outData = octx.createImageData(w, h);
+
+  for (let i = 0; i < img.data.length; i += 4) {
+    const r = img.data[i] / 255;
+    const g = img.data[i + 1] / 255;
+    const b = img.data[i + 2] / 255;
+    const a = img.data[i + 3] / 255;
+    const alpha = subtype === 'Luminosity' ? maskLuminance(r, g, b) : a;
+    const v = Math.round(alpha * 255);
+    outData.data[i] = v;
+    outData.data[i + 1] = v;
+    outData.data[i + 2] = v;
+    outData.data[i + 3] = 255;
+  }
+
+  octx.putImageData(outData, 0, 0);
+  return out;
+}
+
+async function renderSoftMaskGroup(
+  softMask: PDFDict,
+  page: PDFPageInfo,
+  objects: Map<string, PDFObject>,
+  options: RenderOptions,
+): Promise<HTMLCanvasElement | null> {
+  const cached = softMaskCache.get(softMask);
+  if (cached) return cached;
+
+  const info = parseSoftMask(softMask);
+  const gRef = softMask.get('G');
+  if (!gRef) return null;
+
+  const gObj = resolveRef(gRef, objects);
+  if (!(gObj instanceof PDFStream)) return null;
+
+  const dict = gObj.dict;
+  const bbox = dict.getArray('BBox')?.asNumbers() ?? [0, 0, page.mediaBox.width, page.mediaBox.height];
+  const matrix = dict.getArray('Matrix')?.asNumbers() ?? [1, 0, 0, 1, 0, 0];
+
+  const w = Math.max(1, Math.ceil(page.mediaBox.width));
+  const h = Math.max(1, Math.ceil(page.mediaBox.height));
+  const rgbCanvas = document.createElement('canvas');
+  rgbCanvas.width = w;
+  rgbCanvas.height = h;
+  const rgbCtx = rgbCanvas.getContext('2d')!;
+  rgbCtx.save();
+  rgbCtx.transform(1, 0, 0, -1, -page.mediaBox.x, page.mediaBox.y + page.mediaBox.height);
+  rgbCtx.transform(matrix[0], matrix[1], matrix[2], matrix[3], matrix[4], matrix[5]);
+
+  const formResourcesRef = dict.get('Resources');
+  let formResources = page.resources;
+  if (formResourcesRef) {
+    const resolved = resolveRef(formResourcesRef, objects);
+    if (resolved instanceof PDFDict) formResources = resolved;
+  }
+
+  if (!gObj.decodedBytes) {
+    const { applyFilters } = await import('../parser/filters');
+    gObj.decodedBytes = await applyFilters(
+      gObj.rawBytes,
+      gObj.getFilters(),
+      gObj.getDecodeParams(),
+    );
+  }
+
+  const formPage: PDFPageInfo = { ...page, resources: formResources };
+  const interpreted = interpretPage(gObj.getBytes(), formPage, objects);
+  const formFonts = loadPageFonts(formResources, objects);
+  if (typeof window !== 'undefined') {
+    await registerEmbeddedFonts(formFonts);
+  }
+
+  rgbCtx.beginPath();
+  rgbCtx.rect(bbox[0], bbox[1], bbox[2] - bbox[0], bbox[3] - bbox[1]);
+  rgbCtx.clip();
+
+  const emptyMask = new Map<PDFDict, HTMLCanvasElement>();
+  for (let i = 0; i < interpreted.displayList.length; i++) {
+    const item = interpreted.displayList[i];
+    switch (item.type) {
+      case 'path': drawPath(rgbCtx, item, emptyMask); break;
+      case 'text': drawTextRun(rgbCtx, item, formFonts, emptyMask); break;
+      case 'image': await drawImage(rgbCtx, item, formPage, objects, emptyMask); break;
+      case 'form': await drawFormItem(rgbCtx, item, formPage, objects, options); break;
+      case 'shading': drawShadingItem(rgbCtx, item, formPage, objects); break;
+    }
+  }
+
+  rgbCtx.restore();
+
+  const alphaCanvas = maskToAlphaCanvas(rgbCanvas, info.subtype);
+  softMaskCache.set(softMask, alphaCanvas);
+  return alphaCanvas;
+}
+
+async function buildSoftMaskMap(
+  items: DisplayItem[],
+  page: PDFPageInfo,
+  objects: Map<string, PDFObject>,
+  options: RenderOptions,
+): Promise<Map<PDFDict, HTMLCanvasElement>> {
+  const map = new Map<PDFDict, HTMLCanvasElement>();
+  const seen = new Set<PDFDict>();
+
+  for (let i = 0; i < items.length; i++) {
+    const sm = items[i].softMask;
+    if (sm && !seen.has(sm)) {
+      seen.add(sm);
+      const canvas = await renderSoftMaskGroup(sm, page, objects, options);
+      if (canvas) map.set(sm, canvas);
+    }
+  }
+
+  return map;
+}
+
+function drawWithSoftMask(
+  ctx: CanvasRenderingContext2D,
+  softMask: PDFDict | null,
+  maskMap: Map<PDFDict, HTMLCanvasElement>,
+  bounds: { x: number; y: number; width: number; height: number },
+  paint: () => void,
+): void {
+  if (!softMask || !maskMap.has(softMask) || bounds.width <= 0 || bounds.height <= 0) {
+    paint();
+    return;
+  }
+
+  const mask = maskMap.get(softMask)!;
   ctx.save();
   ctx.beginPath();
-
-  for (let i = 0; i < item.segments.length; i++) {
-    const seg = item.segments[i];
-    switch (seg.type) {
-      case 'M':
-        ctx.moveTo(seg.points[0], seg.points[1]);
-        break;
-      case 'L':
-        ctx.lineTo(seg.points[0], seg.points[1]);
-        break;
-      case 'C':
-        ctx.bezierCurveTo(
-          seg.points[0], seg.points[1],
-          seg.points[2], seg.points[3],
-          seg.points[4], seg.points[5],
-        );
-        break;
-      case 'Z':
-        ctx.closePath();
-        break;
-    }
-  }
-
-  // Paint
-  if (item.paintType === 'fill' || item.paintType === 'both') {
-    if (item.fillColor) {
-      ctx.fillStyle = rgbToCSSColor(item.fillColor, item.fillAlpha);
-      ctx.fill();
-    }
-  }
-
-  if (item.paintType === 'stroke' || item.paintType === 'both') {
-    if (item.strokeColor) {
-      ctx.strokeStyle = rgbToCSSColor(item.strokeColor, item.strokeAlpha);
-      ctx.lineWidth = item.lineWidth;
-      ctx.stroke();
-    }
-  }
-
+  ctx.rect(bounds.x, bounds.y, bounds.width, bounds.height);
+  ctx.clip();
+  paint();
+  ctx.globalCompositeOperation = 'destination-in';
+  ctx.drawImage(mask, 0, 0);
   ctx.restore();
+}
+
+// ─── Path rendering ─────────────────────────────────────────────────────────
+
+function drawPath(
+  ctx: CanvasRenderingContext2D,
+  item: PathItem,
+  maskMap: Map<PDFDict, HTMLCanvasElement> = new Map(),
+): void {
+  if (item.segments.length === 0) return;
+
+  const bounds = { x: item.x, y: item.y, width: item.width, height: item.height };
+  drawWithSoftMask(ctx, item.softMask, maskMap, bounds, () => {
+    ctx.save();
+    ctx.globalCompositeOperation = toCanvasBlendMode(item.blendMode);
+    applyClipPaths(ctx, item.clipPaths);
+
+    ctx.beginPath();
+
+    for (let i = 0; i < item.segments.length; i++) {
+      const seg = item.segments[i];
+      switch (seg.type) {
+        case 'M':
+          ctx.moveTo(seg.points[0], seg.points[1]);
+          break;
+        case 'L':
+          ctx.lineTo(seg.points[0], seg.points[1]);
+          break;
+        case 'C':
+          ctx.bezierCurveTo(
+            seg.points[0], seg.points[1],
+            seg.points[2], seg.points[3],
+            seg.points[4], seg.points[5],
+          );
+          break;
+        case 'Z':
+          ctx.closePath();
+          break;
+      }
+    }
+
+    if (item.paintType === 'fill' || item.paintType === 'both') {
+      if (item.fillColor) {
+        ctx.fillStyle = rgbToCSSColor(item.fillColor, item.fillAlpha);
+        ctx.fill();
+      }
+    }
+
+    if (item.paintType === 'stroke' || item.paintType === 'both') {
+      if (item.strokeColor) {
+        ctx.strokeStyle = rgbToCSSColor(item.strokeColor, item.strokeAlpha);
+        ctx.lineWidth = item.lineWidth;
+        ctx.stroke();
+      }
+    }
+
+    ctx.restore();
+  });
 }
 
 // ─── Text rendering ─────────────────────────────────────────────────────────
@@ -366,16 +543,17 @@ function drawTextRunWithFlow(
   fonts: Map<string, FontData>,
   flowDraw: FlowDrawIndex,
   drawnJustifiedRuns: Set<TextRun>,
+  maskMap: Map<PDFDict, HTMLCanvasElement> = new Map(),
 ): void {
   if (drawnJustifiedRuns.has(run)) return;
 
   const line = flowDraw.runToLine.get(run);
   if (line && flowDraw.justifiedLines.has(line)) {
-    drawJustifiedTextLine(ctx, line, flowDraw, fonts, drawnJustifiedRuns);
+    drawJustifiedTextLine(ctx, line, flowDraw, fonts, drawnJustifiedRuns, maskMap);
     return;
   }
 
-  drawTextRun(ctx, run, fonts);
+  drawTextRun(ctx, run, fonts, maskMap);
 }
 
 function drawJustifiedTextLine(
@@ -384,11 +562,12 @@ function drawJustifiedTextLine(
   flowDraw: FlowDrawIndex,
   fonts: Map<string, FontData>,
   drawnJustifiedRuns: Set<TextRun>,
+  maskMap: Map<PDFDict, HTMLCanvasElement> = new Map(),
 ): void {
   const drawMap = flowDraw.drawMaps.get(line);
   if (!drawMap) {
     for (let r = 0; r < line.runs.length; r++) {
-      drawTextRun(ctx, line.runs[r], fonts);
+      drawTextRun(ctx, line.runs[r], fonts, maskMap);
       drawnJustifiedRuns.add(line.runs[r]);
     }
     return;
@@ -398,9 +577,9 @@ function drawJustifiedTextLine(
     const run = line.runs[r];
     const positions = drawMap.get(run);
     if (positions && positions.length > 0) {
-      drawTextRunAtPositions(ctx, run, fonts, positions);
+      drawTextRunAtPositions(ctx, run, fonts, positions, maskMap);
     } else {
-      drawTextRun(ctx, run, fonts);
+      drawTextRun(ctx, run, fonts, maskMap);
     }
     drawnJustifiedRuns.add(run);
   }
@@ -411,42 +590,55 @@ function drawTextRunAtPositions(
   run: TextRun,
   fonts: Map<string, FontData>,
   positions: FlowGlyphDraw[],
+  maskMap: Map<PDFDict, HTMLCanvasElement> = new Map(),
 ): void {
   if (positions.length === 0) return;
 
-  ctx.save();
-  const fontData = fonts.get(run.fontName);
-  const fillColor = rgbToCSSColor(run.fillColor, run.fillAlpha);
-  const { family, weight, style } = getCanvasFontProperties(run.fontName, fontData);
-  ctx.fillStyle = fillColor;
+  const bounds = { x: run.x, y: run.y, width: run.width, height: run.height };
+  drawWithSoftMask(ctx, run.softMask, maskMap, bounds, () => {
+    ctx.save();
+    ctx.globalCompositeOperation = toCanvasBlendMode(run.blendMode);
+    applyClipPaths(ctx, run.clipPaths);
 
-  for (let i = 0; i < positions.length; i++) {
-    drawGlyph(ctx, positions[i].glyph, run, family, weight, style, fillColor, positions[i].x, positions[i].f);
-  }
+    const fontData = fonts.get(run.fontName);
+    const fillColor = rgbToCSSColor(run.fillColor, run.fillAlpha);
+    const { family, weight, style } = getCanvasFontProperties(run.fontName, fontData);
+    ctx.fillStyle = fillColor;
 
-  ctx.restore();
+    for (let i = 0; i < positions.length; i++) {
+      drawGlyph(ctx, positions[i].glyph, run, family, weight, style, fillColor, positions[i].x, positions[i].f);
+    }
+
+    ctx.restore();
+  });
 }
 
 function drawTextRun(
   ctx: CanvasRenderingContext2D,
   run: TextRun,
   fonts: Map<string, FontData>,
+  maskMap: Map<PDFDict, HTMLCanvasElement> = new Map(),
 ): void {
   if (run.glyphs.length === 0) return;
 
-  ctx.save();
+  const bounds = { x: run.x, y: run.y, width: run.width, height: run.height };
+  drawWithSoftMask(ctx, run.softMask, maskMap, bounds, () => {
+    ctx.save();
+    ctx.globalCompositeOperation = toCanvasBlendMode(run.blendMode);
+    applyClipPaths(ctx, run.clipPaths);
 
-  const fontData = fonts.get(run.fontName);
-  const fillColor = rgbToCSSColor(run.fillColor, run.fillAlpha);
-  const { family, weight, style } = getCanvasFontProperties(run.fontName, fontData);
-  ctx.fillStyle = fillColor;
+    const fontData = fonts.get(run.fontName);
+    const fillColor = rgbToCSSColor(run.fillColor, run.fillAlpha);
+    const { family, weight, style } = getCanvasFontProperties(run.fontName, fontData);
+    ctx.fillStyle = fillColor;
 
-  for (let i = 0; i < run.glyphs.length; i++) {
-    const glyph = run.glyphs[i];
-    drawGlyph(ctx, glyph, run, family, weight, style, fillColor, glyph.tRm.e, glyph.tRm.f);
-  }
+    for (let i = 0; i < run.glyphs.length; i++) {
+      const glyph = run.glyphs[i];
+      drawGlyph(ctx, glyph, run, family, weight, style, fillColor, glyph.tRm.e, glyph.tRm.f);
+    }
 
-  ctx.restore();
+    ctx.restore();
+  });
 }
 
 function drawGlyph(
@@ -572,6 +764,7 @@ async function drawImage(
   item: ImageItem,
   page: PDFPageInfo,
   objects: Map<string, PDFObject>,
+  maskMap: Map<PDFDict, HTMLCanvasElement> = new Map(),
 ): Promise<void> {
   // Get the image XObject
   const xobj = getResource(page.resources, 'XObject', item.name, objects);
@@ -580,33 +773,32 @@ async function drawImage(
   const decoded = await decodeImage(xobj, objects);
   if (!decoded) return;
 
-  // Create ImageData and draw it
+  const bounds = { x: item.x, y: item.y, width: item.width, height: item.height };
+
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const imageData = new ImageData(decoded.data as any, decoded.width, decoded.height);
 
-    ctx.save();
+    drawWithSoftMask(ctx, item.softMask, maskMap, bounds, () => {
+      ctx.save();
+      ctx.globalCompositeOperation = toCanvasBlendMode(item.blendMode);
+      applyClipPaths(ctx, item.clipPaths);
 
-    // Apply the CTM to position and scale the image
-    // The image is defined in a 1×1 unit square that the CTM scales
-    ctx.transform(
-      item.ctm.a, item.ctm.b,
-      item.ctm.c, item.ctm.d,
-      item.ctm.e, item.ctm.f,
-    );
+      ctx.transform(
+        item.ctm.a, item.ctm.b,
+        item.ctm.c, item.ctm.d,
+        item.ctm.e, item.ctm.f,
+      );
 
-    // Create a temporary canvas to draw the ImageData
-    const tmpCanvas = new OffscreenCanvas(decoded.width, decoded.height);
-    const tmpCtx = tmpCanvas.getContext('2d')!;
-    tmpCtx.putImageData(imageData, 0, 0);
+      const tmpCanvas = new OffscreenCanvas(decoded.width, decoded.height);
+      const tmpCtx = tmpCanvas.getContext('2d')!;
+      tmpCtx.putImageData(imageData, 0, 0);
 
-    // Draw the image into the 1×1 unit square
-    // The CTM has already scaled it to the correct size
-    ctx.scale(1 / decoded.width, -1 / decoded.height);
-    ctx.translate(0, -decoded.height);
-    ctx.drawImage(tmpCanvas, 0, 0);
-
-    ctx.restore();
+      ctx.scale(1 / decoded.width, -1 / decoded.height);
+      ctx.translate(0, -decoded.height);
+      ctx.drawImage(tmpCanvas, 0, 0);
+      ctx.restore();
+    });
   } catch (e) {
     console.warn(`[Renderer] Failed to draw image ${item.name}:`, e);
   }
@@ -685,5 +877,222 @@ async function registerEmbeddedFonts(fonts: Map<string, FontData>): Promise<void
   if (promises.length > 0) {
     await Promise.all(promises);
   }
+}
+
+// ─── Canvas Pool ────────────────────────────────────────────────────────────
+
+class CanvasPool {
+  private static pool: HTMLCanvasElement[] = [];
+
+  static acquire(width: number, height: number): HTMLCanvasElement {
+    const canvas = this.pool.pop() || document.createElement('canvas');
+    canvas.width = Math.ceil(width);
+    canvas.height = Math.ceil(height);
+    const ctx = canvas.getContext('2d')!;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    return canvas;
+  }
+
+  static release(canvas: HTMLCanvasElement) {
+    this.pool.push(canvas);
+  }
+}
+
+// ─── Form rendering ─────────────────────────────────────────────────────────
+
+async function drawFormItem(
+  ctx: CanvasRenderingContext2D,
+  item: FormItem,
+  page: PDFPageInfo,
+  objects: Map<string, PDFObject>,
+  options: RenderOptions,
+): Promise<void> {
+  const xobj = getResource(page.resources, 'XObject', item.name, objects);
+  if (!(xobj instanceof PDFStream)) return;
+
+  ctx.save();
+  ctx.globalCompositeOperation = toCanvasBlendMode(item.blendMode);
+  applyClipPaths(ctx, item.clipPaths);
+
+  // Apply the CTM from the item which positioned the form
+  ctx.transform(
+    item.ctm.a, item.ctm.b,
+    item.ctm.c, item.ctm.d,
+    item.ctm.e, item.ctm.f,
+  );
+
+  await drawFormXObject(ctx, xobj, objects, page, options);
+  
+  ctx.restore();
+}
+
+async function drawFormXObject(
+  ctx: CanvasRenderingContext2D,
+  formStream: PDFStream,
+  objects: Map<string, PDFObject>,
+  parentPage: PDFPageInfo,
+  options: RenderOptions,
+  activeFormRefs: Set<number> = new Set()
+): Promise<void> {
+  const objNum = formStream.dict.getNumber('ObjNum') || 0;
+  if (activeFormRefs.has(objNum)) {
+    console.warn("Circular Form XObject reference detected. Breaking recursion.");
+    return;
+  }
+  if (objNum !== 0) activeFormRefs.add(objNum);
+
+  const dict = formStream.dict;
+  const bboxArr = dict.getArray('BBox')?.asNumbers() || [0, 0, 0, 0];
+  const matrixArr = dict.getArray('Matrix')?.asNumbers() || [1, 0, 0, 1, 0, 0];
+
+  const groupDict = dict.getDict('Group');
+  const isTransparencyGroup = groupDict !== undefined && groupDict.getName('S') === 'Transparency';
+  const isolated = groupDict?.getBool('I') ?? false;
+
+  ctx.save();
+
+  // 1. Apply Form Matrix
+  ctx.transform(matrixArr[0], matrixArr[1], matrixArr[2], matrixArr[3], matrixArr[4], matrixArr[5]);
+
+  // 2. Clip to BBox
+  ctx.beginPath();
+  ctx.rect(bboxArr[0], bboxArr[1], bboxArr[2] - bboxArr[0], bboxArr[3] - bboxArr[1]);
+  ctx.clip();
+
+  // 3. Resolve Resources (fallback to parent page resources if absent)
+  const formResourcesRef = dict.get('Resources');
+  let formResources = parentPage.resources;
+  if (formResourcesRef) {
+     const resolved = resolveRef(formResourcesRef, objects);
+     if (resolved instanceof PDFDict) formResources = resolved;
+  }
+
+  // 4. Decode content stream
+  if (!formStream.decodedBytes) {
+    const { applyFilters } = await import('../parser/filters');
+    formStream.decodedBytes = await applyFilters(
+      formStream.rawBytes,
+      formStream.getFilters(),
+      formStream.getDecodeParams()
+    );
+  }
+
+  // 5. Interpret and Render
+  const formPageMock: PDFPageInfo = {
+    ...parentPage,
+    resources: formResources,
+  };
+
+  let targetCtx = ctx;
+  let offscreenCanvas: HTMLCanvasElement | null = null;
+  const width = bboxArr[2] - bboxArr[0];
+  const height = bboxArr[3] - bboxArr[1];
+
+  if (isTransparencyGroup && isolated && width > 0 && height > 0) {
+    offscreenCanvas = CanvasPool.acquire(width, height);
+    targetCtx = offscreenCanvas.getContext('2d')!;
+    targetCtx.save();
+    targetCtx.translate(-bboxArr[0], -bboxArr[1]); // Normalize to local origin
+  }
+
+  const formInterpreted = interpretPage(formStream.getBytes(), formPageMock, objects);
+  const formFonts = loadPageFonts(formResources, objects);
+
+  const renderPaths = options.renderPaths ?? true;
+  const renderText = options.renderText ?? true;
+  const renderImages = options.renderImages ?? true;
+
+  for (const item of formInterpreted.displayList) {
+    switch (item.type) {
+      case 'path':
+        if (renderPaths) drawPath(targetCtx, item);
+        break;
+      case 'text':
+        if (renderText) drawTextRun(targetCtx, item, formFonts);
+        break;
+      case 'image':
+        if (renderImages) await drawImage(targetCtx, item, formPageMock, objects);
+        break;
+      case 'form':
+        await drawFormItem(targetCtx, item, formPageMock, objects, options);
+        break;
+      case 'shading':
+        if (renderImages) drawShadingItem(targetCtx, item, formPageMock, objects);
+        break;
+    }
+  }
+
+  if (offscreenCanvas) {
+    targetCtx.restore(); // Restore the translate
+    ctx.save();
+    ctx.drawImage(offscreenCanvas, bboxArr[0], bboxArr[1]);
+    ctx.restore();
+    CanvasPool.release(offscreenCanvas);
+  }
+
+  ctx.restore();
+  if (objNum !== 0) activeFormRefs.delete(objNum);
+}
+
+// ─── Shading rendering ──────────────────────────────────────────────────────
+
+function drawShadingItem(
+  ctx: CanvasRenderingContext2D,
+  item: ShadingItem,
+  page: PDFPageInfo,
+  objects: Map<string, PDFObject>,
+): void {
+  const shadingDict = getResource(page.resources, 'Shading', item.name, objects);
+  if (!(shadingDict instanceof PDFDict)) return;
+
+  const shadingType = shadingDict.getNumber('ShadingType');
+  const colorSpace = shadingDict.get('ColorSpace');
+
+  ctx.save();
+  ctx.globalCompositeOperation = toCanvasBlendMode(item.blendMode);
+  applyClipPaths(ctx, item.clipPaths);
+
+  ctx.transform(
+    item.ctm.a, item.ctm.b,
+    item.ctm.c, item.ctm.d,
+    item.ctm.e, item.ctm.f,
+  );
+
+  if (shadingType === 2) {
+    // Type 2: Axial Shading
+    const coords = shadingDict.getArray('Coords')?.asNumbers() || [0, 0, 1, 0];
+    const funcRef = shadingDict.get('Function');
+    const functionObj = funcRef ? resolveRef(funcRef, objects) : undefined;
+    
+    const grad = ctx.createLinearGradient(coords[0], coords[1], coords[2], coords[3]);
+    
+    // Basic fallback/stub for exponential functions mapping 0->1
+    if (functionObj instanceof PDFDict) {
+      const c0 = functionObj.getArray('C0')?.asNumbers() || [0, 0, 0];
+      const c1 = functionObj.getArray('C1')?.asNumbers() || [1, 1, 1];
+      
+      const r0 = Math.min(255, Math.max(0, Math.round(c0[0] * 255)));
+      const g0 = Math.min(255, Math.max(0, Math.round(c0[1] * 255)));
+      const b0 = Math.min(255, Math.max(0, Math.round(c0[2] * 255)));
+      
+      const r1 = Math.min(255, Math.max(0, Math.round(c1[0] * 255)));
+      const g1 = Math.min(255, Math.max(0, Math.round(c1[1] * 255)));
+      const b1 = Math.min(255, Math.max(0, Math.round(c1[2] * 255)));
+
+      grad.addColorStop(0, `rgb(${r0}, ${g0}, ${b0})`);
+      grad.addColorStop(1, `rgb(${r1}, ${g1}, ${b1})`);
+    } else {
+      grad.addColorStop(0, '#000');
+      grad.addColorStop(1, '#FFF');
+    }
+
+    ctx.fillStyle = grad;
+    // Fill a sufficiently large area to cover the clipping region
+    ctx.fillRect(-10000, -10000, 20000, 20000);
+  } else {
+    console.warn(`[Renderer] ShadingType ${shadingType} not fully implemented. ColorSpace:`, colorSpace);
+  }
+  
+  ctx.restore();
 }
 

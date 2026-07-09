@@ -7,15 +7,17 @@ import { X, Loader2, ChevronLeft, Image } from 'lucide-react';
 
 // We import types only — the engine modules are loaded dynamically
 // because they require browser APIs (canvas, DecompressionStream)
-import type { PDFDocumentData, RenderResult, TextRun, TextLine, ImageItem, PathItem, DisplayItem, TextWatermark, ImageWatermark, Watermark, DetectedWatermark } from '@/engine';
+import type { PDFDocumentData, RenderResult, TextRun, TextLine, ImageItem, PathItem, DisplayItem, TextWatermark, ImageWatermark, Watermark, DetectedWatermark, AcroFormWidget } from '@/engine';
 
 import type { EditorTool, ToolDef, PathType, DrawnPath, FloatingText, FloatingImage } from './types';
 import { TOOLS } from './types';
 import {
-  canvasToPdf, pdfToCanvas, hitTestDisplayItems, hexToRGB,
+  canvasToPdf, pdfToCanvas, hexToRGB,
   hitTestTextLine, findNearestTextLine, caretIndexFromLineX, lineXFromCaretIndex,
   getLineBounds, getOverlayFontFamily, computeEditPreview, computeLineHeight,
 } from './utils';
+import { buildDisplayListIndex, hitTestDisplayList, TransactionStack } from '@/engine';
+import type { QuadTree, SelectableItem } from '@/engine';
 
 import { Toolbar } from './components/Toolbar';
 import { ToolsSidebar } from './components/ToolsSidebar';
@@ -24,7 +26,8 @@ import { PropertiesSidebar } from './components/PropertiesSidebar';
 const WatermarkPreview = ({
   doc, currentPage, scale, watermarkType, watermarkText, watermarkFontName, watermarkSize,
   watermarkColor, watermarkOpacity, watermarkRotation, watermarkMosaic, watermarkPosition,
-  watermarkImageDims, watermarkImageFile, watermarkShapeType, watermarkShapeColor
+  watermarkImageDims, watermarkImageFile, watermarkShapeType, watermarkShapeColor,
+  watermarkBlendMode
 }: any) => {
   const [imgUrl, setImgUrl] = useState<string | null>(null);
 
@@ -72,7 +75,8 @@ const WatermarkPreview = ({
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        pointerEvents: 'none'
+        pointerEvents: 'none',
+        mixBlendMode: (watermarkBlendMode === 'ColorDodge' ? 'color-dodge' : watermarkBlendMode === 'ColorBurn' ? 'color-burn' : watermarkBlendMode === 'HardLight' ? 'hard-light' : watermarkBlendMode === 'SoftLight' ? 'soft-light' : watermarkBlendMode.toLowerCase()) as any,
       }}
     >
       {watermarkType === 'text' ? (
@@ -219,6 +223,7 @@ export default function EditorPage() {
   const [watermarkImageFile, setWatermarkImageFile] = useState<File | null>(null);
   const [watermarkImageBytes, setWatermarkImageBytes] = useState<Uint8Array | null>(null);
   const [watermarkImageDims, setWatermarkImageDims] = useState<{ width: number; height: number } | null>(null);
+  const [watermarkBlendMode, setWatermarkBlendMode] = useState('Normal');
   
   const [detectedWatermarks, setDetectedWatermarks] = useState<DetectedWatermark[] | null>(null);
   const [isConfirmingRemoval, setIsConfirmingRemoval] = useState(false);
@@ -226,8 +231,23 @@ export default function EditorPage() {
   // Display items (images/paths) for selection overlays
   const [displayItems, setDisplayItems] = useState<(ImageItem | PathItem)[]>([]);
   const [selectedDisplayItem, setSelectedDisplayItem] = useState<ImageItem | PathItem | null>(null);
+  const spatialIndexRef = useRef<QuadTree<SelectableItem> | null>(null);
 
-  // Text properties sidebar state
+  // AcroForm fields on current page
+  const [formFields, setFormFields] = useState<AcroFormWidget[]>([]);
+  const [selectedFormField, setSelectedFormField] = useState<AcroFormWidget | null>(null);
+  const [formFieldDraft, setFormFieldDraft] = useState('');
+
+  // Undo/redo via TransactionStack
+  const txStackRef = useRef(new TransactionStack());
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
+  const undoSnapshotRef = useRef<{ pageIndex: number; contentBytes: Uint8Array } | null>(null);
+
+  const syncTxState = useCallback(() => {
+    setCanUndo(txStackRef.current.canUndo());
+    setCanRedo(txStackRef.current.canRedo());
+  }, []);
   const [textFontFamily, setTextFontFamily] = useState('Helvetica');
   const [textFontSize, setTextFontSize] = useState(12);
   const [textColor, setTextColor] = useState('#000000');
@@ -250,13 +270,6 @@ export default function EditorPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pdfCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // Undo/Redo stacks — store content byte snapshots
-  interface UndoEntry { pageIndex: number; contentBytes: Uint8Array }
-  const undoStackRef = useRef<UndoEntry[]>([]);
-  const redoStackRef = useRef<UndoEntry[]>([]);
-  /** Snapshot of content bytes taken when user first starts editing a run */
-  const undoSnapshotRef = useRef<UndoEntry | null>(null);
-
   // ── Load engine and PDF ──
   useEffect(() => {
     let cancelled = false;
@@ -278,6 +291,16 @@ export default function EditorPage() {
         setDoc(parsed);
         setTotalPages(parsed.pages.length);
         setCurrentPage(0);
+        txStackRef.current.clear();
+        const page0 = parsed.pages[0];
+        const initialBytes = engine.getPageContentBytes(page0, parsed.objects);
+        txStackRef.current.push({
+          pageIndex: 0,
+          contentBytes: new Uint8Array(initialBytes),
+          label: 'initial',
+          timestamp: Date.now(),
+        });
+        syncTxState();
         setIsLoading(false);
       } catch (e) {
         if (cancelled) return;
@@ -328,6 +351,7 @@ export default function EditorPage() {
     setEditText('');
     setSelectedDisplayItem(null);
     setDisplayItems([]);
+    spatialIndexRef.current = null;
   }, [doc, currentPage, setEditingLine]);
 
   // Sync text properties sidebar from selected line (use first run's style)
@@ -372,9 +396,36 @@ export default function EditorPage() {
             }
           );
           if (!cancelled) setDisplayItems(visItems as (ImageItem | PathItem)[]);
+          if (!cancelled) {
+            const pageBounds = {
+              x: pageData.mediaBox.x,
+              y: pageData.mediaBox.y,
+              width: pageData.mediaBox.width,
+              height: pageData.mediaBox.height,
+            };
+            spatialIndexRef.current = buildDisplayListIndex(
+              visItems as DisplayItem[],
+              pageBounds,
+            );
+          }
         } catch (dispErr) {
           console.warn('[Editor] Display items extraction failed:', dispErr);
           if (!cancelled) setDisplayItems([]);
+          if (!cancelled) spatialIndexRef.current = null;
+        }
+
+        try {
+          const fields = engine.detectFormFieldsOnPage(doc!, currentPage);
+          if (!cancelled) {
+            setFormFields(fields);
+            if (selectedFormField) {
+              const still = fields.find(f => f.ref.toKey() === selectedFormField.ref.toKey());
+              setSelectedFormField(still ?? null);
+              setFormFieldDraft(still && typeof still.value === 'string' ? still.value : '');
+            }
+          }
+        } catch {
+          if (!cancelled) setFormFields([]);
         }
 
         // Re-sync editing line only when not in overlay preview mode
@@ -701,17 +752,6 @@ export default function EditorPage() {
         ? snapshot.contentBytes
         : engine.getPageContentBytes(page, doc.objects);
 
-      if (snapshot) {
-        undoStackRef.current.push(snapshot);
-      } else {
-        undoStackRef.current.push({
-          pageIndex: currentPage,
-          contentBytes: new Uint8Array(engine.getPageContentBytes(page, doc.objects)),
-        });
-      }
-      if (undoStackRef.current.length > 50) undoStackRef.current.shift();
-      redoStackRef.current = [];
-
       const editResult = engine.applyLineTextEdit(
         baseBytes, page, doc.objects,
         targetLine, editText,
@@ -723,6 +763,13 @@ export default function EditorPage() {
       await engine.updatePageContent(
         page.contentRefs, editResult.newContentBytes, doc.objects,
       );
+      txStackRef.current.push({
+        pageIndex: currentPage,
+        contentBytes: new Uint8Array(editResult.newContentBytes),
+        label: 'text-edit',
+        timestamp: Date.now(),
+      });
+      syncTxState();
       editAnchorLineRef.current = null;
       undoSnapshotRef.current = null;
       if (closeEdit) {
@@ -777,49 +824,87 @@ export default function EditorPage() {
   // ── Undo ──
   const handleUndo = useCallback(async () => {
     if (!doc || !engineRef.current) return;
-    const entry = undoStackRef.current.pop();
+    const entry = txStackRef.current.undo();
     if (!entry) return;
     try {
       const engine = engineRef.current;
       const page = doc.pages[entry.pageIndex];
-      // Save current state to redo stack
-      const currentBytes = engine.getPageContentBytes(page, doc.objects);
-      redoStackRef.current.push({ pageIndex: entry.pageIndex, contentBytes: new Uint8Array(currentBytes) });
-      // Restore the old content bytes
       await engine.updatePageContent(page.contentRefs, entry.contentBytes, doc.objects);
-      // Exit editing mode and re-render
       undoSnapshotRef.current = null;
       setEditingLine(null);
       setSelectedLine(null);
       setEditText('');
       setCaretPos(0);
+      if (entry.pageIndex !== currentPage) setCurrentPage(entry.pageIndex);
+      syncTxState();
       setRenderKey(k => k + 1);
     } catch (e) {
       console.error('[Editor] Undo failed:', e);
     }
-  }, [doc, setEditingLine]);
+  }, [doc, currentPage, setEditingLine, syncTxState]);
 
-  // ── Redo ──
   const handleRedo = useCallback(async () => {
     if (!doc || !engineRef.current) return;
-    const entry = redoStackRef.current.pop();
+    const entry = txStackRef.current.redo();
     if (!entry) return;
     try {
       const engine = engineRef.current;
       const page = doc.pages[entry.pageIndex];
-      const currentBytes = engine.getPageContentBytes(page, doc.objects);
-      undoStackRef.current.push({ pageIndex: entry.pageIndex, contentBytes: new Uint8Array(currentBytes) });
       await engine.updatePageContent(page.contentRefs, entry.contentBytes, doc.objects);
       undoSnapshotRef.current = null;
       setEditingLine(null);
       setSelectedLine(null);
       setEditText('');
       setCaretPos(0);
+      if (entry.pageIndex !== currentPage) setCurrentPage(entry.pageIndex);
+      syncTxState();
       setRenderKey(k => k + 1);
     } catch (e) {
       console.error('[Editor] Redo failed:', e);
     }
-  }, [doc, setEditingLine]);
+  }, [doc, currentPage, setEditingLine, syncTxState]);
+
+  const handleFormFieldSelect = useCallback((field: AcroFormWidget) => {
+    setSelectedFormField(field);
+    setFormFieldDraft(typeof field.value === 'string' ? field.value : '');
+    setActiveTool('select');
+  }, []);
+
+  const handleFormFieldChange = useCallback((value: string) => {
+    setFormFieldDraft(value);
+    if (!doc || !selectedFormField || !engineRef.current) return;
+    engineRef.current.setFormFieldValue(doc, selectedFormField, value);
+    setFormFields(prev => prev.map(f =>
+      f.ref.toKey() === selectedFormField.ref.toKey() ? { ...f, value } : f,
+    ));
+  }, [doc, selectedFormField]);
+
+  const handleFlattenForms = useCallback(async () => {
+    if (!doc || !engineRef.current || formFields.length === 0) return;
+    try {
+      setIsSaving(true);
+      const engine = engineRef.current;
+      const page = doc.pages[currentPage];
+      await engine.flattenFormFieldsOnPage(doc, currentPage, formFields);
+      const afterBytes = engine.getPageContentBytes(page, doc.objects);
+      txStackRef.current.push({
+        pageIndex: currentPage,
+        contentBytes: new Uint8Array(afterBytes),
+        label: 'flatten-forms',
+        timestamp: Date.now(),
+      });
+      syncTxState();
+      setFormFields([]);
+      setSelectedFormField(null);
+      setFormFieldDraft('');
+      setRenderKey(k => k + 1);
+    } catch (e) {
+      console.error('[Editor] Flatten forms failed:', e);
+      setError(`Flatten failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setIsSaving(false);
+    }
+  }, [doc, currentPage, formFields, syncTxState]);
 
   // ── Global keyboard shortcuts for undo/redo ──
   useEffect(() => {
@@ -917,7 +1002,12 @@ export default function EditorPage() {
             }
           }, 0);
         } else {
-          const itemHit = hitTestDisplayItems(pdfX, pdfY, displayItems);
+          const spatialHit = spatialIndexRef.current
+            ? hitTestDisplayList(spatialIndexRef.current, pdfX, pdfY)
+            : null;
+          const itemHit = spatialHit && (spatialHit.data.type === 'image' || spatialHit.data.type === 'path')
+            ? spatialHit.data as ImageItem | PathItem
+            : null;
           if (itemHit) {
             if (editingLine) handleEditSubmit();
             setSelectedDisplayItem(itemHit);
@@ -1482,6 +1572,7 @@ export default function EditorPage() {
           type: 'text',
           text: watermarkText,
           opacity: watermarkOpacity / 100,
+          blendMode: watermarkBlendMode,
           color: [r, g, b],
           rotation: watermarkRotation,
           tile: watermarkMosaic,
@@ -1523,6 +1614,7 @@ export default function EditorPage() {
           width: finalWidth,
           height: finalHeight,
           opacity: watermarkOpacity / 100,
+          blendMode: watermarkBlendMode,
           rotation: watermarkRotation,
           tile: watermarkMosaic,
           layer: watermarkLayer,
@@ -1545,6 +1637,7 @@ export default function EditorPage() {
           width: watermarkImageDims.width * (watermarkSize / 100),
           height: watermarkImageDims.height * (watermarkSize / 100),
           opacity: watermarkOpacity / 100,
+          blendMode: watermarkBlendMode,
           rotation: watermarkRotation,
           tile: watermarkMosaic,
           layer: watermarkLayer,
@@ -1576,7 +1669,7 @@ export default function EditorPage() {
       console.error('[Editor] Apply watermark failed:', e);
       setError(`Failed to apply watermark: ${e instanceof Error ? e.message : String(e)}`);
     }
-  }, [doc, watermarkType, watermarkText, watermarkFontName, watermarkOpacity, watermarkRotation, watermarkSize, watermarkPosition, watermarkMosaic, watermarkPageFrom, watermarkPageTo, watermarkLayer, watermarkColor, watermarkShapeColor, watermarkShapeType, watermarkImageBytes, watermarkImageDims, watermarkImageFile]);
+  }, [doc, watermarkType, watermarkText, watermarkFontName, watermarkOpacity, watermarkRotation, watermarkSize, watermarkPosition, watermarkMosaic, watermarkPageFrom, watermarkPageTo, watermarkLayer, watermarkColor, watermarkShapeColor, watermarkShapeType, watermarkImageBytes, watermarkImageDims, watermarkImageFile, watermarkBlendMode]);
 
   const handleScanWatermarks = useCallback(() => {
     if (!doc || !engineRef.current) return;
@@ -1768,11 +1861,15 @@ export default function EditorPage() {
         scale={scale}
         drawnPaths={drawnPaths}
         isSaving={isSaving}
+        canUndo={canUndo}
+        canRedo={canRedo}
         onClose={handleClose}
         onPrevPage={goToPrev}
         onNextPage={goToNext}
         onZoomIn={zoomIn}
         onZoomOut={zoomOut}
+        onUndo={handleUndo}
+        onRedo={handleRedo}
         onClearPaths={() => setDrawnPaths([])}
         onDownload={handleDownload}
       />
@@ -1822,6 +1919,12 @@ export default function EditorPage() {
           selectedDisplayItem={selectedDisplayItem}
           setSelectedDisplayItem={setSelectedDisplayItem}
           displayItems={displayItems}
+          formFields={formFields}
+          selectedFormField={selectedFormField}
+          formFieldDraft={formFieldDraft}
+          onFormFieldSelect={handleFormFieldSelect}
+          onFormFieldChange={handleFormFieldChange}
+          onFlattenForms={handleFlattenForms}
           watermarkType={watermarkType}
           setWatermarkType={setWatermarkType}
           watermarkShapeType={watermarkShapeType}
@@ -1843,6 +1946,8 @@ export default function EditorPage() {
           setWatermarkSize={setWatermarkSize}
           watermarkPosition={watermarkPosition}
           setWatermarkPosition={setWatermarkPosition}
+          watermarkBlendMode={watermarkBlendMode}
+          setWatermarkBlendMode={setWatermarkBlendMode}
           watermarkMosaic={watermarkMosaic}
           setWatermarkMosaic={setWatermarkMosaic}
           watermarkPageFrom={watermarkPageFrom}
@@ -1921,6 +2026,7 @@ export default function EditorPage() {
                 watermarkImageFile={watermarkImageFile}
                 watermarkShapeType={watermarkShapeType}
                 watermarkShapeColor={watermarkShapeColor}
+                watermarkBlendMode={watermarkBlendMode}
               />
             )}
             

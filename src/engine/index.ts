@@ -60,6 +60,15 @@ export type { StandardFontMetrics } from './fonts/standard14';
 export { parseCMap, getCodeBytes } from './fonts/cmap-parser';
 export type { CMapData } from './fonts/cmap-parser';
 export { parseTTF, getGlyphOutline, charCodeToGlyphId, getGlyphWidth } from './fonts/truetype-parser';
+export { parseGSUBLigatures, applyLigatures, shapeGlyphIdsWithLigatures } from './fonts/gsub';
+export type { LigatureRule } from './fonts/gsub';
+export {
+  parseGPOSPairAdjustments,
+  parseGPOSMarkRecords,
+  lookupGPOSPair,
+  applyGPOSAdjustments,
+} from './fonts/gpos';
+export type { GPOSPairAdjustment, GPOSMarkRecord } from './fonts/gpos';
 export type { TTFFont, GlyphOutline, GlyphCommand } from './fonts/truetype-parser';
 
 // ── Renderer ──
@@ -67,8 +76,6 @@ export { renderPage, renderPageToCanvas, renderPDFPage, renderAllPages } from '.
 export type { RenderOptions, RenderResult } from './render/renderer';
 export { parseColorSpace, cmykToRGB, rgbToCSSColor, componentsToCSSColor } from './render/color-space';
 export type { ColorSpace, RGBColor } from './render/color-space';
-export { decodeImage } from './render/image-decoder';
-export type { DecodedImage } from './render/image-decoder';
 
 // ── Flow (line/paragraph model) ──
 export {
@@ -159,6 +166,102 @@ export {
   extractPages,
   insertPagesFromDocument,
 } from './writer/page-operations';
+
+export { measureTextLine, measureTextRange, shapedGlyphsToPositions } from './fonts/measurement';
+export type { TextMetrics } from './fonts/measurement';
+
+// ── Color (Phase 3) ──
+export {
+  parseICCProfile,
+  getICCTag,
+  iccColorSpaceComponents,
+  parseICCLutTag,
+  parseMft2Table,
+  transformDeviceToPCS,
+  transformPCSToDevice,
+  iccBasedToRGB,
+} from './color';
+export type { ICCProfile, ICCHeader, ICCTag, ICCLutInfo, ICCLutType, Mft2Table } from './color';
+
+// ── Editing (Phase 5) ──
+export { QuadTree, hitTestSpatial, TransactionStack, buildDisplayListIndex, hitTestDisplayList } from './editing';
+export type { Bounds, SpatialEntry, EditSnapshot, SelectableItem } from './editing';
+
+// ── Image (Phase 4) ──
+export { decodeImage } from './image';
+export type { DecodedImage } from './image';
+
+// ── Render 2.0 (Phase 1) ──
+export {
+  GraphicsStateStack,
+  multiplyMatrices,
+  identityMatrix,
+  transformPoint,
+  defaultGraphicsState,
+  cloneGraphicsState,
+} from './render/graphics-state';
+export { toCanvasBlendMode, compositeOver } from './render/transparency';
+export { parseSoftMask, effectiveAlpha } from './render/soft-mask';
+export type { SoftMaskInfo, SoftMaskSubtype } from './render/soft-mask';
+export { parseTilingPattern, createCanvasPattern, isPatternColorSpace } from './render/patterns';
+export type { TilingPattern, PatternPaintType } from './render/patterns';
+export { applyClipPaths } from './render/clipping';
+export { interpolateShading, axialParameter } from './render/shading';
+export type { ClipPathNode as RenderClipPathNode } from './render/graphics-state';
+export type { Shading, AxialShading, RadialShading } from './render/shading';
+
+// ── Forms (Phase 6) ──
+export {
+  buildAppearanceStream,
+  appearanceToPageContent,
+  parseWidgetRect,
+  flattenField,
+  flattenWidgets,
+  parseAcroFormCatalog,
+  detectFormFieldsOnPage,
+  listAllFormWidgets,
+  setFormFieldValue,
+  flattenFormFieldsOnPage,
+} from './forms';
+export type {
+  AcroFormFieldType,
+  AcroFormWidget,
+  AcroFormField,
+  FlattenFieldResult,
+} from './forms';
+
+// ── OCR (Phase 7) ──
+export {
+  computeHorizontalProjection,
+  detectLayoutRegions,
+  detectDeskewAngle,
+  analyzePageLayout,
+} from './ocr';
+export type { ProjectionProfile, LayoutRegion, PageLayout } from './ocr';
+
+// ── Export (Phase 8) ──
+export {
+  buildSemanticPage,
+  exportPageToHTML,
+  exportPageToMarkdown,
+} from './export';
+export type { SemanticPage, SemanticBlock, ExportOptions } from './export';
+
+// ── Optimize (Phase 9) ──
+export { garbageCollect, deduplicateStreams, computeReachability } from './optimize';
+export type { GarbageCollectResult, DeduplicateResult, ReachabilityResult } from './optimize';
+
+// ── Signatures (Phase 10) ──
+export { verifySignatureDigest, parseDER, parseCMSSignedData } from './signatures';
+export type { ASN1Node, CMSSignedData, SignatureVerificationResult } from './signatures';
+
+// ── Accessibility (Phase 11) ──
+export { walkStructureTree, parseStructureTree } from './accessibility';
+export type { StructureNode, StructureTree, ReadingOrderItem } from './accessibility';
+
+// ── AI (Phase 12) ──
+export { chunkDocument, buildSemanticSearchIndex, searchSemanticIndex } from './ai';
+export type { DocumentChunk, SemanticSearchIndex, SearchHit } from './ai';
 
 // ── Watermark ──
 export {

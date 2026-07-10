@@ -1,5 +1,5 @@
 /**
- * AI document layer — chunking, embedding blocks, semantic search index.
+ * AI document layer — chunking, embedding blocks, semantic search index, compare.
  */
 
 export {
@@ -11,6 +11,13 @@ export {
   indexDocument,
   resetChunkIdCounter,
 } from './document-chunker';
+
+export {
+  comparePageText,
+  compareDocuments,
+  extractPagePlainText,
+} from './compare';
+export type { TextDiff, DocumentCompareResult } from './compare';
 
 export type {
   ChunkSource,

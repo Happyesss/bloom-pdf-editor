@@ -613,6 +613,8 @@ function drawTextRunAtPositions(
   });
 }
 
+import { drawType3Glyph, type3CharName } from './type3';
+
 function drawTextRun(
   ctx: CanvasRenderingContext2D,
   run: TextRun,
@@ -634,6 +636,17 @@ function drawTextRun(
 
     for (let i = 0; i < run.glyphs.length; i++) {
       const glyph = run.glyphs[i];
+      // Type3: draw CharProcs outlines when available
+      if (fontData?.charProcs && fontData.charProcs.size > 0) {
+        const name = type3CharName(fontData, glyph.charCode ?? glyph.unicode.charCodeAt(0));
+        if (name) {
+          const drawn = drawType3Glyph(
+            ctx, fontData, name, glyph.tRm.e, glyph.tRm.f,
+            Math.sqrt(glyph.tRm.c * glyph.tRm.c + glyph.tRm.d * glyph.tRm.d) || run.fontSize,
+          );
+          if (drawn) continue;
+        }
+      }
       drawGlyph(ctx, glyph, run, family, weight, style, fillColor, glyph.tRm.e, glyph.tRm.f);
     }
 

@@ -26,10 +26,18 @@ export { reconstructParagraphs } from './paragraph';
 export { applyLineTextEdit, buildLayoutPlan } from './flow-editor';
 export { hitTestTextLine, findNearestTextLine, caretIndexFromLineX, lineXFromCaretIndex } from './hit-test';
 export { distributeTextToSegments, segmentAtIndex, computeLineWidthDelta } from './reflow';
-export { analyzeJustification, distributeJustifiedSpace } from './justification';
+export {
+  analyzeJustification,
+  distributeJustifiedSpace,
+  gapToTJSpacing,
+  distributeGlue,
+  opticalMarginAdjust,
+} from './justification';
 export { detectTabSplitIndex, detectJustifiedBodyText, shouldUseFlowDraw } from './justification-detect';
 export { computeBaseline, getRunBounds, averageCharWidth, estimateTextWidth } from './metrics';
-export { greedyWrap, previewWrap } from './line-break';
+export { greedyWrap, previewWrap, knuthPlassWrap } from './line-break';
+export type { KnuthPlassOptions } from './line-break';
+export { hyphenateBreaks, hyphenateWord } from './hyphenation';
 export {
   computeLayoutPlan,
   computeEditPreview,
@@ -43,6 +51,34 @@ export {
   buildFlowDrawIndex,
 } from './flow-draw';
 export { shapeText, measureText, layoutShapedGlyphs } from './shaping';
+export {
+  applyStyleToSelection,
+  applyStyleToLine,
+  applyStyleToSelectionOnPage,
+  mapSelectionToSegments,
+  resolveStyledFontName,
+} from './style-edit';
+export type { TextStylePatch, StyleEditResult } from './style-edit';
+export {
+  resolveBidiLevels,
+  reorderForDisplay,
+  visualToLogical,
+  logicalToVisual,
+  bidiClassOf,
+} from './bidi';
+export type { BidiClass } from './bidi';
+export {
+  graphemeClusters,
+  graphemeIndexFromCharIndex,
+  charIndexFromGraphemeIndex,
+  moveCaret,
+  snapCaretToGrapheme,
+} from './caret';
+export {
+  lineSelectionToQuadPoints,
+  multiLineSelectionToQuadPoints,
+  quadPointsToRect,
+} from './selection-quads';
 export type { LayoutPlan, LineTextEdit, RunShift } from './layout';
 export type { FlowGlyphDraw } from './flow-draw';
 export type { ShapedGlyph } from './shaping';

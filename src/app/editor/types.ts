@@ -9,7 +9,7 @@ import {
   LucideIcon
 } from 'lucide-react';
 
-export type EditorTool = 'select' | 'text' | 'addtext' | 'highlight' | 'draw' | 'erase' | 'watermark';
+export type EditorTool = 'select' | 'text' | 'addtext' | 'highlight' | 'draw' | 'erase' | 'watermark' | 'redact' | 'sign';
 
 export interface ToolDef {
   id: EditorTool;

@@ -20,6 +20,8 @@ interface ToolbarProps {
   onRedo: () => void;
   onClearPaths: () => void;
   onDownload: () => void;
+  saveMode?: 'quick' | 'optimized';
+  onSaveModeChange?: (mode: 'quick' | 'optimized') => void;
 }
 
 export function Toolbar({
@@ -39,7 +41,9 @@ export function Toolbar({
   onUndo,
   onRedo,
   onClearPaths,
-  onDownload
+  onDownload,
+  saveMode,
+  onSaveModeChange,
 }: ToolbarProps) {
   return (
     <header className="flex items-center justify-between px-4 h-14 bg-zinc-900/80 backdrop-blur-lg border-b border-zinc-800/80 shrink-0 z-20">
@@ -110,10 +114,22 @@ export function Toolbar({
           onClick={onDownload}
           disabled={isSaving}
           className="flex items-center gap-2 text-xs font-medium px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-lg transition-colors shadow-lg shadow-blue-900/20"
+          title={saveMode === 'quick' ? 'Quick incremental save' : 'Optimized save'}
         >
           {isSaving ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
           Download
         </button>
+        {onSaveModeChange && (
+          <select
+            value={saveMode ?? 'optimized'}
+            onChange={(e) => onSaveModeChange(e.target.value as 'quick' | 'optimized')}
+            className="text-[10px] bg-zinc-800 text-zinc-300 border border-zinc-700 rounded px-1.5 py-1.5"
+            title="Save mode"
+          >
+            <option value="optimized">Optimized</option>
+            <option value="quick">Quick</option>
+          </select>
+        )}
       </div>
     </header>
   );

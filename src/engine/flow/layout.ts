@@ -1,5 +1,12 @@
 /**
- * Paragraph layout — wrap overflow, cascade line text, and compute position shifts.
+ * Paragraph layout — wrap overflow carefully so edits don't destroy neighboring lines.
+ *
+ * Critical rules (Acrobat-safe):
+ * 1. Prefer editing only the current line.
+ * 2. Never merge overflow text into the next line's existing content.
+ * 3. Only push subsequent lines down when wrap creates NEW lines that fit
+ *    in empty paragraph slots — never overwrite headings below.
+ * 4. Use greedy wrap (predictable); Knuth-Plass is for preview only.
  */
 
 import type { TextRun } from '../content/interpreter';
@@ -89,64 +96,42 @@ export function computeHorizontalShifts(line: TextLine, newText: string): RunShi
 }
 
 /**
- * Build a layout plan for editing one line inside a paragraph.
- * Handles word wrap, overflow cascade, horizontal run shifts, and vertical push-down.
+ * Safe line measure width: prefer the visual line width, fall back to
+ * rightEdge − leftMargin, never use a tiny paragraph.width*0.5 that
+ * falsely wraps headings.
+ */
+function resolveMaxWidth(editedLine: TextLine, paragraph: Paragraph | null): number {
+  const fromLine = editedLine.rightEdge - editedLine.leftMargin;
+  const fromWidth = editedLine.width;
+  const fromPara = paragraph ? paragraph.width : 0;
+  // Use the largest plausible measure so we don't wrap prematurely
+  const w = Math.max(fromLine, fromWidth, fromPara * 0.85, editedLine.fontSize * 8);
+  // Guard against absurdly small widths
+  return Math.max(w, editedLine.fontSize * 4);
+}
+
+/**
+ * Build a layout plan for editing one line.
+ *
+ * Position-preserving v1: ALWAYS commit only the edited line.
+ * Never cascade into neighbors (that destroyed resume headings).
+ * Preview may still show wrap for the overlay.
  */
 export function computeLayoutPlan(
   paragraph: Paragraph,
   editedLine: TextLine,
   newText: string,
 ): LayoutPlan {
-  const lineIndex = paragraph.lines.findIndex(l => l.id === editedLine.id);
-  if (lineIndex < 0) {
-    return {
-      lineEdits: [{ line: editedLine, newText }],
-      shifts: computeHorizontalShifts(editedLine, newText),
-      previewLines: [newText],
-    };
-  }
-
-  const maxWidth = Math.max(
-    editedLine.width,
-    editedLine.rightEdge - editedLine.leftMargin,
-    paragraph.width * 0.5,
-  );
+  const maxWidth = resolveMaxWidth(editedLine, paragraph);
   const measure = lineMeasureWidth(editedLine);
-  const chunks = greedyWrap(newText, maxWidth, measure);
-  const lineEdits: LineTextEdit[] = [{ line: editedLine, newText: chunks[0] }];
-  const shifts: RunShift[] = computeHorizontalShifts(editedLine, chunks[0]);
-
-  if (chunks.length > 1) {
-    const lineHeight = computeLineHeight(editedLine);
-    const overflowLines = chunks.slice(1);
-    const originalTail = paragraph.lines.slice(lineIndex + 1).map(l => l.text);
-
-    for (let i = 0; i < overflowLines.length; i++) {
-      const targetIndex = lineIndex + 1 + i;
-      const displaced = originalTail[i] ?? '';
-      const merged = displaced
-        ? `${overflowLines[i]} ${displaced}`
-        : overflowLines[i];
-
-      if (targetIndex < paragraph.lines.length) {
-        lineEdits.push({ line: paragraph.lines[targetIndex], newText: merged });
-      }
-    }
-
-    const pushLines = overflowLines.length;
-    const shiftDy = -pushLines * lineHeight;
-    for (let i = lineIndex + 1; i < paragraph.lines.length; i++) {
-      const affected = paragraph.lines[i];
-      for (let r = 0; r < affected.runs.length; r++) {
-        shifts.push({ run: affected.runs[r], dx: 0, dy: shiftDy });
-      }
-    }
-  }
+  const natural = measure(newText);
+  const previewLines =
+    natural <= maxWidth * 1.05 ? [newText] : greedyWrap(newText, maxWidth, measure);
 
   return {
-    lineEdits,
-    shifts: mergeShifts(shifts),
-    previewLines: chunks,
+    lineEdits: [{ line: editedLine, newText }],
+    shifts: computeHorizontalShifts(editedLine, newText),
+    previewLines,
   };
 }
 
@@ -156,16 +141,8 @@ export function computeEditPreview(
   line: TextLine,
   newText: string,
 ): string[] {
-  if (!flow) {
-    const maxWidth = line.rightEdge - line.leftMargin;
-    return greedyWrap(newText, maxWidth, lineMeasureWidth(line));
-  }
-
-  const para = findParagraphForLine(flow, line);
-  if (!para) {
-    const maxWidth = line.rightEdge - line.leftMargin;
-    return greedyWrap(newText, maxWidth, lineMeasureWidth(line));
-  }
-
-  return computeLayoutPlan(para, line, newText).previewLines;
+  const maxWidth = resolveMaxWidth(line, flow ? findParagraphForLine(flow, line) : null);
+  const measure = lineMeasureWidth(line);
+  if (measure(newText) <= maxWidth * 1.05) return [newText];
+  return greedyWrap(newText, maxWidth, measure);
 }

@@ -40,9 +40,10 @@ describe('shading', () => {
 describe('font measurement', () => {
   it('measures standard font text', () => {
     const helv = getStandardFont('Helvetica');
+    expect(helv).not.toBeNull();
     const widths = new Map<number, number>();
-    for (let i = 0; i < helv.widths.length; i++) {
-      if (helv.widths[i]) widths.set(i, helv.widths[i]);
+    for (let i = 0; i < helv!.widths.length; i++) {
+      if (helv!.widths[i]) widths.set(i, helv!.widths[i]);
     }
     const metrics = measureTextLine('Hello', {
       name: 'F1',
@@ -59,11 +60,13 @@ describe('font measurement', () => {
       standardMetrics: helv,
       ttfFont: null,
       fontBytes: null,
-      ascent: helv.ascent,
-      descent: helv.descent,
+      ascent: helv!.ascent,
+      descent: helv!.descent,
       italicAngle: 0,
       flags: 0,
-      cssFontString: helv.cssFamily,
+      cssFontString: helv!.cssFamily,
+      fontMatrix: null,
+      charProcs: null,
     }, 12);
     expect(metrics.width).toBeGreaterThan(0);
     expect(metrics.glyphCount).toBe(5);

@@ -59,11 +59,13 @@ export function applyLineTextEdit(
   }
 
   const result = applyTextEdits(contentBytes, page, objects, edits);
-  if (plan.shifts.length === 0) return result;
+  // Position-preserving: only apply horizontal shifts within the line (never dy)
+  const horizShifts = plan.shifts.filter(s => Math.abs(s.dy) < 0.01 && Math.abs(s.dx) > 0.01);
+  if (horizShifts.length === 0) return result;
 
   return {
     ...result,
-    newContentBytes: applyRunPositionShifts(result.newContentBytes, plan.shifts),
+    newContentBytes: applyRunPositionShifts(result.newContentBytes, horizShifts),
   };
 }
 

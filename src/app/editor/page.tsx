@@ -7,136 +7,28 @@ import { X, Loader2, ChevronLeft, Image } from 'lucide-react';
 
 // We import types only — the engine modules are loaded dynamically
 // because they require browser APIs (canvas, DecompressionStream)
-import type { PDFDocumentData, RenderResult, TextRun, TextLine, ImageItem, PathItem, DisplayItem, TextWatermark, ImageWatermark, Watermark, DetectedWatermark, AcroFormWidget } from '@/engine';
+import type { PDFDocumentData, RenderResult, TextRun, TextLine, ImageItem, PathItem, DisplayItem, TextWatermark, ImageWatermark, Watermark, DetectedWatermark, AcroFormWidget, BloomPage } from '@/engine';
 
 import type { EditorTool, ToolDef, PathType, DrawnPath, FloatingText, FloatingImage } from './types';
 import { TOOLS } from './types';
 import {
   canvasToPdf, pdfToCanvas, hexToRGB,
-  hitTestTextLine, findNearestTextLine, caretIndexFromLineX, lineXFromCaretIndex,
-  getLineBounds, getOverlayFontFamily, computeEditPreview, computeLineHeight,
+  hitTestTextLine, findNearestTextLine, caretIndexFromLineX,
+  getLineBounds, getOverlayFontFamily,
 } from './utils';
 import { buildDisplayListIndex, hitTestDisplayList, TransactionStack } from '@/engine';
 import type { QuadTree, SelectableItem } from '@/engine';
+import { findMatchingFlowLine } from './flowLineMatch';
 
 import { Toolbar } from './components/Toolbar';
 import { ToolsSidebar } from './components/ToolsSidebar';
 import { PropertiesSidebar } from './components/PropertiesSidebar';
 
-const WatermarkPreview = ({
-  doc, currentPage, scale, watermarkType, watermarkText, watermarkFontName, watermarkSize,
-  watermarkColor, watermarkOpacity, watermarkRotation, watermarkMosaic, watermarkPosition,
-  watermarkImageDims, watermarkImageFile, watermarkShapeType, watermarkShapeColor,
-  watermarkBlendMode
-}: any) => {
-  const [imgUrl, setImgUrl] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (watermarkType === 'image' && watermarkImageFile) {
-      const url = URL.createObjectURL(watermarkImageFile);
-      setImgUrl(url);
-      return () => URL.revokeObjectURL(url);
-    } else {
-      setImgUrl(null);
-    }
-  }, [watermarkType, watermarkImageFile]);
-
-  if (!doc || !doc.pages[currentPage]) return null;
-  
-  const page = doc.pages[currentPage];
-  const pageWidth = page.mediaBox.width;
-  const pageHeight = page.mediaBox.height;
-  const opacity = watermarkOpacity / 100;
-  const fontSizeCss = (72 * (watermarkSize / 100)) * scale;
-  const imgWidthCss = watermarkImageDims?.width ? (watermarkImageDims.width * (watermarkSize / 100)) * scale : 0;
-  const imgHeightCss = watermarkImageDims?.height ? (watermarkImageDims.height * (watermarkSize / 100)) * scale : 0;
-  const padCss = 30 * scale;
-
-  let textWidthCss = (watermarkText.length * (fontSizeCss / scale) * 0.5 * scale);
-  let textHeightCss = fontSizeCss;
-  
-  let wmWidthCss = watermarkType === 'text' ? textWidthCss : watermarkType === 'shape' ? textWidthCss + 40 * scale : imgWidthCss;
-  let wmHeightCss = watermarkType === 'text' ? textHeightCss : watermarkType === 'shape' ? textHeightCss + 40 * scale : imgHeightCss;
-  if (watermarkType === 'shape' && watermarkShapeType === 'circle') {
-    const maxDim = Math.max(wmWidthCss, wmHeightCss);
-    wmWidthCss = maxDim;
-    wmHeightCss = maxDim;
-  }
-
-  const renderItem = (cx: number, cy: number, key: string) => (
-    <div
-      key={key}
-      style={{
-        position: 'absolute',
-        left: `${cx}px`,
-        top: `${cy}px`,
-        transform: `translate(-50%, -50%) rotate(${-watermarkRotation}deg)`,
-        opacity,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        pointerEvents: 'none',
-        mixBlendMode: (watermarkBlendMode === 'ColorDodge' ? 'color-dodge' : watermarkBlendMode === 'ColorBurn' ? 'color-burn' : watermarkBlendMode === 'HardLight' ? 'hard-light' : watermarkBlendMode === 'SoftLight' ? 'soft-light' : watermarkBlendMode.toLowerCase()) as any,
-      }}
-    >
-      {watermarkType === 'text' ? (
-        <span style={{ fontSize: fontSizeCss, color: watermarkColor, fontFamily: watermarkFontName, whiteSpace: 'pre', lineHeight: 1 }}>
-          {watermarkText}
-        </span>
-      ) : watermarkType === 'image' && imgUrl ? (
-        <img src={imgUrl} style={{ width: imgWidthCss, height: imgHeightCss }} alt="watermark" />
-      ) : watermarkType === 'shape' ? (
-        <div style={{
-          position: 'relative',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          width: wmWidthCss,
-          height: wmHeightCss,
-          border: `2px solid ${watermarkShapeColor}`,
-          borderRadius: watermarkShapeType === 'circle' ? '50%' : watermarkShapeType === 'pill' ? `${Math.min(wmWidthCss, wmHeightCss) / 2}px` : '0',
-        }}>
-          <span style={{ fontSize: fontSizeCss, color: watermarkColor, fontFamily: watermarkFontName, whiteSpace: 'pre', lineHeight: 1, zIndex: 1 }}>
-            {watermarkText}
-          </span>
-        </div>
-      ) : null}
-    </div>
-  );
-
-  if (watermarkMosaic) {
-    const spacing = 300 * scale;
-    const cols = Math.ceil((pageWidth * scale) / spacing) + 1;
-    const rows = Math.ceil((pageHeight * scale) / spacing) + 1;
-    const tiles = [];
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        tiles.push(renderItem(c * spacing, r * spacing, `tile-${r}-${c}`));
-      }
-    }
-    return <div className="absolute inset-0 z-40 pointer-events-none overflow-hidden">{tiles}</div>;
-  }
-
-  let cx = (pageWidth / 2) * scale;
-  let cy = (pageHeight / 2) * scale;
-  
-  switch (watermarkPosition) {
-    case 'top-left': cx = padCss + wmWidthCss / 2; cy = padCss + wmHeightCss / 2; break;
-    case 'top-center': cx = (pageWidth / 2) * scale; cy = padCss + wmHeightCss / 2; break;
-    case 'top-right': cx = (pageWidth * scale) - padCss - wmWidthCss / 2; cy = padCss + wmHeightCss / 2; break;
-    case 'center-left': cx = padCss + wmWidthCss / 2; cy = (pageHeight / 2) * scale; break;
-    case 'center': cx = (pageWidth / 2) * scale; cy = (pageHeight / 2) * scale; break;
-    case 'center-right': cx = (pageWidth * scale) - padCss - wmWidthCss / 2; cy = (pageHeight / 2) * scale; break;
-    case 'bottom-left': cx = padCss + wmWidthCss / 2; cy = (pageHeight * scale) - padCss - wmHeightCss / 2; break;
-    case 'bottom-center': cx = (pageWidth / 2) * scale; cy = (pageHeight * scale) - padCss - wmHeightCss / 2; break;
-    case 'bottom-right': cx = (pageWidth * scale) - padCss - wmWidthCss / 2; cy = (pageHeight * scale) - padCss - wmHeightCss / 2; break;
-  }
-
-  return <div className="absolute inset-0 z-40 pointer-events-none overflow-hidden">{renderItem(cx, cy, 'single')}</div>;
-}
-
+import { WatermarkPreview } from './components/WatermarkPreview';
 import { ThumbnailsSidebar } from './components/ThumbnailsSidebar';
+import { FindReplacePanel } from './components/FindReplacePanel';
 import { StatusBar } from './components/StatusBar';
+import { useTextStyleActions } from './hooks/useTextStyleActions';
 
 
 // ─── Component ──────────────────────────────────────────────────────────────
@@ -181,6 +73,15 @@ export default function EditorPage() {
   const [caretPos, setCaretPos] = useState(0); // character index for caret
   const [isSaving, setIsSaving] = useState(false);
   const [renderKey, setRenderKey] = useState(0);
+
+  // Bloom Engine — Word-like page model (source of truth for text editing)
+  const [bloomPage, setBloomPage] = useState<BloomPage | null>(null);
+  const bloomPageRef = useRef<BloomPage | null>(null);
+  const editingBlockIdRef = useRef<string | null>(null);
+  const setBloomPageBoth = useCallback((page: BloomPage | null) => {
+    bloomPageRef.current = page;
+    setBloomPage(page);
+  }, []);
 
   // Drawing state
   const [isDrawing, setIsDrawing] = useState(false);
@@ -256,12 +157,10 @@ export default function EditorPage() {
   const [textUnderline, setTextUnderline] = useState(false);
   const [textAlign, setTextAlign] = useState<'left' | 'center' | 'right'>('left');
   const [textOpacity, setTextOpacity] = useState(100);
+  const [saveMode, setSaveMode] = useState<'quick' | 'optimized'>('optimized');
+  const [isDirty, setIsDirty] = useState(false);
 
-  // Caret blinking
-  const caretVisibleRef = useRef(true);
-  const caretTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  // ── Refs ──
+  // ── Refs (declared early for hooks that need them) ──
   const canvasContainerRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
   const hiddenInputRef = useRef<HTMLTextAreaElement>(null);
@@ -269,6 +168,72 @@ export default function EditorPage() {
   const engineRef = useRef<typeof import('@/engine') | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pdfCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  const bumpRender = useCallback(() => {
+    setIsDirty(true);
+    setRenderKey(k => k + 1);
+  }, []);
+
+  const { applyStyle } = useTextStyleActions(
+    engineRef,
+    doc,
+    currentPage,
+    selectedLine,
+    bumpRender,
+  );
+
+  // Apply style changes from properties sidebar to the PDF
+  const handleTextBold = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
+    setTextBold(prev => {
+      const next = typeof v === 'function' ? v(prev) : v;
+      if (selectedLine && !editingLineRef.current) void applyStyle({ bold: next });
+      return next;
+    });
+  }, [applyStyle, selectedLine]);
+  const handleTextItalic = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
+    setTextItalic(prev => {
+      const next = typeof v === 'function' ? v(prev) : v;
+      if (selectedLine && !editingLineRef.current) void applyStyle({ italic: next });
+      return next;
+    });
+  }, [applyStyle, selectedLine]);
+  const handleTextUnderline = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
+    setTextUnderline(prev => {
+      const next = typeof v === 'function' ? v(prev) : v;
+      if (selectedLine && !editingLineRef.current) void applyStyle({ underline: next });
+      return next;
+    });
+  }, [applyStyle, selectedLine]);
+  const handleTextFontSize = useCallback((v: number | ((prev: number) => number)) => {
+    setTextFontSize(prev => {
+      const next = typeof v === 'function' ? v(prev) : v;
+      if (selectedLine && !editingLineRef.current) void applyStyle({ fontSize: next });
+      return next;
+    });
+  }, [applyStyle, selectedLine]);
+  const handleTextColor = useCallback((v: string) => {
+    setTextColor(v);
+    if (selectedLine && !editingLineRef.current) void applyStyle({ color: v });
+  }, [applyStyle, selectedLine]);
+  const handleTextAlign = useCallback((v: 'left' | 'center' | 'right') => {
+    setTextAlign(v);
+    if (selectedLine && !editingLineRef.current) void applyStyle({ align: v });
+  }, [applyStyle, selectedLine]);
+
+  // Warn before leaving with unsaved edits
+  useEffect(() => {
+    if (!isDirty) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [isDirty]);
+
+  // Caret blinking
+  const caretVisibleRef = useRef(true);
+  const caretTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // ── Load engine and PDF ──
   useEffect(() => {
@@ -408,6 +373,19 @@ export default function EditorPage() {
               pageBounds,
             );
           }
+
+          // Bloom ingest — skip re-ingest while mid-edit with dirty in-memory page
+          if (!cancelled && !(editingBlockIdRef.current && bloomPageRef.current?.dirty)) {
+            const flow = result.documentFlow ?? engine.buildDocumentFlow(interpreted.textRuns);
+            const ingested = engine.ingestPage(interpreted.textRuns, {
+              pageIndex: currentPage,
+              width: pageData.mediaBox.width,
+              height: pageData.mediaBox.height,
+              flow,
+              displayList: interpreted.displayList,
+            });
+            setBloomPageBoth(ingested);
+          }
         } catch (dispErr) {
           console.warn('[Editor] Display items extraction failed:', dispErr);
           if (!cancelled) setDisplayItems([]);
@@ -494,87 +472,38 @@ export default function EditorPage() {
     if (!page) return;
     const { mediaBox } = page;
 
-    // ── If editing a line: mask original and show live preview (Word-style) ──
+    // ── Edit: white-out only the active line (HTML input shows typed text) ──
     if (editingLine && editAnchorLineRef.current) {
       const anchor = editAnchorLineRef.current;
       const bounds = getLineBounds(anchor);
       const fontSize = anchor.fontSize;
-      const primaryRun = anchor.runs[0];
-      const fontData = primaryRun ? renderResult.fonts.get(primaryRun.fontName) : undefined;
-      const pad = Math.max(2, fontSize * 0.15);
-      const previewLines = computeEditPreview(renderResult.documentFlow, anchor, editText);
-      const lineHeight = computeLineHeight(anchor);
-      const fillColor = primaryRun?.fillColor || [0, 0, 0];
+      const pad = Math.max(2, fontSize * 0.2);
 
       ctx.save();
       ctx.scale(dpr, dpr);
 
-      const previewHeight = previewLines.length * lineHeight;
       const maskTopLeft = pdfToCanvas(
         bounds.x - pad,
-        bounds.y + Math.max(bounds.height, previewHeight) + pad,
+        bounds.y + bounds.height + pad,
         scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
       );
       const maskBottomRight = pdfToCanvas(
-        bounds.x + bounds.width + pad,
+        Math.max(bounds.x + bounds.width, bounds.x + editText.length * fontSize * 0.5) + pad,
         bounds.y - pad,
         scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
       );
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(
-        maskTopLeft.cssX,
-        maskTopLeft.cssY,
-        maskBottomRight.cssX - maskTopLeft.cssX,
-        maskBottomRight.cssY - maskTopLeft.cssY,
+        Math.min(maskTopLeft.cssX, maskBottomRight.cssX),
+        Math.min(maskTopLeft.cssY, maskBottomRight.cssY),
+        Math.abs(maskBottomRight.cssX - maskTopLeft.cssX),
+        Math.abs(maskBottomRight.cssY - maskTopLeft.cssY),
       );
-
-      const [r, g, b] = fillColor;
-      ctx.fillStyle = `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)})`;
-      ctx.font = `${fontSize * scale}px ${getOverlayFontFamily(primaryRun?.fontName || '', fontData)}`;
-      ctx.textBaseline = 'alphabetic';
-
-      for (let li = 0; li < previewLines.length; li++) {
-        const lineY = anchor.baseline - li * lineHeight;
-        const textPos = pdfToCanvas(
-          bounds.x,
-          lineY,
-          scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
-        );
-        ctx.fillText(previewLines[li], textPos.cssX, textPos.cssY);
-      }
-
-      if (caretVisibleRef.current) {
-        const caretLineIndex = Math.min(
-          previewLines.length - 1,
-          Math.max(0, Math.floor(caretPos / Math.max(1, editText.length / previewLines.length))),
-        );
-        const caretPdfX = lineXFromCaretIndex(anchor, caretPos);
-        const caretBaseline = anchor.baseline - caretLineIndex * lineHeight;
-        const caretCanvas = pdfToCanvas(
-          caretPdfX, caretBaseline,
-          scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
-        );
-        const caretTop = pdfToCanvas(
-          caretPdfX, caretBaseline + fontSize * 0.85,
-          scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
-        );
-        const caretBottom = pdfToCanvas(
-          caretPdfX, caretBaseline - fontSize * 0.25,
-          scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
-        );
-        ctx.strokeStyle = `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)})`;
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.moveTo(caretCanvas.cssX, caretTop.cssY);
-        ctx.lineTo(caretCanvas.cssX, caretBottom.cssY);
-        ctx.stroke();
-      }
-
       ctx.restore();
     }
 
-    // ── Display item bounding boxes (images/paths) in select/text mode ──
-    if ((activeTool === 'select' || activeTool === 'text') && displayItems.length > 0) {
+    // ── Display item bounding boxes — hide while typing so blue handles don't appear on words ──
+    if ((activeTool === 'select' || activeTool === 'text') && displayItems.length > 0 && !editingLine) {
       ctx.save();
       ctx.scale(dpr, dpr);
 
@@ -640,6 +569,43 @@ export default function EditorPage() {
       ctx.restore();
     }
 
+    // ── AcroForm field overlays ──
+    if (formFields.length > 0 && renderResult) {
+      ctx.save();
+      ctx.scale(dpr, dpr);
+      for (const field of formFields) {
+        const r = field.rect;
+        if (!r) continue;
+        const topLeft = pdfToCanvas(
+          r.x, r.y + r.height,
+          scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
+        );
+        const bottomRight = pdfToCanvas(
+          r.x + r.width, r.y,
+          scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
+        );
+        const boxX = topLeft.cssX;
+        const boxY = topLeft.cssY;
+        const boxW = bottomRight.cssX - topLeft.cssX;
+        const boxH = bottomRight.cssY - topLeft.cssY;
+        const selected = selectedFormField?.ref.toKey() === field.ref.toKey();
+        ctx.strokeStyle = selected ? '#f59e0b' : 'rgba(245,158,11,0.45)';
+        ctx.lineWidth = selected ? 2 : 1;
+        ctx.setLineDash(selected ? [] : [4, 3]);
+        ctx.fillStyle = selected ? 'rgba(245,158,11,0.12)' : 'rgba(245,158,11,0.04)';
+        ctx.fillRect(boxX, boxY, boxW, boxH);
+        ctx.strokeRect(boxX, boxY, boxW, boxH);
+        ctx.setLineDash([]);
+        if (selected || boxH > 14) {
+          ctx.font = '600 10px Inter, system-ui, sans-serif';
+          ctx.fillStyle = '#f59e0b';
+          const label = field.fieldName || field.fieldType;
+          ctx.fillText(label, boxX + 3, boxY + 11);
+        }
+      }
+      ctx.restore();
+    }
+
     // ── Freehand drawing paths ──
     if (drawnPaths.length > 0) {
       ctx.save();
@@ -669,7 +635,7 @@ export default function EditorPage() {
       }
       ctx.restore();
     }
-  }, [editingLine, editText, caretPos, renderResult, doc, currentPage, scale, drawnPaths, activeTool, displayItems, selectedDisplayItem]);
+  }, [editingLine, editText, caretPos, renderResult, doc, currentPage, scale, drawnPaths, activeTool, displayItems, selectedDisplayItem, formFields, selectedFormField]);
 
   // Re-draw overlay whenever edit state changes
   useEffect(() => { drawOverlay(); }, [drawOverlay]);
@@ -718,6 +684,8 @@ export default function EditorPage() {
       })),
       segments: line.segments.map(s => ({ ...s, run: s.run })),
     };
+    editingBlockIdRef.current = line.id;
+    setSelectedDisplayItem(null);
     setActiveTool('text');
     setSelectedLine(line);
     setEditingLine(line);
@@ -734,18 +702,30 @@ export default function EditorPage() {
     }
   }, [doc, currentPage, setEditingLine]);
 
-  // ── Text edit submit ──
+  // ── Text edit submit — surgical in-place line edit (preserve positions) ──
   const handleEditSubmit = useCallback(async (closeEdit: boolean = true) => {
     if (!editingLine || !doc || !engineRef.current) return;
     if (blurTimeoutRef.current) {
       clearTimeout(blurTimeoutRef.current);
       blurTimeoutRef.current = null;
     }
+
+    const textChanged = editText !== initialRunTextRef.current;
+    if (!textChanged) {
+      editAnchorLineRef.current = null;
+      undoSnapshotRef.current = null;
+      editingBlockIdRef.current = null;
+      if (closeEdit) {
+        setEditingLine(null);
+        setSelectedLine(null);
+      }
+      return;
+    }
+
     try {
       setIsSaving(true);
       const engine = engineRef.current;
       const page = doc.pages[currentPage];
-
       const targetLine = editAnchorLineRef.current ?? editingLine;
       const snapshot = undoSnapshotRef.current;
       const baseBytes = snapshot?.pageIndex === currentPage
@@ -753,15 +733,29 @@ export default function EditorPage() {
         : engine.getPageContentBytes(page, doc.objects);
 
       const editResult = engine.applyLineTextEdit(
-        baseBytes, page, doc.objects,
-        targetLine, editText,
+        baseBytes,
+        page,
+        doc.objects,
+        targetLine,
+        editText,
         renderResult?.documentFlow,
       );
+
       if (editResult.needsFontAugmentation) {
-        console.warn('[Editor] Font augmentation needed for:', editResult.missingCharCodes);
+        try {
+          const missing = String.fromCharCode(
+            ...editResult.missingCharCodes.filter(c => c < 0x10000),
+          );
+          engine.augmentFontsForMissingGlyphs(doc, currentPage, missing);
+        } catch (augErr) {
+          console.warn('[Editor] Font augmentation failed:', augErr);
+        }
       }
+
       await engine.updatePageContent(
-        page.contentRefs, editResult.newContentBytes, doc.objects,
+        page.contentRefs,
+        editResult.newContentBytes,
+        doc.objects,
       );
       txStackRef.current.push({
         pageIndex: currentPage,
@@ -772,6 +766,8 @@ export default function EditorPage() {
       syncTxState();
       editAnchorLineRef.current = null;
       undoSnapshotRef.current = null;
+      editingBlockIdRef.current = null;
+      setIsDirty(true);
       if (closeEdit) {
         setEditingLine(null);
         setSelectedLine(null);
@@ -783,43 +779,22 @@ export default function EditorPage() {
     } finally {
       setIsSaving(false);
     }
-  }, [editingLine, editText, doc, currentPage, setEditingLine, renderResult]);
+  }, [editingLine, editText, doc, currentPage, setEditingLine, renderResult, syncTxState]);
 
-  // ── Edit cancel ──
+  // ── Edit cancel — discard overlay only; PDF untouched until commit ──
   const handleEditCancel = useCallback(async () => {
     if (blurTimeoutRef.current) {
       clearTimeout(blurTimeoutRef.current);
       blurTimeoutRef.current = null;
     }
-    if (editingLine && doc && engineRef.current && editText !== initialRunTextRef.current && initialRunTextRef.current !== '') {
-      try {
-        const engine = engineRef.current;
-        const page = doc.pages[currentPage];
-        const targetLine = editAnchorLineRef.current ?? editingLine;
-        const snapshot = undoSnapshotRef.current;
-        const baseBytes = snapshot?.pageIndex === currentPage
-          ? snapshot.contentBytes
-          : engine.getPageContentBytes(page, doc.objects);
-        const editResult = engine.applyLineTextEdit(
-          baseBytes, page, doc.objects,
-          targetLine, initialRunTextRef.current,
-          renderResult?.documentFlow,
-        );
-        await engine.updatePageContent(
-          page.contentRefs, editResult.newContentBytes, doc.objects,
-        );
-        setRenderKey(k => k + 1);
-      } catch (e) {
-        console.warn('[Editor] Revert on cancel failed:', e);
-      }
-    }
     editAnchorLineRef.current = null;
     undoSnapshotRef.current = null;
+    editingBlockIdRef.current = null;
     setEditingLine(null);
     setSelectedLine(null);
     setEditText('');
     setCaretPos(0);
-  }, [editingLine, editText, doc, currentPage, setEditingLine, renderResult]);
+  }, [setEditingLine]);
 
   // ── Undo ──
   const handleUndo = useCallback(async () => {
@@ -873,11 +848,68 @@ export default function EditorPage() {
   const handleFormFieldChange = useCallback((value: string) => {
     setFormFieldDraft(value);
     if (!doc || !selectedFormField || !engineRef.current) return;
-    engineRef.current.setFormFieldValue(doc, selectedFormField, value);
-    setFormFields(prev => prev.map(f =>
-      f.ref.toKey() === selectedFormField.ref.toKey() ? { ...f, value } : f,
-    ));
+    const engine = engineRef.current;
+    if (selectedFormField.fieldType === 'Btn') {
+      const checked = value === 'true' || value === 'Yes' || value === 'On';
+      engine.setButtonFieldValue(doc, selectedFormField, checked);
+      setFormFields(prev => prev.map(f =>
+        f.ref.toKey() === selectedFormField.ref.toKey() ? { ...f, value: checked } : f,
+      ));
+    } else if (selectedFormField.fieldType === 'Ch') {
+      engine.setChoiceFieldValue(doc, selectedFormField, value);
+      setFormFields(prev => prev.map(f =>
+        f.ref.toKey() === selectedFormField.ref.toKey() ? { ...f, value } : f,
+      ));
+    } else {
+      engine.setFormFieldValue(doc, selectedFormField, value);
+      setFormFields(prev => prev.map(f =>
+        f.ref.toKey() === selectedFormField.ref.toKey() ? { ...f, value } : f,
+      ));
+    }
+    setIsDirty(true);
   }, [doc, selectedFormField]);
+
+  const handleFindReplace = useCallback(async (find: string, replace: string) => {
+    if (!doc || !engineRef.current) return 0;
+    const engine = engineRef.current;
+    const page = doc.pages[currentPage];
+    const bytes = engine.getPageContentBytes(page, doc.objects);
+    const result = engine.findAndReplace(bytes, page, doc.objects, find, replace);
+    await engine.updatePageContent(page.contentRefs, result.newContentBytes, doc.objects);
+    setIsDirty(true);
+    setRenderKey(k => k + 1);
+    return result.missingCharCodes ? 1 : 1; // at least signal work done
+  }, [doc, currentPage]);
+
+  const handleRecognizeText = useCallback(async () => {
+    if (!doc || !engineRef.current || !pdfCanvasRef.current) return;
+    try {
+      setIsSaving(true);
+      setError(null);
+      const { createDefaultOcrAdapter, canvasToImageData, mapOcrWordsToPdf } = await import('@/lib/ocr/adapter');
+      const adapter = createDefaultOcrAdapter();
+      const canvas = pdfCanvasRef.current;
+      const imageData = canvasToImageData(canvas);
+      const words = await adapter.recognize(imageData);
+      const page = doc.pages[currentPage];
+      const dpr = window.devicePixelRatio || 1;
+      const mapped = mapOcrWordsToPdf(words, page.mediaBox.height, scale, page.mediaBox.y, dpr);
+      if (mapped.length > 0) {
+        await engineRef.current.insertInvisibleTextLayer(doc, currentPage, mapped);
+        setIsDirty(true);
+        setRenderKey(k => k + 1);
+        setError(null);
+        // Brief success via status — reuse error toast style as info
+        console.log(`[OCR] Inserted ${mapped.length} words as invisible text`);
+      } else {
+        setError('OCR found no text on this page. Try a clearer scan or higher zoom.');
+      }
+    } catch (e) {
+      setError(`OCR failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setIsSaving(false);
+    }
+  }, [doc, currentPage, scale]);
 
   const handleFlattenForms = useCallback(async () => {
     if (!doc || !engineRef.current || formFields.length === 0) return;
@@ -942,66 +974,51 @@ export default function EditorPage() {
         clearTimeout(blurTimeoutRef.current);
         blurTimeoutRef.current = null;
       }
-      const hit = hitTestTextLine(pdfX, pdfY, renderResult.textLines);
-      if (hit) {
-        const newCaret = caretIndexFromLineX(pdfX, hit);
-        if (editingLine?.id === hit.id) {
-          setCaretPos(newCaret);
+
+      // Prefer real flow lines (sourceInstructionIndices) — never edit synthetic Bloom lines
+      const startEditOnLine = (line: TextLine, newCaret: number) => {
+        const flowLine = findMatchingFlowLine(line, renderResult.textLines) ?? line;
+        const caret = Math.min(newCaret, flowLine.text.length);
+        if (editingLine?.id === flowLine.id) {
+          setCaretPos(caret);
           caretVisibleRef.current = true;
-        } else {
-          const startNew = () => {
-            beginEditSession(hit, newCaret);
-            setTimeout(() => {
-              if (hiddenInputRef.current) {
-                hiddenInputRef.current.focus({ preventScroll: true });
-                hiddenInputRef.current.setSelectionRange(newCaret, newCaret);
-              }
-            }, 0);
-          };
-          if (editingLine) {
-            void handleEditSubmit(false).then(startNew);
-          } else {
-            startNew();
-          }
-          return;
-        }
-        setTimeout(() => {
-          if (hiddenInputRef.current) {
-            hiddenInputRef.current.focus({ preventScroll: true });
-            hiddenInputRef.current.setSelectionRange(newCaret, newCaret);
-          }
-        }, 0);
-      } else {
-        const nearHit = findNearestTextLine(pdfX, pdfY, renderResult.textLines, 12);
-        if (nearHit) {
-          const newCaret = caretIndexFromLineX(pdfX, nearHit);
-          if (editingLine?.id === nearHit.id) {
-            setCaretPos(newCaret);
-            caretVisibleRef.current = true;
-          } else {
-            const startNew = () => {
-              beginEditSession(nearHit, newCaret);
-              setTimeout(() => {
-                if (hiddenInputRef.current) {
-                  hiddenInputRef.current.focus({ preventScroll: true });
-                  hiddenInputRef.current.setSelectionRange(newCaret, newCaret);
-                }
-              }, 0);
-            };
-            if (editingLine) {
-              void handleEditSubmit(false).then(startNew);
-            } else {
-              startNew();
-            }
-            return;
-          }
           setTimeout(() => {
             if (hiddenInputRef.current) {
               hiddenInputRef.current.focus({ preventScroll: true });
-              hiddenInputRef.current.setSelectionRange(newCaret, newCaret);
+              hiddenInputRef.current.setSelectionRange(caret, caret);
             }
           }, 0);
+          return;
+        }
+        const startNew = () => {
+          beginEditSession(flowLine, caret);
+          setTimeout(() => {
+            if (hiddenInputRef.current) {
+              hiddenInputRef.current.focus({ preventScroll: true });
+              hiddenInputRef.current.setSelectionRange(caret, caret);
+            }
+          }, 0);
+        };
+        if (editingLine) {
+          void handleEditSubmit(false).then(startNew);
         } else {
+          startNew();
+        }
+      };
+
+      const hit = hitTestTextLine(pdfX, pdfY, renderResult.textLines);
+      if (hit) {
+        startEditOnLine(hit, caretIndexFromLineX(pdfX, hit));
+        return;
+      }
+
+      const nearHit = findNearestTextLine(pdfX, pdfY, renderResult.textLines, 12);
+      if (nearHit) {
+        startEditOnLine(nearHit, caretIndexFromLineX(pdfX, nearHit));
+        return;
+      }
+
+      {
           const spatialHit = spatialIndexRef.current
             ? hitTestDisplayList(spatialIndexRef.current, pdfX, pdfY)
             : null;
@@ -1025,7 +1042,6 @@ export default function EditorPage() {
           }
           setActiveFloatingTextId(null);
           setActiveFloatingImageId(null);
-        }
       }
     } else if (activeTool === 'addtext') {
       if (blurTimeoutRef.current) {
@@ -1052,7 +1068,25 @@ export default function EditorPage() {
 
     } else if (activeTool === 'highlight') {
       const hit = hitTestTextLine(pdfX, pdfY, renderResult.textLines);
-      if (hit && hit.runs[0]) setSelectedLine(hit);
+      if (hit && hit.runs[0] && engineRef.current && doc) {
+        setSelectedLine(hit);
+        try {
+          const [r, g, b] = hexToRGB(highlightColor);
+          engineRef.current.addHighlightFromLineSelection(
+            doc,
+            currentPage,
+            hit,
+            0,
+            hit.text.length,
+            [r, g, b],
+            'Highlight',
+          );
+          setIsDirty(true);
+          setRenderKey(k => k + 1);
+        } catch (err) {
+          console.warn('[Editor] Highlight annotation failed:', err);
+        }
+      }
     }
   }, [renderResult, doc, currentPage, scale, activeTool, editingLine, handleEditSubmit, beginEditSession, displayItems, textFontSize, textColor]);
 
@@ -1072,18 +1106,21 @@ export default function EditorPage() {
       renderResult.pageWidth, renderResult.pageHeight,
       mediaBox.x, mediaBox.y,
     );
-    const hit = hitTestTextLine(pdfX, pdfY, renderResult.textLines);
+    const hit =
+      hitTestTextLine(pdfX, pdfY, renderResult.textLines) ??
+      findNearestTextLine(pdfX, pdfY, renderResult.textLines, 16);
     if (hit) {
       if (blurTimeoutRef.current) {
         clearTimeout(blurTimeoutRef.current);
         blurTimeoutRef.current = null;
       }
-      const newCaret = caretIndexFromLineX(pdfX, hit);
-      if (editingLine && editingLine.id !== hit.id) {
-        void handleEditSubmit(false).then(() => beginEditSession(hit, newCaret));
+      const flowLine = findMatchingFlowLine(hit, renderResult.textLines) ?? hit;
+      const newCaret = caretIndexFromLineX(pdfX, flowLine);
+      if (editingLine && editingLine.id !== flowLine.id) {
+        void handleEditSubmit(false).then(() => beginEditSession(flowLine, newCaret));
         return;
       }
-      beginEditSession(hit, newCaret);
+      beginEditSession(flowLine, newCaret);
       setTimeout(() => {
         if (hiddenInputRef.current) {
           hiddenInputRef.current.focus({ preventScroll: true });
@@ -1431,12 +1468,12 @@ export default function EditorPage() {
   }, [doc, currentPage, renderResult]);
 
 
-  // ── Hidden input handler — overlay preview only; PDF commits on submit ──
-  const handleHiddenInput = useCallback((e: React.FormEvent<HTMLTextAreaElement>) => {
+  // ── Hidden / line input — preview only; PDF commits on submit ──
+  const handleHiddenInput = useCallback((e: React.FormEvent<HTMLTextAreaElement | HTMLInputElement>) => {
     if (!editingLine) return;
-    const newVal = (e.target as HTMLTextAreaElement).value;
+    const newVal = (e.target as HTMLTextAreaElement | HTMLInputElement).value;
     setEditText(newVal);
-    const sel = (e.target as HTMLTextAreaElement).selectionStart ?? newVal.length;
+    const sel = (e.target as HTMLTextAreaElement | HTMLInputElement).selectionStart ?? newVal.length;
     setCaretPos(sel);
     caretVisibleRef.current = true;
   }, [editingLine]);
@@ -1713,7 +1750,9 @@ export default function EditorPage() {
       setIsSaving(true);
       await commitDrawingsToPdf();
       const engine = engineRef.current;
-      const bytes = await engine.serializeDocument(doc);
+      const bytes = saveMode === 'quick'
+        ? await engine.saveQuick(doc)
+        : await engine.saveOptimized(doc);
       const blob = new Blob([bytes as unknown as BlobPart], { type: 'application/pdf' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -1721,13 +1760,14 @@ export default function EditorPage() {
       a.download = fileName || 'edited.pdf';
       a.click();
       URL.revokeObjectURL(url);
+      setIsDirty(false);
     } catch (e) {
       console.error('[Editor] Download failed:', e);
       setError(`Download failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setIsSaving(false);
     }
-  }, [doc, fileName]);
+  }, [doc, fileName, saveMode, commitDrawingsToPdf]);
 
   const handleClose = useCallback(async () => {
     await clearPdfFromStorage();
@@ -1872,6 +1912,8 @@ export default function EditorPage() {
         onRedo={handleRedo}
         onClearPaths={() => setDrawnPaths([])}
         onDownload={handleDownload}
+        saveMode={saveMode}
+        onSaveModeChange={setSaveMode}
       />
 
       <div className="flex-1 flex overflow-hidden">
@@ -1891,17 +1933,17 @@ export default function EditorPage() {
           textFontFamily={textFontFamily}
           setTextFontFamily={setTextFontFamily}
           textFontSize={textFontSize}
-          setTextFontSize={setTextFontSize}
+          setTextFontSize={handleTextFontSize}
           textBold={textBold}
-          setTextBold={setTextBold}
+          setTextBold={handleTextBold}
           textItalic={textItalic}
-          setTextItalic={setTextItalic}
+          setTextItalic={handleTextItalic}
           textUnderline={textUnderline}
-          setTextUnderline={setTextUnderline}
+          setTextUnderline={handleTextUnderline}
           textColor={textColor}
-          setTextColor={setTextColor}
+          setTextColor={handleTextColor}
           textAlign={textAlign}
-          setTextAlign={setTextAlign}
+          setTextAlign={handleTextAlign}
           textOpacity={textOpacity}
           setTextOpacity={setTextOpacity}
           replacingImageIdRef={replacingImageIdRef}
@@ -2250,16 +2292,55 @@ export default function EditorPage() {
               );
             })}
 
-            {/* Hidden input — captures all keystrokes invisibly */}
-            <textarea
-              ref={hiddenInputRef}
-              value={editText}
-              onInput={handleHiddenInput}
-              onKeyDown={handleHiddenKeyDown}
-              onBlur={handleHiddenBlur}
-              aria-label="Text editing input"
-              className="fixed left-0 top-0 w-px h-px opacity-0 pointer-events-none p-0 border-none outline-none resize-none overflow-hidden -z-10"
-            />
+            {/* Word-like line editor — positioned exactly over the clicked line */}
+            {editingLine && editAnchorLineRef.current && renderResult && doc && (() => {
+              const anchor = editAnchorLineRef.current!;
+              const bounds = getLineBounds(anchor);
+              const page = doc.pages[currentPage];
+              const { mediaBox } = page;
+              const pad = 2;
+              const topLeft = pdfToCanvas(
+                bounds.x - pad,
+                bounds.y + bounds.height + pad,
+                scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
+              );
+              const bottomRight = pdfToCanvas(
+                bounds.x + Math.max(bounds.width, editText.length * anchor.fontSize * 0.55) + pad * 4,
+                bounds.y - pad,
+                scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
+              );
+              const left = Math.min(topLeft.cssX, bottomRight.cssX);
+              const top = Math.min(topLeft.cssY, bottomRight.cssY);
+              const width = Math.max(40, Math.abs(bottomRight.cssX - topLeft.cssX));
+              const height = Math.max(anchor.fontSize * scale * 1.1, Math.abs(bottomRight.cssY - topLeft.cssY));
+              const primaryRun = anchor.runs[0];
+              const fontData = primaryRun ? renderResult.fonts.get(primaryRun.fontName) : undefined;
+              const [r, g, b] = primaryRun?.fillColor || [0, 0, 0];
+              return (
+                <textarea
+                  ref={hiddenInputRef}
+                  value={editText}
+                  onInput={handleHiddenInput}
+                  onKeyDown={handleHiddenKeyDown}
+                  onBlur={handleHiddenBlur}
+                  rows={1}
+                  aria-label="Edit line"
+                  spellCheck={false}
+                  className="absolute z-20 m-0 border-none outline-none bg-transparent p-0 overflow-hidden resize-none whitespace-nowrap"
+                  style={{
+                    left,
+                    top,
+                    width,
+                    height,
+                    fontSize: anchor.fontSize * scale,
+                    lineHeight: `${height}px`,
+                    fontFamily: getOverlayFontFamily(primaryRun?.fontName || '', fontData),
+                    color: `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)})`,
+                    caretColor: `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)})`,
+                  }}
+                />
+              );
+            })()}
           </div>
         </div>
 
@@ -2280,13 +2361,26 @@ export default function EditorPage() {
       </div>
 
       {/* ── Bottom status bar ── */}
-      <StatusBar
-        renderResult={renderResult}
-        activeTool={activeTool}
-        selectedRun={selectedLine?.runs[0] ?? null}
-        doc={doc}
-        totalPages={totalPages}
-      />
+      <div className="shrink-0 border-t border-zinc-800 bg-zinc-900">
+        <div className="flex items-center gap-2 px-3 py-1">
+          <button
+            onClick={() => void handleRecognizeText()}
+            className="text-[10px] px-2 py-1 rounded bg-zinc-800 text-zinc-400 hover:text-zinc-200"
+            title="OCR recognize (stub)"
+          >
+            Recognize text
+          </button>
+          {isDirty && <span className="text-[10px] text-amber-400">Unsaved changes</span>}
+        </div>
+        <FindReplacePanel onFindReplace={handleFindReplace} />
+        <StatusBar
+          renderResult={renderResult}
+          activeTool={activeTool}
+          selectedRun={selectedLine?.runs[0] ?? null}
+          doc={doc}
+          totalPages={totalPages}
+        />
+      </div>
 
       {/* Error toast */}
       {error && (

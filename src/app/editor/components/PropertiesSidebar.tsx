@@ -542,14 +542,13 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
         </div>
       )}
 
-      {/* FORM FIELDS */}
-      {formFields.length > 0 && (
-        <div className="p-4 space-y-3 border-t border-zinc-800 animate-in fade-in slide-in-from-left-4 duration-300">
+      {/* FORM FIELDS — always visible so users know the feature exists */}
+      <div className="p-4 space-y-3 border-t border-zinc-800 animate-in fade-in slide-in-from-left-4 duration-300">
           <div className="flex items-center justify-between">
             <span className="text-[10px] font-bold tracking-widest text-zinc-400 uppercase">
-              Form Fields ({formFields.length})
+              Form Fields {formFields.length > 0 ? `(${formFields.length})` : ''}
             </span>
-            {onFlattenForms && (
+            {onFlattenForms && formFields.length > 0 && (
               <button
                 onClick={onFlattenForms}
                 className="text-[10px] font-medium px-2 py-1 rounded bg-amber-500/10 text-amber-400 border border-amber-500/30 hover:bg-amber-500/20 transition-colors"
@@ -559,6 +558,12 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             )}
           </div>
 
+          {formFields.length === 0 ? (
+            <p className="text-[11px] text-zinc-500 leading-relaxed">
+              No AcroForm fields on this page. Open a fillable PDF to edit text, checkbox, and dropdown fields here.
+            </p>
+          ) : (
+          <>
           <div className="space-y-1 max-h-40 overflow-y-auto">
             {formFields.map((field) => (
               <button
@@ -587,8 +592,39 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
               />
             </div>
           )}
+
+          {selectedFormField && selectedFormField.fieldType === 'Btn' && onFormFieldChange && (
+            <div className="space-y-2">
+              <label className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase">Checkbox / Radio</label>
+              <button
+                onClick={() => {
+                  const checked = !(selectedFormField.value === true || selectedFormField.value === 'Yes' || selectedFormField.value === 'On');
+                  onFormFieldChange(checked ? 'Yes' : 'Off');
+                }}
+                className="w-full py-2 rounded-lg text-xs font-semibold bg-zinc-800 border border-zinc-700 text-zinc-200 hover:bg-zinc-700"
+              >
+                {(selectedFormField.value === true || selectedFormField.value === 'Yes' || selectedFormField.value === 'On')
+                  ? 'Checked — click to uncheck'
+                  : 'Unchecked — click to check'}
+              </button>
+            </div>
+          )}
+
+          {selectedFormField && selectedFormField.fieldType === 'Ch' && onFormFieldChange && (
+            <div className="space-y-2">
+              <label className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase">Choice value</label>
+              <input
+                type="text"
+                value={formFieldDraft}
+                onChange={(e) => onFormFieldChange(e.target.value)}
+                placeholder="Enter option value"
+                className="w-full px-3 py-2 text-sm bg-zinc-800 border border-zinc-700 rounded-lg text-zinc-200 focus:outline-none focus:border-blue-500"
+              />
+            </div>
+          )}
+          </>
+          )}
         </div>
-      )}
 
       {/* WATERMARK PROPERTIES */}
       {activeTool === 'watermark' && (

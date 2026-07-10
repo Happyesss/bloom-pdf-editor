@@ -1,5 +1,5 @@
 /**
- * Digital signatures — ASN.1 DER, PKCS#7/CMS, digest verification.
+ * Digital signatures — ASN.1 DER, PKCS#7/CMS, digest verification, signing.
  */
 
 export {
@@ -12,6 +12,13 @@ export {
   nodeOID,
   parseContentInfo,
 } from './signature-verify';
+
+export {
+  buildDetachedCMS,
+  createSignatureField,
+  signDocument,
+} from './sign';
+export type { SignOptions } from './sign';
 
 export type {
   ASN1Class,

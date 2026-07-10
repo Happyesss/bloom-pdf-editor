@@ -22,6 +22,13 @@ export {
   removeWidgetAnnots,
 } from './apply-field';
 
+export {
+  setButtonFieldValue,
+  setChoiceFieldValue,
+  regenerateNeedAppearances,
+  runCalculationOrder,
+} from './widget-appearances';
+
 export type {
   AcroFormFieldType,
   ButtonStyle,

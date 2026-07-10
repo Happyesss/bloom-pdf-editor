@@ -70,6 +70,11 @@ export {
 } from './fonts/gpos';
 export type { GPOSPairAdjustment, GPOSMarkRecord } from './fonts/gpos';
 export type { TTFFont, GlyphOutline, GlyphCommand } from './fonts/truetype-parser';
+export {
+  ensureFallbackFont,
+  buildSimpleToUnicodeCMap,
+  augmentFontsForMissingGlyphs,
+} from './fonts/font-augmentation';
 
 // ── Renderer ──
 export { renderPage, renderPageToCanvas, renderPDFPage, renderAllPages } from './render/renderer';
@@ -92,12 +97,16 @@ export {
   computeLineWidthDelta,
   analyzeJustification,
   distributeJustifiedSpace,
+  distributeGlue,
+  opticalMarginAdjust,
   computeBaseline,
   getRunBounds,
   averageCharWidth,
   estimateTextWidth,
   greedyWrap,
   previewWrap,
+  knuthPlassWrap,
+  hyphenateBreaks,
   computeLayoutPlan,
   computeEditPreview,
   computeHorizontalShifts,
@@ -109,6 +118,21 @@ export {
   shapeText,
   measureText,
   layoutShapedGlyphs,
+  applyStyleToSelection,
+  applyStyleToLine,
+  applyStyleToSelectionOnPage,
+  mapSelectionToSegments,
+  resolveStyledFontName,
+  resolveBidiLevels,
+  reorderForDisplay,
+  visualToLogical,
+  logicalToVisual,
+  graphemeClusters,
+  moveCaret,
+  snapCaretToGrapheme,
+  lineSelectionToQuadPoints,
+  multiLineSelectionToQuadPoints,
+  quadPointsToRect,
 } from './flow';
 export type {
   DocumentFlow,
@@ -121,12 +145,77 @@ export type {
   RunShift,
   FlowGlyphDraw,
   ShapedGlyph,
+  TextStylePatch,
+  StyleEditResult,
+  KnuthPlassOptions,
 } from './flow';
+
+// ── Bloom Engine (Word-like document model) ──
+export {
+  ingestPage,
+  ingestDocument,
+  resetBloomIds,
+  layoutPage,
+  layoutBlock,
+  measureWithRuns,
+  sliceRunsForRange,
+  insertTextAtCaret,
+  deleteTextAtCaret,
+  replaceRange,
+  replaceBlockText,
+  setBlockText,
+  hitTestBloomPage,
+  findNearestBlock,
+  caretPdfPosition,
+  renderBloomPage,
+  maskBloomTextRegions,
+  paintBloomOverPdf,
+  maskBloomBlocks,
+  renderBloomBlocks,
+  paintBloomBlocksOverPdf,
+  compilePage,
+  compilePageAndClearDirty,
+  compileBlocks,
+  compileBlocksAndClearDirty,
+  stripOwnedTextOps,
+  collectOwnedIndices,
+  blockPlainText,
+} from './bloom';
+export type {
+  BloomRun,
+  BloomBlockKind,
+  BloomAlign,
+  BloomBox,
+  BloomLineBox,
+  BloomBlock,
+  BloomFrame,
+  BloomPage,
+  BloomDocument,
+  BloomCaret,
+  BloomSelection,
+  IngestPageOptions,
+  BloomRenderOptions,
+  CompilePageResult,
+} from './bloom';
 
 // ── Editor ──
 export { applyTextEdits, applyRunPositionShifts, findTextInPage, findAndReplace, insertTextRun } from './editor/text-editor';
 export { insertImageRun } from './editor/image-editor';
 export type { TextEdit, EditResult, RunPositionShift } from './editor/text-editor';
+export {
+  applyObjectTransform,
+  deleteObject,
+} from './editor/object-editor';
+export { markRedaction, applyRedactions, unionRects, rectsOverlap } from './editor/redaction';
+export type { Rect as RedactionRect, ApplyRedactionsResult } from './editor/redaction';
+export {
+  addHighlightFromSelection,
+  addHighlightFromLineSelection,
+  addHighlightFromMultiLineSelection,
+} from './editor/highlight';
+export type { SelectionPos } from './editor/highlight';
+export { insertInvisibleTextLayer } from './editor/invisible-text';
+export type { InvisibleWord } from './editor/invisible-text';
 export {
   compileContentStream,
   updatePageContent,
@@ -155,6 +244,8 @@ export type {
 // ── Writer ──
 export { serializeDocument, getNextObjNum } from './writer/serializer';
 export { saveIncremental } from './writer/incremental-writer';
+export { saveQuick, saveOptimized, saveDocument } from './writer/save-pipeline';
+export type { SaveMode } from './writer/save-pipeline';
 export {
   deletePage,
   deletePages,
@@ -184,8 +275,35 @@ export {
 export type { ICCProfile, ICCHeader, ICCTag, ICCLutInfo, ICCLutType, Mft2Table } from './color';
 
 // ── Editing (Phase 5) ──
-export { QuadTree, hitTestSpatial, TransactionStack, buildDisplayListIndex, hitTestDisplayList } from './editing';
-export type { Bounds, SpatialEntry, EditSnapshot, SelectableItem } from './editing';
+export {
+  QuadTree,
+  hitTestSpatial,
+  TransactionStack,
+  buildDisplayListIndex,
+  hitTestDisplayList,
+  buildSceneGraph,
+  hitTestScene,
+  composeTransform,
+  invertAffine,
+  transformObject,
+  snapToGuides,
+  buildPageGuides,
+  buildObjectGuides,
+  buildAllGuides,
+  multiplyAffine,
+  identityAffine,
+} from './editing';
+export type {
+  Bounds,
+  SpatialEntry,
+  EditSnapshot,
+  SelectableItem,
+  EditableObject,
+  Affine,
+  SnapGuide,
+  Guide,
+  ObjectTransformOps,
+} from './editing';
 
 // ── Image (Phase 4) ──
 export { decodeImage } from './image';
@@ -222,6 +340,10 @@ export {
   listAllFormWidgets,
   setFormFieldValue,
   flattenFormFieldsOnPage,
+  setButtonFieldValue,
+  setChoiceFieldValue,
+  regenerateNeedAppearances,
+  runCalculationOrder,
 } from './forms';
 export type {
   AcroFormFieldType,
@@ -252,16 +374,36 @@ export { garbageCollect, deduplicateStreams, computeReachability } from './optim
 export type { GarbageCollectResult, DeduplicateResult, ReachabilityResult } from './optimize';
 
 // ── Signatures (Phase 10) ──
-export { verifySignatureDigest, parseDER, parseCMSSignedData } from './signatures';
-export type { ASN1Node, CMSSignedData, SignatureVerificationResult } from './signatures';
+export {
+  verifySignatureDigest,
+  parseDER,
+  parseCMSSignedData,
+  createSignatureField,
+  signDocument,
+  buildDetachedCMS,
+} from './signatures';
+export type { ASN1Node, CMSSignedData, SignatureVerificationResult, SignOptions } from './signatures';
 
 // ── Accessibility (Phase 11) ──
 export { walkStructureTree, parseStructureTree } from './accessibility';
 export type { StructureNode, StructureTree, ReadingOrderItem } from './accessibility';
 
 // ── AI (Phase 12) ──
-export { chunkDocument, buildSemanticSearchIndex, searchSemanticIndex } from './ai';
-export type { DocumentChunk, SemanticSearchIndex, SearchHit } from './ai';
+export {
+  chunkDocument,
+  buildSemanticSearchIndex,
+  searchSemanticIndex,
+  comparePageText,
+  compareDocuments,
+  extractPagePlainText,
+} from './ai';
+export type {
+  DocumentChunk,
+  SemanticSearchIndex,
+  SearchHit,
+  TextDiff,
+  DocumentCompareResult,
+} from './ai';
 
 // ── Watermark ──
 export {

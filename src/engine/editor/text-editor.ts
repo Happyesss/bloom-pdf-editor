@@ -100,8 +100,12 @@ export function applyTextEdits(
 
     const rawIndices = edit.targetRun.sourceInstructionIndices ?? [];
 
-    // Erase the old text region before replacing (prevents overlap with neighbors)
-    if (edit.newText !== edit.targetRun.text && rawIndices.length > 0) {
+    // Erase only when shrinking (growing uses in-place Tj replace — no white box)
+    if (
+      edit.newText.length < edit.targetRun.text.length &&
+      edit.newText !== edit.targetRun.text &&
+      rawIndices.length > 0
+    ) {
       const inserted = insertEraseRectForRun(
         instructions,
         edit.targetRun,
@@ -625,7 +629,7 @@ function extractStringText(
 
 // ─── Text encoding ──────────────────────────────────────────────────────────
 
-interface EncodedText {
+export interface EncodedText {
   pdfString: PDFObject;
   /** Unicode characters that couldn't be encoded */
   missing: number[];
@@ -635,7 +639,7 @@ interface EncodedText {
  * Encode a Unicode string into PDF text using the font's encoding.
  * This is the reverse of text extraction — Unicode → character codes.
  */
-function encodeTextForFont(text: string, fontData: FontData | null): EncodedText {
+export function encodeTextForFont(text: string, fontData: FontData | null): EncodedText {
   if (!fontData) {
     // No font data — encode as Latin-1
     return {
@@ -747,6 +751,15 @@ function insertEraseRectForRun(
 ): number {
   if (hintIndex < 0 || hintIndex >= instructions.length) return 0;
 
+  // Only erase when shrinking or replacing — never grow the white box past
+  // the original run (that paints over neighboring glyphs/headings).
+  const oldLen = Math.max(1, run.text.length);
+  if (newText.length >= oldLen && newText.startsWith(run.text.slice(0, Math.min(3, oldLen)))) {
+    // Growing in place: skip erase; the new Tj replaces the old glyphs.
+    // Overlap risk is handled by horizontal shifts instead.
+    return 0;
+  }
+
   let btIndex = hintIndex;
   for (let i = hintIndex; i >= 0; i--) {
     if (instructions[i].operator === 'BT') {
@@ -757,11 +770,14 @@ function insertEraseRectForRun(
   }
 
   const fontSize = run.fontSize || run.glyphs[0]?.fontSize || 12;
-  const pad = Math.max(2, fontSize * 0.2);
-  const oldLen = Math.max(1, run.text.length);
-  const widthScale = Math.max(1, newText.length / oldLen);
-  const eraseWidth = run.width * widthScale + pad * 2;
-  const eraseHeight = (run.height || fontSize) + pad * 2;
+  const pad = Math.max(1, fontSize * 0.08);
+  // Cover ONLY the original run bounds (baseline-relative)
+  const eraseWidth = Math.max(run.width, fontSize * 0.5) + pad * 2;
+  const ascent = fontSize * 0.85;
+  const descent = fontSize * 0.25;
+  const eraseHeight = ascent + descent + pad * 2;
+  const eraseX = run.x - pad;
+  const eraseY = run.y - descent - pad;
 
   const eraseOps: CSInstruction[] = [
     { operator: 'q', operands: [], offset: 0 },
@@ -769,8 +785,8 @@ function insertEraseRectForRun(
     {
       operator: 're',
       operands: [
-        new PDFNumber(run.x - pad),
-        new PDFNumber(run.y - pad),
+        new PDFNumber(eraseX),
+        new PDFNumber(eraseY),
         new PDFNumber(eraseWidth),
         new PDFNumber(eraseHeight),
       ],
@@ -953,7 +969,7 @@ function buildSmartTJArray(
 /**
  * Compile an array of CSInstructions back into content stream bytes.
  */
-function compileInstructions(instructions: CSInstruction[]): Uint8Array {
+export function compileInstructions(instructions: CSInstruction[]): Uint8Array {
   const parts: string[] = [];
 
   for (let i = 0; i < instructions.length; i++) {
@@ -988,7 +1004,7 @@ function loadFontForRun(
   return loadFontForName(run.fontName, page, objects);
 }
 
-function loadFontForName(
+export function loadFontForName(
   fontName: string,
   page: PDFPageInfo,
   objects: Map<string, PDFObject>,

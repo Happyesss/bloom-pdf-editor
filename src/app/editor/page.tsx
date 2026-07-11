@@ -3,7 +3,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { loadPdfFromStorage, clearPdfFromStorage } from '@/lib/pdfStorage';
-import { X, Loader2, ChevronLeft, Image } from 'lucide-react';
+import { X, Loader2, ChevronLeft, Image, Type } from 'lucide-react';
 
 // We import types only — the engine modules are loaded dynamically
 // because they require browser APIs (canvas, DecompressionStream)
@@ -159,6 +159,7 @@ export default function EditorPage() {
   const [textOpacity, setTextOpacity] = useState(100);
   const [saveMode, setSaveMode] = useState<'quick' | 'optimized'>('optimized');
   const [isDirty, setIsDirty] = useState(false);
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
 
   // ── Refs (declared early for hooks that need them) ──
   const canvasContainerRef = useRef<HTMLDivElement>(null);
@@ -1914,6 +1915,8 @@ export default function EditorPage() {
         onDownload={handleDownload}
         saveMode={saveMode}
         onSaveModeChange={setSaveMode}
+        isSearchOpen={isSearchOpen}
+        onToggleSearch={() => setIsSearchOpen(!isSearchOpen)}
       />
 
       <div className="flex-1 flex overflow-hidden">
@@ -2020,6 +2023,24 @@ export default function EditorPage() {
 
         {/* ── Canvas area ── */}
         <div className="flex-1 overflow-auto relative flex justify-center items-start py-12 checkerboard">
+          {/* Floating Search & OCR Panel */}
+          {isSearchOpen && (
+            <div className="absolute top-4 right-4 z-40 flex flex-col items-end gap-3 w-64 pointer-events-none animate-in fade-in slide-in-from-top-4 duration-200">
+              <div className="pointer-events-auto flex items-center justify-between gap-2 bg-zinc-900/95 backdrop-blur-md px-3 py-2 rounded-lg border border-zinc-700/80 shadow-lg w-full">
+                <button
+                  onClick={() => void handleRecognizeText()}
+                  className="flex items-center gap-2 text-xs font-semibold text-zinc-300 hover:text-white transition-colors"
+                  title="OCR recognize (stub)"
+                >
+                  <Type size={14} /> Recognize text
+                </button>
+                {isDirty && <span className="text-[10px] text-amber-400 font-medium border-l border-zinc-700/50 pl-2">Unsaved</span>}
+              </div>
+              <div className="pointer-events-auto w-full bg-zinc-900/95 backdrop-blur-md rounded-xl border border-zinc-700/80 shadow-2xl overflow-hidden">
+                <FindReplacePanel onFindReplace={handleFindReplace} />
+              </div>
+            </div>
+          )}
           {isRendering && (
             <div className="absolute top-4 right-4 z-30 bg-zinc-900/90 backdrop-blur border border-zinc-800 shadow-lg rounded-full px-4 py-2 flex items-center gap-2 text-zinc-300 text-sm font-medium animate-in slide-in-from-top-4 fade-in">
               <Loader2 size={16} className="animate-spin text-blue-500" />
@@ -2361,18 +2382,7 @@ export default function EditorPage() {
       </div>
 
       {/* ── Bottom status bar ── */}
-      <div className="shrink-0 border-t border-zinc-800 bg-zinc-900">
-        <div className="flex items-center gap-2 px-3 py-1">
-          <button
-            onClick={() => void handleRecognizeText()}
-            className="text-[10px] px-2 py-1 rounded bg-zinc-800 text-zinc-400 hover:text-zinc-200"
-            title="OCR recognize (stub)"
-          >
-            Recognize text
-          </button>
-          {isDirty && <span className="text-[10px] text-amber-400">Unsaved changes</span>}
-        </div>
-        <FindReplacePanel onFindReplace={handleFindReplace} />
+      <div className="shrink-0">
         <StatusBar
           renderResult={renderResult}
           activeTool={activeTool}

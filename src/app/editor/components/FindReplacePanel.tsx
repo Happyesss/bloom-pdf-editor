@@ -25,7 +25,7 @@ export function FindReplacePanel({ onFindReplace }: FindReplacePanelProps) {
   };
 
   return (
-    <div className="border-t border-zinc-800 p-3 space-y-2">
+    <div className="p-3 space-y-3 bg-zinc-900/95">
       <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-zinc-400 uppercase">
         <Search size={12} /> Find & Replace
       </div>

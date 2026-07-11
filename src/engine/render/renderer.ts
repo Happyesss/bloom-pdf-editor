@@ -634,24 +634,115 @@ function drawTextRun(
     const { family, weight, style } = getCanvasFontProperties(run.fontName, fontData);
     ctx.fillStyle = fillColor;
 
-    for (let i = 0; i < run.glyphs.length; i++) {
-      const glyph = run.glyphs[i];
-      // Type3: draw CharProcs outlines when available
-      if (fontData?.charProcs && fontData.charProcs.size > 0) {
-        const name = type3CharName(fontData, glyph.charCode ?? glyph.unicode.charCodeAt(0));
+    // Check for Type3 — must draw glyph-by-glyph
+    const isType3 = fontData?.charProcs && fontData.charProcs.size > 0;
+
+    if (isType3) {
+      for (let i = 0; i < run.glyphs.length; i++) {
+        const glyph = run.glyphs[i];
+        const name = type3CharName(fontData!, glyph.charCode ?? glyph.unicode.charCodeAt(0));
         if (name) {
           const drawn = drawType3Glyph(
-            ctx, fontData, name, glyph.tRm.e, glyph.tRm.f,
+            ctx, fontData!, name, glyph.tRm.e, glyph.tRm.f,
             Math.sqrt(glyph.tRm.c * glyph.tRm.c + glyph.tRm.d * glyph.tRm.d) || run.fontSize,
           );
           if (drawn) continue;
         }
+        drawGlyph(ctx, glyph, run, family, weight, style, fillColor, glyph.tRm.e, glyph.tRm.f);
       }
-      drawGlyph(ctx, glyph, run, family, weight, style, fillColor, glyph.tRm.e, glyph.tRm.f);
+    } else {
+      // Group consecutive non-space glyphs into word chunks and render each
+      // as a single fillText call. This lets the browser's text shaper handle
+      // intra-word spacing, eliminating font-substitution gaps within words.
+      drawWordGrouped(ctx, run, family, weight, style, fillColor);
     }
 
     ctx.restore();
   });
+}
+
+/**
+ * Draw run text by grouping consecutive non-space glyphs into word chunks.
+ * Each chunk is rendered as a single fillText call, positioned at the first
+ * glyph's location and horizontally scaled to match the PDF's expected span.
+ */
+function drawWordGrouped(
+  ctx: CanvasRenderingContext2D,
+  run: TextRun,
+  family: string,
+  weight: string,
+  style: string,
+  fillColor: string,
+): void {
+  const glyphs = run.glyphs;
+  let i = 0;
+
+  while (i < glyphs.length) {
+    // Skip whitespace glyphs (they're positioned implicitly by word placement)
+    if (glyphs[i].unicode === ' ' || glyphs[i].unicode === '\u00A0') {
+      i++;
+      continue;
+    }
+
+    // Collect a run of non-space glyphs (one "word chunk")
+    const chunkStart = i;
+    let chunkText = '';
+    while (i < glyphs.length && glyphs[i].unicode !== ' ' && glyphs[i].unicode !== '\u00A0') {
+      chunkText += glyphs[i].unicode;
+      i++;
+    }
+
+    if (chunkText.length === 0) continue;
+
+    const firstGlyph = glyphs[chunkStart];
+    const lastGlyph = glyphs[i - 1];
+    const { tRm } = firstGlyph;
+    const effFontSize = Math.sqrt(tRm.c * tRm.c + tRm.d * tRm.d);
+    if (effFontSize < 0.1) continue;
+
+    // PDF's expected span for this word chunk (from first glyph start to last glyph end)
+    const pdfSpan = (lastGlyph.tRm.e + lastGlyph.width) - firstGlyph.tRm.e;
+
+    ctx.save();
+    ctx.transform(
+      tRm.a / effFontSize, tRm.b / effFontSize,
+      tRm.c / effFontSize, tRm.d / effFontSize,
+      firstGlyph.tRm.e, firstGlyph.tRm.f,
+    );
+    ctx.scale(1, -1);
+    ctx.font = `${style} ${weight} ${effFontSize}px ${family}`;
+
+    // Scale the word horizontally to match the PDF's expected width
+    if (pdfSpan > 0.5 && chunkText.length > 0) {
+      const browserWidth = ctx.measureText(chunkText).width;
+      if (browserWidth > 0.1) {
+        const hScale = Math.abs(tRm.a) / effFontSize;
+        const expectedWidth = pdfSpan / (hScale || 1);
+        const ratio = expectedWidth / browserWidth;
+        // Only compensate significant mismatches
+        if (Math.abs(ratio - 1) > 0.02) {
+          ctx.scale(ratio, 1);
+        }
+      }
+    }
+
+    ctx.fillText(chunkText, 0, 0);
+
+    // Handle underline for the chunk
+    if (run.isUnderline) {
+      const underlineY = effFontSize * 0.15;
+      const underlineThickness = Math.max(1, effFontSize * 0.05);
+      const charWidth = ctx.measureText(chunkText).width;
+      ctx.beginPath();
+      ctx.moveTo(0, underlineY);
+      ctx.lineTo(charWidth, underlineY);
+      ctx.lineWidth = underlineThickness;
+      ctx.strokeStyle = fillColor;
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  }
 }
 
 function drawGlyph(

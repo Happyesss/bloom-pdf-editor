@@ -51,9 +51,12 @@ function naturalPositions(line: TextLine): FlowGlyphDraw[] {
   }));
 }
 
-/** Split line text into words with character index ranges. */
+const STANDALONE_PUNCT = /^[,.:;!?\-\u2013\u2014\u201c\u201d'"\)\]\u00bb]+$/;
+
+/** Split line text into words with character index ranges.
+ *  Standalone punctuation tokens are merged with the preceding word. */
 function splitWords(text: string): Array<{ start: number; end: number }> {
-  const words: Array<{ start: number; end: number }> = [];
+  const raw: Array<{ start: number; end: number }> = [];
   let i = 0;
 
   while (i < text.length) {
@@ -61,10 +64,22 @@ function splitWords(text: string): Array<{ start: number; end: number }> {
     if (i >= text.length) break;
     const start = i;
     while (i < text.length && text[i] !== ' ') i++;
-    words.push({ start, end: i });
+    raw.push({ start, end: i });
   }
 
-  return words;
+  // Merge standalone punctuation with the preceding word
+  const merged: Array<{ start: number; end: number }> = [];
+  for (let w = 0; w < raw.length; w++) {
+    const token = text.substring(raw[w].start, raw[w].end);
+    if (STANDALONE_PUNCT.test(token) && merged.length > 0) {
+      // Extend previous word to include this punctuation
+      merged[merged.length - 1].end = raw[w].end;
+    } else {
+      merged.push({ start: raw[w].start, end: raw[w].end });
+    }
+  }
+
+  return merged;
 }
 
 function glyphsForRange(glyphs: IndexedGlyph[], start: number, end: number): IndexedGlyph[] {
@@ -77,6 +92,14 @@ function wordWidth(
   line: TextLine,
   fonts?: Map<string, FontData>,
 ): number {
+  // Prefer native glyph span from the PDF — preserves kerning and exact positioning
+  if (wordGlyphs.length > 0) {
+    const first = wordGlyphs[0].glyph;
+    const last = wordGlyphs[wordGlyphs.length - 1].glyph;
+    const nativeSpan = (last.tRm.e + last.width) - first.tRm.e;
+    if (nativeSpan > 0) return nativeSpan;
+  }
+
   if (fonts && wordGlyphs.length > 0) {
     const run = wordGlyphs[0].run;
     const fontData = fonts.get(run.fontName);
@@ -140,15 +163,22 @@ export function computeFlowDrawPositions(
 
   for (let wi = 0; wi < words.length; wi++) {
     const wg = wordGlyphsList[wi];
-    for (let gi = 0; gi < wg.length; gi++) {
-      const g = wg[gi];
-      result.push({
-        glyph: g.glyph,
-        run: g.run,
-        x,
-        f: g.glyph.tRm.f ?? baseline,
-      });
-      x += g.glyph.width;
+    if (wg.length > 0) {
+      // Preserve native relative glyph positions within each word
+      const wordStartNative = wg[0].glyph.tRm.e;
+      for (let gi = 0; gi < wg.length; gi++) {
+        const g = wg[gi];
+        const nativeOffset = g.glyph.tRm.e - wordStartNative;
+        result.push({
+          glyph: g.glyph,
+          run: g.run,
+          x: x + nativeOffset,
+          f: g.glyph.tRm.f ?? baseline,
+        });
+      }
+      // Advance x past the word using its native span
+      const lastG = wg[wg.length - 1];
+      x += (lastG.glyph.tRm.e + lastG.glyph.width) - wordStartNative;
     }
     if (wi < words.length - 1) {
       x += evenGap;

@@ -1,5 +1,5 @@
 import React from 'react';
-import { ChevronLeft, ChevronRight, ZoomOut, ZoomIn, Download, X, Loader2, Undo2, Redo2 } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ZoomOut, ZoomIn, Download, X, Loader2, Undo2, Redo2, Search } from 'lucide-react';
 import type { DrawnPath } from '../types';
 
 interface ToolbarProps {
@@ -22,6 +22,8 @@ interface ToolbarProps {
   onDownload: () => void;
   saveMode?: 'quick' | 'optimized';
   onSaveModeChange?: (mode: 'quick' | 'optimized') => void;
+  onToggleSearch?: () => void;
+  isSearchOpen?: boolean;
 }
 
 export function Toolbar({
@@ -44,6 +46,8 @@ export function Toolbar({
   onDownload,
   saveMode,
   onSaveModeChange,
+  onToggleSearch,
+  isSearchOpen,
 }: ToolbarProps) {
   return (
     <header className="flex items-center justify-between px-4 h-14 bg-zinc-900/80 backdrop-blur-lg border-b border-zinc-800/80 shrink-0 z-20">
@@ -102,6 +106,16 @@ export function Toolbar({
       </div>
 
       <div className="flex items-center gap-3">
+        {onToggleSearch && (
+          <button
+            onClick={onToggleSearch}
+            className={`p-2 rounded-lg transition-colors border ${isSearchOpen ? 'bg-blue-600/20 text-blue-400 border-blue-500/50' : 'bg-zinc-800 text-zinc-400 hover:text-zinc-100 border-zinc-700'}`}
+            title="Toggle Find & Replace"
+          >
+            <Search size={16} />
+          </button>
+        )}
+        <div className="w-[1px] h-6 bg-zinc-800 mx-1" />
         {drawnPaths.length > 0 && (
           <button
             onClick={onClearPaths}

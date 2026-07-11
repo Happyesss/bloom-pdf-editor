@@ -30,3 +30,21 @@ export {
 export type { Bounds, SpatialEntry } from './spatial-index';
 export type { EditSnapshot } from './transactions';
 export type { SelectableItem } from './selection';
+
+// Word-like text editing modules
+export { CaretManager } from './caret-manager';
+export { SelectionHandler } from './selection-handler';
+export type { NormalizedRange } from './selection-handler';
+export { InputHandler } from './input-handler';
+export type { KeyModifiers, EditState, EditAction, EditActionKind } from './input-handler';
+export { EditorController } from './editor-controller';
+export type { EditorPhase, EditorSnapshot, EditEvent } from './editor-controller';
+export type {
+  CaretState,
+  SelectionState,
+  EditTransaction,
+  LayoutPlan,
+  LineEdit,
+  RunPositionShift,
+  EditResult,
+} from './types';

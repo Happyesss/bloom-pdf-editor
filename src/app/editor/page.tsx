@@ -493,13 +493,21 @@ export default function EditorPage() {
         bounds.y - pad,
         scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
       );
+      const rx = Math.min(maskTopLeft.cssX, maskBottomRight.cssX);
+      const ry = Math.min(maskTopLeft.cssY, maskBottomRight.cssY);
+      const rw = Math.abs(maskBottomRight.cssX - maskTopLeft.cssX);
+      const rh = Math.abs(maskBottomRight.cssY - maskTopLeft.cssY);
+      
       ctx.fillStyle = '#ffffff';
-      ctx.fillRect(
-        Math.min(maskTopLeft.cssX, maskBottomRight.cssX),
-        Math.min(maskTopLeft.cssY, maskBottomRight.cssY),
-        Math.abs(maskBottomRight.cssX - maskTopLeft.cssX),
-        Math.abs(maskBottomRight.cssY - maskTopLeft.cssY),
-      );
+      ctx.fillRect(rx, ry, rw, rh);
+
+      // Add a dotted blue border to indicate the selected block
+      ctx.strokeStyle = '#3b82f6';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 4]);
+      ctx.strokeRect(rx, ry, rw, rh);
+      ctx.setLineDash([]);
+
       ctx.restore();
     }
 

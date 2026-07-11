@@ -85,8 +85,27 @@ function finalizeLine(runs: TextRun[]): TextLine {
     rightEdge: maxX,
     fontSize,
     isJustified: detectJustification(sorted, fontSize, text, tabSplitIndex),
-    tabSplitIndex,
+    tabSplitIndex: -1, // Reset since we split on tabs now
   };
+}
+
+function processCluster(runs: TextRun[]): TextLine[] {
+  if (runs.length === 0) return [];
+  const sorted = [...runs].sort((a, b) => getRunBounds(a).left - getRunBounds(b).left);
+  
+  let maxFontSize = 12;
+  for (let i = 0; i < sorted.length; i++) {
+    maxFontSize = Math.max(maxFontSize, sorted[i].fontSize || sorted[i].glyphs[0]?.fontSize || 12);
+  }
+
+  const splitIdx = detectTabSplitIndex(sorted, maxFontSize);
+  if (splitIdx >= 0 && splitIdx < sorted.length - 1) {
+    const leftPart = sorted.slice(0, splitIdx + 1);
+    const rightPart = sorted.slice(splitIdx + 1);
+    return [...processCluster(leftPart), ...processCluster(rightPart)];
+  }
+
+  return [finalizeLine(sorted)];
 }
 
 /**
@@ -129,7 +148,10 @@ export function reconstructLines(runs: TextRun[]): TextLine[] {
     }
   }
 
-  const lines = clusters.map(finalizeLine);
+  const lines: TextLine[] = [];
+  for (let i = 0; i < clusters.length; i++) {
+    lines.push(...processCluster(clusters[i]));
+  }
   lines.sort((a, b) => b.baseline - a.baseline);
   return lines;
 }

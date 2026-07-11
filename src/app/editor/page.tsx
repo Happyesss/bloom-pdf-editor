@@ -16,19 +16,19 @@ import {
   hitTestTextLine, findNearestTextLine, caretIndexFromLineX,
   getLineBounds, getOverlayFontFamily,
 } from './utils';
-import { buildDisplayListIndex, hitTestDisplayList, TransactionStack } from '@/engine';
-import type { QuadTree, SelectableItem } from '@/engine';
+import { buildDisplayListIndex, hitTestDisplayList, isSelectableDisplayItem, TransactionStack, deleteObject, visualFontSize, resolveRunStyleFlags } from '@/engine';
+import type { QuadTree, SelectableItem, EditableObject } from '@/engine';
 import { findMatchingFlowLine } from './flowLineMatch';
 
 import { Toolbar } from './components/Toolbar';
 import { ToolsSidebar } from './components/ToolsSidebar';
 import { PropertiesSidebar } from './components/PropertiesSidebar';
-
+import { EditableLineBox } from './components/EditableLineBox';
 import { WatermarkPreview } from './components/WatermarkPreview';
 import { ThumbnailsSidebar } from './components/ThumbnailsSidebar';
 import { FindReplacePanel } from './components/FindReplacePanel';
 import { StatusBar } from './components/StatusBar';
-import { useTextStyleActions } from './hooks/useTextStyleActions';
+import { useTextStyleActions, type TextStyleUI } from './hooks/useTextStyleActions';
 
 
 // ─── Component ──────────────────────────────────────────────────────────────
@@ -69,8 +69,13 @@ export default function EditorPage() {
   }, []);
   const initialRunTextRef = useRef<string>('');
   const editAnchorLineRef = useRef<TextLine | null>(null);
+  const pendingStyleRef = useRef<Partial<TextStyleUI> | null>(null);
   const [editText, setEditText] = useState('');
   const [caretPos, setCaretPos] = useState(0); // character index for caret
+  /** CSS-pixel offset of the edit box from its natural position. */
+  const [editOffsetCss, setEditOffsetCss] = useState({ x: 0, y: 0 });
+  /** Manual size override in CSS px (null = auto-grow from content). */
+  const [editManualSize, setEditManualSize] = useState<{ w: number | null; h: number | null }>({ w: null, h: null });
   const [isSaving, setIsSaving] = useState(false);
   const [renderKey, setRenderKey] = useState(0);
 
@@ -184,42 +189,51 @@ export default function EditorPage() {
   );
 
   // Apply style changes from properties sidebar to the PDF
+  const queueOrApplyStyle = useCallback((patch: Partial<TextStyleUI>) => {
+    if (!selectedLine) return;
+    if (editingLineRef.current) {
+      pendingStyleRef.current = { ...(pendingStyleRef.current ?? {}), ...patch };
+      return;
+    }
+    void applyStyle(patch);
+  }, [selectedLine, applyStyle]);
+
   const handleTextBold = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
     setTextBold(prev => {
       const next = typeof v === 'function' ? v(prev) : v;
-      if (selectedLine && !editingLineRef.current) void applyStyle({ bold: next });
+      queueOrApplyStyle({ bold: next });
       return next;
     });
-  }, [applyStyle, selectedLine]);
+  }, [queueOrApplyStyle]);
   const handleTextItalic = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
     setTextItalic(prev => {
       const next = typeof v === 'function' ? v(prev) : v;
-      if (selectedLine && !editingLineRef.current) void applyStyle({ italic: next });
+      queueOrApplyStyle({ italic: next });
       return next;
     });
-  }, [applyStyle, selectedLine]);
+  }, [queueOrApplyStyle]);
   const handleTextUnderline = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
     setTextUnderline(prev => {
       const next = typeof v === 'function' ? v(prev) : v;
-      if (selectedLine && !editingLineRef.current) void applyStyle({ underline: next });
+      queueOrApplyStyle({ underline: next });
       return next;
     });
-  }, [applyStyle, selectedLine]);
+  }, [queueOrApplyStyle]);
   const handleTextFontSize = useCallback((v: number | ((prev: number) => number)) => {
     setTextFontSize(prev => {
       const next = typeof v === 'function' ? v(prev) : v;
-      if (selectedLine && !editingLineRef.current) void applyStyle({ fontSize: next });
+      queueOrApplyStyle({ fontSize: next });
       return next;
     });
-  }, [applyStyle, selectedLine]);
+  }, [queueOrApplyStyle]);
   const handleTextColor = useCallback((v: string) => {
     setTextColor(v);
-    if (selectedLine && !editingLineRef.current) void applyStyle({ color: v });
-  }, [applyStyle, selectedLine]);
+    queueOrApplyStyle({ color: v });
+  }, [queueOrApplyStyle]);
   const handleTextAlign = useCallback((v: 'left' | 'center' | 'right') => {
     setTextAlign(v);
-    if (selectedLine && !editingLineRef.current) void applyStyle({ align: v });
-  }, [applyStyle, selectedLine]);
+    queueOrApplyStyle({ align: v });
+  }, [queueOrApplyStyle]);
 
   // Warn before leaving with unsaved edits
   useEffect(() => {
@@ -320,19 +334,24 @@ export default function EditorPage() {
     spatialIndexRef.current = null;
   }, [doc, currentPage, setEditingLine]);
 
-  // Sync text properties sidebar from selected line (use first run's style)
+  // Sync text properties sidebar from selected line (use FontData BaseFont when available)
   useEffect(() => {
     if (selectedLine && selectedLine.runs.length > 0) {
       const run = selectedLine.runs[0];
-      if (run.fontSize) setTextFontSize(Math.round(run.fontSize));
+      setTextFontSize(Math.round(visualFontSize(run)));
       if (run.fontName) setTextFontFamily(run.fontName);
+      const fontData = renderResult?.fonts.get(run.fontName);
+      const flags = resolveRunStyleFlags(run.fontName, fontData);
+      setTextBold(flags.bold);
+      setTextItalic(flags.italic);
+      setTextUnderline(!!run.isUnderline);
       if (run.fillColor) {
         const [r, g, b] = run.fillColor;
         const hex = '#' + [r, g, b].map(c => Math.round(c * 255).toString(16).padStart(2, '0')).join('');
         setTextColor(hex);
       }
     }
-  }, [selectedLine]);
+  }, [selectedLine, renderResult]);
 
   // ── Render current page ──
   useEffect(() => {
@@ -352,23 +371,18 @@ export default function EditorPage() {
           const pageData = doc!.pages[currentPage];
           const cBytes = engine.getPageContentBytes(pageData, doc!.objects);
           const interpreted = engine.interpretPage(cBytes, pageData, doc!.objects);
+          const pageBounds = {
+            x: pageData.mediaBox.x,
+            y: pageData.mediaBox.y,
+            width: pageData.mediaBox.width,
+            height: pageData.mediaBox.height,
+          };
+          // Skip full-page background fills (0 0 612 792 re f) — they steal every click
           const visItems = interpreted.displayList.filter(
-            (di: { type: string; width?: number; height?: number }) => {
-              if (di.type === 'image') return true;
-              if (di.type === 'path') {
-                return (di.width || 0) > 20 && (di.height || 0) > 20;
-              }
-              return false;
-            }
+            (di: DisplayItem) => isSelectableDisplayItem(di, pageBounds),
           );
           if (!cancelled) setDisplayItems(visItems as (ImageItem | PathItem)[]);
           if (!cancelled) {
-            const pageBounds = {
-              x: pageData.mediaBox.x,
-              y: pageData.mediaBox.y,
-              width: pageData.mediaBox.width,
-              height: pageData.mediaBox.height,
-            };
             spatialIndexRef.current = buildDisplayListIndex(
               visItems as DisplayItem[],
               pageBounds,
@@ -477,8 +491,8 @@ export default function EditorPage() {
     if (editingLine && editAnchorLineRef.current) {
       const anchor = editAnchorLineRef.current;
       const bounds = getLineBounds(anchor);
-      const fontSize = anchor.fontSize;
-      const pad = Math.max(2, fontSize * 0.2);
+      const fontSize = anchor.runs[0] ? visualFontSize(anchor.runs[0]) : anchor.fontSize;
+      const pad = Math.max(2, fontSize * 0.15);
 
       ctx.save();
       ctx.scale(dpr, dpr);
@@ -489,24 +503,17 @@ export default function EditorPage() {
         scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
       );
       const maskBottomRight = pdfToCanvas(
-        Math.max(bounds.x + bounds.width, bounds.x + editText.length * fontSize * 0.5) + pad,
+        Math.max(bounds.x + bounds.width, bounds.x + editText.length * fontSize * 0.55) + pad,
         bounds.y - pad,
         scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
       );
-      const rx = Math.min(maskTopLeft.cssX, maskBottomRight.cssX);
-      const ry = Math.min(maskTopLeft.cssY, maskBottomRight.cssY);
-      const rw = Math.abs(maskBottomRight.cssX - maskTopLeft.cssX);
-      const rh = Math.abs(maskBottomRight.cssY - maskTopLeft.cssY);
+      const rx = Math.min(maskTopLeft.cssX, maskBottomRight.cssX) + editOffsetCss.x;
+      const ry = Math.min(maskTopLeft.cssY, maskBottomRight.cssY) + editOffsetCss.y;
+      const rw = editManualSize.w ?? Math.abs(maskBottomRight.cssX - maskTopLeft.cssX);
+      const rh = editManualSize.h ?? Math.abs(maskBottomRight.cssY - maskTopLeft.cssY);
       
       ctx.fillStyle = '#ffffff';
-      ctx.fillRect(rx, ry, rw, rh);
-
-      // Add a dotted blue border to indicate the selected block
-      ctx.strokeStyle = '#3b82f6';
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([4, 4]);
-      ctx.strokeRect(rx, ry, rw, rh);
-      ctx.setLineDash([]);
+      ctx.fillRect(rx - 2, ry - 2, rw + 4, rh + 4);
 
       ctx.restore();
     }
@@ -644,7 +651,7 @@ export default function EditorPage() {
       }
       ctx.restore();
     }
-  }, [editingLine, editText, caretPos, renderResult, doc, currentPage, scale, drawnPaths, activeTool, displayItems, selectedDisplayItem, formFields, selectedFormField]);
+  }, [editingLine, editText, caretPos, renderResult, doc, currentPage, scale, drawnPaths, activeTool, displayItems, selectedDisplayItem, formFields, selectedFormField, editOffsetCss, editManualSize]);
 
   // Re-draw overlay whenever edit state changes
   useEffect(() => { drawOverlay(); }, [drawOverlay]);
@@ -694,6 +701,9 @@ export default function EditorPage() {
       segments: line.segments.map(s => ({ ...s, run: s.run })),
     };
     editingBlockIdRef.current = line.id;
+    pendingStyleRef.current = null;
+    setEditOffsetCss({ x: 0, y: 0 });
+    setEditManualSize({ w: null, h: null });
     setSelectedDisplayItem(null);
     setActiveTool('text');
     setSelectedLine(line);
@@ -720,10 +730,18 @@ export default function EditorPage() {
     }
 
     const textChanged = editText !== initialRunTextRef.current;
-    if (!textChanged) {
+    const pdfDx = editOffsetCss.x / scale;
+    const pdfDy = -editOffsetCss.y / scale; // CSS down is PDF down in screen, PDF y up
+    const moved = Math.abs(pdfDx) > 0.5 || Math.abs(pdfDy) > 0.5;
+    const pendingStyle = pendingStyleRef.current;
+
+    if (!textChanged && !moved && !pendingStyle) {
       editAnchorLineRef.current = null;
       undoSnapshotRef.current = null;
       editingBlockIdRef.current = null;
+      pendingStyleRef.current = null;
+      setEditOffsetCss({ x: 0, y: 0 });
+      setEditManualSize({ w: null, h: null });
       if (closeEdit) {
         setEditingLine(null);
         setSelectedLine(null);
@@ -737,38 +755,50 @@ export default function EditorPage() {
       const page = doc.pages[currentPage];
       const targetLine = editAnchorLineRef.current ?? editingLine;
       const snapshot = undoSnapshotRef.current;
-      const baseBytes = snapshot?.pageIndex === currentPage
-        ? snapshot.contentBytes
+      let bytes = snapshot?.pageIndex === currentPage
+        ? new Uint8Array(snapshot.contentBytes)
         : engine.getPageContentBytes(page, doc.objects);
 
-      const editResult = engine.applyLineTextEdit(
-        baseBytes,
-        page,
-        doc.objects,
-        targetLine,
-        editText,
-        renderResult?.documentFlow,
-      );
+      if (textChanged) {
+        const editResult = engine.applyLineTextEdit(
+          bytes,
+          page,
+          doc.objects,
+          targetLine,
+          editText,
+          renderResult?.documentFlow,
+        );
 
-      if (editResult.needsFontAugmentation) {
-        try {
-          const missing = String.fromCharCode(
-            ...editResult.missingCharCodes.filter(c => c < 0x10000),
-          );
-          engine.augmentFontsForMissingGlyphs(doc, currentPage, missing);
-        } catch (augErr) {
-          console.warn('[Editor] Font augmentation failed:', augErr);
+        if (editResult.needsFontAugmentation) {
+          try {
+            const missing = String.fromCharCode(
+              ...editResult.missingCharCodes.filter(c => c < 0x10000),
+            );
+            engine.augmentFontsForMissingGlyphs(doc, currentPage, missing);
+          } catch (augErr) {
+            console.warn('[Editor] Font augmentation failed:', augErr);
+          }
         }
+        bytes = editResult.newContentBytes;
       }
 
-      await engine.updatePageContent(
-        page.contentRefs,
-        editResult.newContentBytes,
-        doc.objects,
-      );
+      if (moved) {
+        const shifts = targetLine.runs.map(run => ({ run, dx: pdfDx, dy: pdfDy }));
+        bytes = engine.applyRunPositionShifts(bytes, shifts);
+      }
+
+      await engine.updatePageContent(page.contentRefs, bytes, doc.objects);
+
+      if (pendingStyle) {
+        pendingStyleRef.current = null;
+        await applyStyle(pendingStyle);
+      }
+
       txStackRef.current.push({
         pageIndex: currentPage,
-        contentBytes: new Uint8Array(editResult.newContentBytes),
+        contentBytes: new Uint8Array(
+          engine.getPageContentBytes(page, doc.objects),
+        ),
         label: 'text-edit',
         timestamp: Date.now(),
       });
@@ -776,6 +806,9 @@ export default function EditorPage() {
       editAnchorLineRef.current = null;
       undoSnapshotRef.current = null;
       editingBlockIdRef.current = null;
+      pendingStyleRef.current = null;
+      setEditOffsetCss({ x: 0, y: 0 });
+      setEditManualSize({ w: null, h: null });
       setIsDirty(true);
       if (closeEdit) {
         setEditingLine(null);
@@ -788,7 +821,7 @@ export default function EditorPage() {
     } finally {
       setIsSaving(false);
     }
-  }, [editingLine, editText, doc, currentPage, setEditingLine, renderResult, syncTxState]);
+  }, [editingLine, editText, editOffsetCss, scale, doc, currentPage, setEditingLine, renderResult, syncTxState, applyStyle]);
 
   // ── Edit cancel — discard overlay only; PDF untouched until commit ──
   const handleEditCancel = useCallback(async () => {
@@ -799,6 +832,9 @@ export default function EditorPage() {
     editAnchorLineRef.current = null;
     undoSnapshotRef.current = null;
     editingBlockIdRef.current = null;
+    pendingStyleRef.current = null;
+    setEditOffsetCss({ x: 0, y: 0 });
+    setEditManualSize({ w: null, h: null });
     setEditingLine(null);
     setSelectedLine(null);
     setEditText('');
@@ -1798,6 +1834,41 @@ export default function EditorPage() {
     }
   }, [doc, currentPage]);
 
+  const handleDeleteSelectedDisplayItem = useCallback(async () => {
+    if (!doc || !engineRef.current || !selectedDisplayItem) return;
+    try {
+      const engine = engineRef.current;
+      const page = doc.pages[currentPage];
+      const item = selectedDisplayItem;
+      const editable: EditableObject = {
+        id: `sel-${item.type}`,
+        kind: item.type,
+        bbox: { x: item.x, y: item.y, width: item.width, height: item.height },
+        ctm:
+          item.type === 'image' && item.ctm
+            ? [item.ctm.a, item.ctm.b, item.ctm.c, item.ctm.d, item.ctm.e, item.ctm.f]
+            : [1, 0, 0, 1, 0, 0],
+        source: item,
+      };
+
+      await deleteObject(doc, currentPage, editable);
+      const nextBytes = engine.getPageContentBytes(page, doc.objects);
+      txStackRef.current.push({
+        pageIndex: currentPage,
+        contentBytes: new Uint8Array(nextBytes),
+        label: `delete-${item.type}`,
+        timestamp: Date.now(),
+      });
+      syncTxState();
+      setSelectedDisplayItem(null);
+      setIsDirty(true);
+      setRenderKey(k => k + 1);
+    } catch (e) {
+      console.error('[Editor] Delete object failed:', e);
+      setError(`Delete failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [doc, currentPage, selectedDisplayItem, syncTxState]);
+
   const handleInsertBlankPage = useCallback((index: number) => {
     if (!doc || !engineRef.current) return;
     try {
@@ -1971,6 +2042,7 @@ export default function EditorPage() {
           setEraserSize={setEraserSize}
           selectedDisplayItem={selectedDisplayItem}
           setSelectedDisplayItem={setSelectedDisplayItem}
+          onDeleteSelectedDisplayItem={handleDeleteSelectedDisplayItem}
           displayItems={displayItems}
           formFields={formFields}
           selectedFormField={selectedFormField}
@@ -2321,52 +2393,57 @@ export default function EditorPage() {
               );
             })}
 
-            {/* Word-like line editor — positioned exactly over the clicked line */}
+            {/* Word-like line editor — drag, resize, auto-grow */}
             {editingLine && editAnchorLineRef.current && renderResult && doc && (() => {
               const anchor = editAnchorLineRef.current!;
               const bounds = getLineBounds(anchor);
               const page = doc.pages[currentPage];
               const { mediaBox } = page;
-              const pad = 2;
+              const primaryRun = anchor.runs[0];
+              const visualSize = primaryRun ? visualFontSize(primaryRun) : anchor.fontSize;
+              const pad = Math.max(1, visualSize * 0.08);
               const topLeft = pdfToCanvas(
                 bounds.x - pad,
                 bounds.y + bounds.height + pad,
                 scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
               );
               const bottomRight = pdfToCanvas(
-                bounds.x + Math.max(bounds.width, editText.length * anchor.fontSize * 0.55) + pad * 4,
+                bounds.x + bounds.width + pad * 2,
                 bounds.y - pad,
                 scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
               );
               const left = Math.min(topLeft.cssX, bottomRight.cssX);
               const top = Math.min(topLeft.cssY, bottomRight.cssY);
-              const width = Math.max(40, Math.abs(bottomRight.cssX - topLeft.cssX));
-              const height = Math.max(anchor.fontSize * scale * 1.1, Math.abs(bottomRight.cssY - topLeft.cssY));
-              const primaryRun = anchor.runs[0];
+              const naturalWidth = Math.max(40, Math.abs(bottomRight.cssX - topLeft.cssX));
+              const naturalHeight = Math.max(visualSize * scale * 1.15, Math.abs(bottomRight.cssY - topLeft.cssY));
               const fontData = primaryRun ? renderResult.fonts.get(primaryRun.fontName) : undefined;
               const [r, g, b] = primaryRun?.fillColor || [0, 0, 0];
+              const colorCss = textColor.startsWith('#')
+                ? textColor
+                : `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)})`;
               return (
-                <textarea
-                  ref={hiddenInputRef}
-                  value={editText}
-                  onInput={handleHiddenInput}
+                <EditableLineBox
+                  left={left}
+                  top={top}
+                  naturalWidth={naturalWidth}
+                  naturalHeight={naturalHeight}
+                  fontSizeCss={(textFontSize || visualSize) * scale}
+                  fontFamily={getOverlayFontFamily(primaryRun?.fontName || '', fontData)}
+                  fontWeight={textBold ? 'bold' : 'normal'}
+                  fontStyle={textItalic ? 'italic' : 'normal'}
+                  underline={textUnderline}
+                  color={colorCss}
+                  text={editText}
+                  textRef={hiddenInputRef}
+                  onTextInput={handleHiddenInput}
                   onKeyDown={handleHiddenKeyDown}
                   onBlur={handleHiddenBlur}
-                  rows={1}
-                  aria-label="Edit line"
-                  spellCheck={false}
-                  className="absolute z-20 m-0 border-none outline-none bg-transparent p-0 overflow-hidden resize-none whitespace-nowrap"
-                  style={{
-                    left,
-                    top,
-                    width,
-                    height,
-                    fontSize: anchor.fontSize * scale,
-                    lineHeight: `${height}px`,
-                    fontFamily: getOverlayFontFamily(primaryRun?.fontName || '', fontData),
-                    color: `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)})`,
-                    caretColor: `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)})`,
-                  }}
+                  offsetCssX={editOffsetCss.x}
+                  offsetCssY={editOffsetCss.y}
+                  manualWidth={editManualSize.w}
+                  manualHeight={editManualSize.h}
+                  onOffsetChange={(x, y) => setEditOffsetCss({ x, y })}
+                  onSizeChange={(w, h) => setEditManualSize({ w, h })}
                 />
               );
             })()}

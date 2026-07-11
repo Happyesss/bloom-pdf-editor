@@ -605,8 +605,114 @@ function drawTextRunAtPositions(
     const { family, weight, style } = getCanvasFontProperties(run.fontName, fontData);
     ctx.fillStyle = fillColor;
 
-    for (let i = 0; i < positions.length; i++) {
-      drawGlyph(ctx, positions[i].glyph, run, family, weight, style, fillColor, positions[i].x, positions[i].f);
+    if (fontData?.charProcs) {
+      for (let i = 0; i < positions.length; i++) {
+        const glyph = positions[i].glyph;
+        if (glyph.unicode === ' ' || glyph.unicode === '\u00A0') continue;
+        const charName = type3CharName(fontData, glyph.charCode ?? glyph.unicode.charCodeAt(0));
+        if (charName) {
+          drawType3Glyph(
+            ctx, fontData, charName, positions[i].x, positions[i].f, run.fontSize
+          );
+        }
+      }
+    } else {
+      // Group glyphs into chunks; split on whitespace OR large/negative TJ gaps.
+      type Chunk = { start: number; end: number; text: string };
+      const chunks: Chunk[] = [];
+      let ci = 0;
+      const gapFrac = 0.12;
+
+      while (ci < positions.length) {
+        if (positions[ci].glyph.unicode === ' ' || positions[ci].glyph.unicode === '\u00A0') {
+          ci++;
+          continue;
+        }
+        const start = ci;
+        let text = positions[ci].glyph.unicode;
+        ci++;
+        while (
+          ci < positions.length &&
+          positions[ci].glyph.unicode !== ' ' &&
+          positions[ci].glyph.unicode !== '\u00A0'
+        ) {
+          const prev = positions[ci - 1];
+          const cur = positions[ci];
+          const gap = cur.x - (prev.x + prev.glyph.width);
+          const fs = cur.glyph.fontSize || run.fontSize || 12;
+          if (gap > fs * gapFrac || gap < -fs * 0.02) break;
+          text += cur.glyph.unicode;
+          ci++;
+        }
+        if (text.length > 0) {
+          chunks.push({ start, end: ci, text });
+        }
+      }
+
+      const nextDrawable = (from: number): number => {
+        for (let i = from; i < positions.length; i++) {
+          const u = positions[i].glyph.unicode;
+          if (u !== ' ' && u !== '\u00A0') return i;
+        }
+        return -1;
+      };
+
+      for (const chunk of chunks) {
+        const firstPos = positions[chunk.start];
+        const { tRm } = firstPos.glyph;
+        const effFontSize = Math.sqrt(tRm.c * tRm.c + tRm.d * tRm.d);
+        if (effFontSize < 0.1) continue;
+
+        const pdfSpan = chunkPdfSpan(
+          i => positions[i].x,
+          i => positions[i].glyph.width,
+          i => positions[i].glyph.fontSize || run.fontSize || 12,
+          chunk.start,
+          chunk.end,
+          positions.length,
+          nextDrawable,
+        );
+
+        ctx.save();
+        ctx.transform(
+          tRm.a / effFontSize, tRm.b / effFontSize,
+          tRm.c / effFontSize, tRm.d / effFontSize,
+          firstPos.x, firstPos.f,
+        );
+        ctx.scale(1, -1);
+        ctx.font = `${style} ${weight} ${effFontSize}px ${family}`;
+
+        if (pdfSpan > 0.5 && chunk.text.length > 0) {
+          const browserWidth = ctx.measureText(chunk.text).width;
+          if (browserWidth > 0.1) {
+            const hScale = Math.abs(tRm.a) / effFontSize;
+            const expectedWidth = pdfSpan / (hScale || 1);
+            let ratio = expectedWidth / browserWidth;
+            // Extreme ratios (missing FontFace / bad widths) inflate glyphs —
+            // clamp so edit-phase text stays near native size.
+            ratio = Math.max(0.55, Math.min(1.85, ratio));
+            if (Math.abs(ratio - 1) > 0.005) {
+              ctx.scale(ratio, 1);
+            }
+          }
+        }
+
+        ctx.fillText(chunk.text, 0, 0);
+
+        if (run.isUnderline) {
+          const underlineY = effFontSize * 0.15;
+          const underlineThickness = Math.max(1, effFontSize * 0.05);
+          const charWidth = ctx.measureText(chunk.text).width;
+          ctx.beginPath();
+          ctx.moveTo(0, underlineY);
+          ctx.lineTo(charWidth, underlineY);
+          ctx.lineWidth = underlineThickness;
+          ctx.strokeStyle = fillColor;
+          ctx.stroke();
+        }
+
+        ctx.restore();
+      }
     }
 
     ctx.restore();
@@ -661,10 +767,42 @@ function drawTextRun(
   });
 }
 
+/** Split chunks when TJ inserts a large gap (do not stretch fillText across it). */
+const CHUNK_GAP_FRAC = 0.12;
+
+/**
+ * Horizontal span for a glyph chunk, clamped so scaled fillText never draws
+ * into the following glyph (over-wide last.width was collapsing "|HTML" etc.).
+ */
+function chunkPdfSpan(
+  getX: (i: number) => number,
+  getWidth: (i: number) => number,
+  getFs: (i: number) => number,
+  start: number,
+  end: number,
+  len: number,
+  findNextDrawable: (from: number) => number,
+): number {
+  const firstX = getX(start);
+  const last = end - 1;
+  const fs = getFs(last);
+  // Use distance to last glyph origin + a capped last advance. Full last.width
+  // from a bad Widths entry is what made "(Open Source)" invade the next run.
+  let span = (getX(last) - firstX) + Math.min(getWidth(last), fs * 0.65);
+
+  const next = findNextDrawable(end);
+  if (next >= 0 && next < len) {
+    const maxSpan = getX(next) - firstX - Math.max(fs * 0.08, 0.4);
+    if (maxSpan > 0.5) span = Math.min(span, maxSpan);
+  }
+
+  return Math.max(span, 0.5);
+}
+
 /**
  * Draw run text by grouping consecutive non-space glyphs into word chunks.
- * Each chunk is rendered as a single fillText call, positioned at the first
- * glyph's location and horizontally scaled to match the PDF's expected span.
+ * Each chunk is a single fillText call, scaled to a span that must not
+ * invade the following glyph's slot.
  */
 function drawWordGrouped(
   ctx: CanvasRenderingContext2D,
@@ -675,33 +813,57 @@ function drawWordGrouped(
   fillColor: string,
 ): void {
   const glyphs = run.glyphs;
-  let i = 0;
+  if (glyphs.length === 0) return;
 
-  while (i < glyphs.length) {
-    // Skip whitespace glyphs (they're positioned implicitly by word placement)
-    if (glyphs[i].unicode === ' ' || glyphs[i].unicode === '\u00A0') {
-      i++;
+  type Chunk = { start: number; end: number; text: string };
+  const chunks: Chunk[] = [];
+  let ci = 0;
+
+  while (ci < glyphs.length) {
+    if (glyphs[ci].unicode === ' ' || glyphs[ci].unicode === '\u00A0') {
+      ci++;
       continue;
     }
-
-    // Collect a run of non-space glyphs (one "word chunk")
-    const chunkStart = i;
-    let chunkText = '';
-    while (i < glyphs.length && glyphs[i].unicode !== ' ' && glyphs[i].unicode !== '\u00A0') {
-      chunkText += glyphs[i].unicode;
-      i++;
+    const start = ci;
+    let text = glyphs[ci].unicode;
+    ci++;
+    while (ci < glyphs.length && glyphs[ci].unicode !== ' ' && glyphs[ci].unicode !== '\u00A0') {
+      const prev = glyphs[ci - 1];
+      const cur = glyphs[ci];
+      const gap = cur.tRm.e - (prev.tRm.e + prev.width);
+      const fs = cur.fontSize || run.fontSize || 12;
+      // Split on large gaps OR overlaps (negative gaps from width errors)
+      if (gap > fs * CHUNK_GAP_FRAC || gap < -fs * 0.02) break;
+      text += cur.unicode;
+      ci++;
     }
+    if (text.length > 0) {
+      chunks.push({ start, end: ci, text });
+    }
+  }
 
-    if (chunkText.length === 0) continue;
+  const nextDrawable = (from: number): number => {
+    for (let i = from; i < glyphs.length; i++) {
+      if (glyphs[i].unicode !== ' ' && glyphs[i].unicode !== '\u00A0') return i;
+    }
+    return -1;
+  };
 
-    const firstGlyph = glyphs[chunkStart];
-    const lastGlyph = glyphs[i - 1];
+  for (const chunk of chunks) {
+    const firstGlyph = glyphs[chunk.start];
     const { tRm } = firstGlyph;
     const effFontSize = Math.sqrt(tRm.c * tRm.c + tRm.d * tRm.d);
     if (effFontSize < 0.1) continue;
 
-    // PDF's expected span for this word chunk (from first glyph start to last glyph end)
-    const pdfSpan = (lastGlyph.tRm.e + lastGlyph.width) - firstGlyph.tRm.e;
+    const pdfSpan = chunkPdfSpan(
+      i => glyphs[i].tRm.e,
+      i => glyphs[i].width,
+      i => glyphs[i].fontSize || run.fontSize || 12,
+      chunk.start,
+      chunk.end,
+      glyphs.length,
+      nextDrawable,
+    );
 
     ctx.save();
     ctx.transform(
@@ -712,27 +874,25 @@ function drawWordGrouped(
     ctx.scale(1, -1);
     ctx.font = `${style} ${weight} ${effFontSize}px ${family}`;
 
-    // Scale the word horizontally to match the PDF's expected width
-    if (pdfSpan > 0.5 && chunkText.length > 0) {
-      const browserWidth = ctx.measureText(chunkText).width;
+    if (pdfSpan > 0.5 && chunk.text.length > 0) {
+      const browserWidth = ctx.measureText(chunk.text).width;
       if (browserWidth > 0.1) {
         const hScale = Math.abs(tRm.a) / effFontSize;
         const expectedWidth = pdfSpan / (hScale || 1);
-        const ratio = expectedWidth / browserWidth;
-        // Only compensate significant mismatches
-        if (Math.abs(ratio - 1) > 0.02) {
+        let ratio = expectedWidth / browserWidth;
+        ratio = Math.max(0.55, Math.min(1.85, ratio));
+        if (Math.abs(ratio - 1) > 0.005) {
           ctx.scale(ratio, 1);
         }
       }
     }
 
-    ctx.fillText(chunkText, 0, 0);
+    ctx.fillText(chunk.text, 0, 0);
 
-    // Handle underline for the chunk
     if (run.isUnderline) {
       const underlineY = effFontSize * 0.15;
       const underlineThickness = Math.max(1, effFontSize * 0.05);
-      const charWidth = ctx.measureText(chunkText).width;
+      const charWidth = ctx.measureText(chunk.text).width;
       ctx.beginPath();
       ctx.moveTo(0, underlineY);
       ctx.lineTo(charWidth, underlineY);

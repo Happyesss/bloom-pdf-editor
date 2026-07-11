@@ -122,7 +122,7 @@ function extractTextFromString(obj: PDFObject | undefined): string {
   }
   if (obj instanceof PDFHexString) {
     // Convert hex string to text
-    const bytes = hexToBytes(obj.value);
+    const bytes = hexToBytes(obj.hex);
     return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
   }
   return '';
@@ -142,7 +142,7 @@ function extractTextFromTJArray(obj: PDFObject | undefined): string {
     if (item instanceof PDFString) {
       text += item.value;
     } else if (item instanceof PDFHexString) {
-      const bytes = hexToBytes(item.value);
+      const bytes = hexToBytes(item.hex);
       text += new TextDecoder('utf-8', { fatal: false }).decode(bytes);
     }
     // Numbers are positioning adjustments - skip them
@@ -206,7 +206,7 @@ function serializeOperand(obj: PDFObject): string {
   }
 
   if (obj instanceof PDFHexString) {
-    return `<${obj.value}>`;
+    return `<${obj.hex}>`;
   }
 
   if (obj instanceof PDFName) {
@@ -344,7 +344,7 @@ function areOperandsEquivalent(a: PDFObject, b: PDFObject): boolean {
   }
 
   if (a instanceof PDFHexString && b instanceof PDFHexString) {
-    return a.value.replace(/\s/g, '') === b.value.replace(/\s/g, '');
+    return a.hex.replace(/\s/g, '') === b.hex.replace(/\s/g, '');
   }
 
   if (a instanceof PDFName && b instanceof PDFName) {

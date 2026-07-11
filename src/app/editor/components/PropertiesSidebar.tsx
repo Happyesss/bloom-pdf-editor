@@ -46,6 +46,7 @@ interface PropertiesSidebarProps {
 
   selectedDisplayItem: ImageItem | PathItem | null;
   setSelectedDisplayItem: (item: ImageItem | PathItem | null) => void;
+  onDeleteSelectedDisplayItem?: () => void;
   displayItems: (ImageItem | PathItem)[];
 
   formFields?: AcroFormWidget[];
@@ -108,7 +109,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
     drawColor, setDrawColor, drawSize, setDrawSize,
     highlightColor, setHighlightColor, highlightSize, setHighlightSize,
     eraserSize, setEraserSize,
-    selectedDisplayItem, setSelectedDisplayItem, displayItems,
+    selectedDisplayItem, setSelectedDisplayItem, onDeleteSelectedDisplayItem, displayItems,
     formFields = [], selectedFormField, formFieldDraft = '',
     onFormFieldSelect, onFormFieldChange, onFlattenForms,
     watermarkType = 'text', setWatermarkType,
@@ -177,6 +178,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setTextFontSize(s => Math.max(4, s - 1))}
+                onMouseDown={(e) => e.preventDefault()}
                 className="p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-md text-zinc-400 transition-colors border border-zinc-700"
               >
                 <Minus size={12} />
@@ -185,10 +187,12 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 type="number"
                 value={textFontSize}
                 onChange={(e) => setTextFontSize(Math.max(4, Math.min(200, parseInt(e.target.value) || 12)))}
+                onMouseDown={(e) => e.preventDefault()}
                 className="w-16 bg-zinc-800 border border-zinc-700 rounded-lg px-2 py-1.5 text-xs text-zinc-200 text-center outline-none focus:border-blue-500"
               />
               <button
                 onClick={() => setTextFontSize(s => Math.min(200, s + 1))}
+                onMouseDown={(e) => e.preventDefault()}
                 className="p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-md text-zinc-400 transition-colors border border-zinc-700"
               >
                 <Plus size={12} />
@@ -213,6 +217,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             <div className="flex gap-2">
               <button
                 onClick={() => setTextBold(b => !b)}
+                onMouseDown={(e) => e.preventDefault()}
                 className={`flex-1 py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${textBold ? 'bg-blue-600/20 text-blue-400 border border-blue-500/50' : 'bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700'}`}
                 title="Bold"
               >
@@ -220,6 +225,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
               </button>
               <button
                 onClick={() => setTextItalic(i => !i)}
+                onMouseDown={(e) => e.preventDefault()}
                 className={`flex-1 py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${textItalic ? 'bg-blue-600/20 text-blue-400 border border-blue-500/50' : 'bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700'}`}
                 title="Italic"
               >
@@ -227,6 +233,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
               </button>
               <button
                 onClick={() => setTextUnderline(u => !u)}
+                onMouseDown={(e) => e.preventDefault()}
                 className={`flex-1 py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${textUnderline ? 'bg-blue-600/20 text-blue-400 border border-blue-500/50' : 'bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700'}`}
                 title="Underline"
               >
@@ -508,6 +515,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
               <X size={12} /> Deselect
             </button>
             <button
+              onClick={() => onDeleteSelectedDisplayItem?.()}
               className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-medium bg-red-500/10 text-red-400 border border-red-500/30 hover:bg-red-500/20 transition-colors"
             >
               <Trash2 size={12} /> Delete

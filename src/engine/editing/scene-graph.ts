@@ -3,6 +3,7 @@
  */
 
 import type { DisplayItem, ImageItem, PathItem, TextRun } from '../content/interpreter';
+import { isPageBackgroundPath } from './selection';
 
 export interface EditableObject {
   id: string;
@@ -24,9 +25,13 @@ export function resetSceneIdCounter(): void {
 }
 
 /** Build a flat scene graph from interpreter display items. */
-export function buildSceneGraph(displayList: DisplayItem[]): EditableObject[] {
+export function buildSceneGraph(
+  displayList: DisplayItem[],
+  pageBounds?: { x: number; y: number; width: number; height: number },
+): EditableObject[] {
   resetSceneIdCounter();
   const objects: EditableObject[] = [];
+  const bounds = pageBounds ?? { x: 0, y: 0, width: 612, height: 792 };
 
   for (const item of displayList) {
     if (item.type === 'image') {
@@ -43,6 +48,7 @@ export function buildSceneGraph(displayList: DisplayItem[]): EditableObject[] {
     } else if (item.type === 'path') {
       const path = item as PathItem;
       if ((path.width || 0) < 2 && (path.height || 0) < 2) continue;
+      if (isPageBackgroundPath(path, bounds)) continue;
       objects.push({
         id: nextId('path'),
         kind: 'path',

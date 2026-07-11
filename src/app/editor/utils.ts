@@ -19,7 +19,8 @@ export function getLineBounds(line: TextLine): { x: number; y: number; width: nu
 export function getRunBounds(run: TextRun): { x: number; y: number; width: number; height: number } {
   if (run.glyphs.length > 0) {
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    const fontSize = run.glyphs[0].fontSize || run.fontSize || 12;
+    const tRm = run.glyphs[0].tRm;
+    const fontSize = Math.sqrt(tRm.c * tRm.c + tRm.d * tRm.d) || run.glyphs[0].fontSize || run.fontSize || 12;
     for (let g = 0; g < run.glyphs.length; g++) {
       const glyph = run.glyphs[g];
       if (glyph.tRm.e < minX) minX = glyph.tRm.e;
@@ -37,7 +38,7 @@ export function getRunBounds(run: TextRun): { x: number; y: number; width: numbe
   return { x: run.x, y: run.y, width: run.width, height: run.height || run.fontSize || 12 };
 }
 
-/** Build a CSS font string for overlay text preview. */
+/** Build CSS font family + weight/style for overlay text preview. */
 export function getOverlayFontFamily(fontName: string, fontData?: FontData): string {
   if (fontData?.fontBytes && fontData.baseFont) {
     const plus = fontData.baseFont.indexOf('+');
@@ -51,6 +52,19 @@ export function getOverlayFontFamily(fontName: string, fontData?: FontData): str
   }
   if (lower.includes('helv') || lower.includes('arial')) return 'Helvetica, Arial, sans-serif';
   return '"Times New Roman", Times, serif';
+}
+
+/** CSS weight/style matching the PDF face so the edit overlay matches canvas. */
+export function getOverlayFontStyle(fontName: string, fontData?: FontData): {
+  fontWeight: string;
+  fontStyle: string;
+} {
+  const source = fontData?.baseFont || fontName;
+  const lower = source.replace(/^.*\+/, '').toLowerCase();
+  return {
+    fontWeight: /bold|black|heavy|semibold|demibold/.test(lower) ? 'bold' : 'normal',
+    fontStyle: /italic|oblique/.test(lower) ? 'italic' : 'normal',
+  };
 }
 
 /** Convert a canvas CSS‐pixel mouse position to PDF user‐space coordinates. */

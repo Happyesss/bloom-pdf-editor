@@ -64,7 +64,14 @@ function finalizeLine(runs: TextRun[]): TextLine {
     if (b.right > maxX) maxX = b.right;
     if (b.bottom < minY) minY = b.bottom;
     if (b.top > maxY) maxY = b.top;
-    fontSize = Math.max(fontSize, sorted[i].fontSize || sorted[i].glyphs[0]?.fontSize || 12);
+    const runSize =
+      sorted[i].glyphs[0]
+        ? Math.sqrt(
+            sorted[i].glyphs[0].tRm.c * sorted[i].glyphs[0].tRm.c +
+            sorted[i].glyphs[0].tRm.d * sorted[i].glyphs[0].tRm.d,
+          ) || sorted[i].fontSize || 12
+        : sorted[i].fontSize || 12;
+    fontSize = Math.max(fontSize, runSize);
     baselineSum += computeBaseline(sorted[i]);
   }
 

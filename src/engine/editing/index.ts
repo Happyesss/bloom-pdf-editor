@@ -1,6 +1,6 @@
 export { QuadTree, hitTestSpatial } from './spatial-index';
 export { TransactionStack } from './transactions';
-export { buildDisplayListIndex, hitTestDisplayList } from './selection';
+export { buildDisplayListIndex, hitTestDisplayList, isSelectableDisplayItem, isPageBackgroundPath } from './selection';
 export { buildSceneGraph, hitTestScene, resetSceneIdCounter } from './scene-graph';
 export type { EditableObject } from './scene-graph';
 export {

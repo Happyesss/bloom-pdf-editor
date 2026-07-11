@@ -23,6 +23,7 @@ import { compileInstructions, type EditResult } from '../editor/text-editor';
 import { updatePageContent } from '../editor/stream-compiler';
 import { parseContentStream, type CSInstruction } from '../content/operator-lexer';
 import type { TextLine, StyledSegment } from './types';
+import { fontNameStyleFlags, visualFontSize } from './metrics';
 
 export interface TextStylePatch {
   fontSize?: number;
@@ -37,6 +38,7 @@ export interface TextStylePatch {
 export interface StyleEditResult extends EditResult {
   usedSyntheticItalic?: boolean;
   addedUnderline?: boolean;
+  removedUnderline?: boolean;
 }
 
 function op(operator: string, operands: PDFObject[] = []): CSInstruction {
@@ -67,45 +69,105 @@ export function mapSelectionToSegments(
   return hits;
 }
 
-/** Guess a bold/italic sibling Standard14 font name. */
+/** Strip weight/style tokens so we can rebuild a Regular/Bold/Italic face name. */
+function stripStyleTokens(name: string): string {
+  return name
+    .replace(/^.*\+/, '')
+    .replace(/,.*$/, '')
+    .replace(/[-_]?(BoldOblique|BoldItalic|Bold|Black|Heavy|SemiBold|DemiBold|Italic|Oblique|Regular|Medium|Light)/gi, '')
+    .replace(/[-_]+$/g, '') || name.replace(/^.*\+/, '');
+}
+
+/** Guess a bold/italic sibling Standard14 (or family) font name. */
 export function resolveStyledFontName(
   baseName: string,
   bold?: boolean,
   italic?: boolean,
 ): string {
   const bare = baseName.replace(/^.*\+/, '').replace(/,.*$/, '');
-  const lower = bare.toLowerCase();
+  const family = stripStyleTokens(bare);
+  const wantBold = !!bold;
+  const wantItalic = !!italic;
 
-  if (bold && italic) {
-    if (/helvetica/i.test(bare)) return 'Helvetica-BoldOblique';
-    if (/times/i.test(bare)) return 'Times-BoldItalic';
-    if (/courier/i.test(bare)) return 'Courier-BoldOblique';
+  if (/helvetica/i.test(family) || /^arial$/i.test(family)) {
+    if (wantBold && wantItalic) return 'Helvetica-BoldOblique';
+    if (wantBold) return 'Helvetica-Bold';
+    if (wantItalic) return 'Helvetica-Oblique';
+    return 'Helvetica';
   }
-  if (bold) {
-    if (lower.includes('bold')) return bare;
-    if (/helvetica/i.test(bare)) return 'Helvetica-Bold';
-    if (/times/i.test(bare)) return 'Times-Bold';
-    if (/courier/i.test(bare)) return 'Courier-Bold';
+  if (/times/i.test(family) || /roman/i.test(family)) {
+    if (wantBold && wantItalic) return 'Times-BoldItalic';
+    if (wantBold) return 'Times-Bold';
+    if (wantItalic) return 'Times-Italic';
+    return 'Times-Roman';
   }
-  if (italic) {
-    if (lower.includes('italic') || lower.includes('oblique')) return bare;
-    if (/helvetica/i.test(bare)) return 'Helvetica-Oblique';
-    if (/times/i.test(bare)) return 'Times-Italic';
-    if (/courier/i.test(bare)) return 'Courier-Oblique';
+  if (/courier/i.test(family)) {
+    if (wantBold && wantItalic) return 'Courier-BoldOblique';
+    if (wantBold) return 'Courier-Bold';
+    if (wantItalic) return 'Courier-Oblique';
+    return 'Courier';
   }
-  return bare;
+
+  // Generic PostScript-style face name
+  if (wantBold && wantItalic) return `${family}-BoldItalic`;
+  if (wantBold) return `${family}-Bold`;
+  if (wantItalic) return `${family}-Italic`;
+  return family || bare;
 }
 
-function listPageFontKeys(page: PDFPageInfo, objects: Map<string, PDFObject>): Set<string> {
-  const keys = new Set<string>();
+function listPageFonts(
+  page: PDFPageInfo,
+  objects: Map<string, PDFObject>,
+): Array<{ key: string; baseFont: string }> {
+  const out: Array<{ key: string; baseFont: string }> = [];
   const resourcesObj = page.dict.get('Resources');
   let resources = resourcesObj instanceof PDFRef ? resolveRef(resourcesObj, objects) : resourcesObj;
-  if (!(resources instanceof PDFDict)) return keys;
+  if (!(resources instanceof PDFDict)) return out;
   let fontDict = resources.get('Font');
   if (fontDict instanceof PDFRef) fontDict = resolveRef(fontDict, objects);
-  if (!(fontDict instanceof PDFDict)) return keys;
-  for (const [k] of fontDict.entries()) keys.add(k);
-  return keys;
+  if (!(fontDict instanceof PDFDict)) return out;
+  for (const [k, v] of fontDict.entries()) {
+    let dict = v;
+    if (dict instanceof PDFRef) dict = resolveRef(dict, objects);
+    const baseFont =
+      dict instanceof PDFDict ? (dict.getName('BaseFont') ?? k) : k;
+    out.push({ key: k, baseFont });
+  }
+  return out;
+}
+
+/**
+ * Prefer an existing page font whose BaseFont matches the desired weight/style
+ * and the same family as the current run.
+ */
+function findSiblingFontKey(
+  page: PDFPageInfo,
+  objects: Map<string, PDFObject>,
+  currentFontName: string,
+  wantBold: boolean,
+  wantItalic: boolean,
+): string | null {
+  const fonts = listPageFonts(page, objects);
+  const current = fonts.find(f => f.key === currentFontName.replace(/^\//, ''))
+    ?? fonts.find(f => f.baseFont === currentFontName);
+  const family = stripStyleTokens(current?.baseFont || currentFontName).toLowerCase();
+
+  let best: string | null = null;
+  let bestScore = -1;
+  for (const f of fonts) {
+    const flags = fontNameStyleFlags(f.baseFont);
+    if (flags.bold !== wantBold || flags.italic !== wantItalic) continue;
+    const fFamily = stripStyleTokens(f.baseFont).toLowerCase();
+    let score = 0;
+    if (fFamily === family) score += 10;
+    else if (fFamily.includes(family) || family.includes(fFamily)) score += 5;
+    else continue;
+    if (score > bestScore) {
+      bestScore = score;
+      best = f.key;
+    }
+  }
+  return best;
 }
 
 function ensureStandard14Font(
@@ -157,11 +219,13 @@ export function applyStyleToSelection(
 
   let bytes = contentBytes;
   let addedUnderline = false;
+  let removedUnderline = false;
 
   for (const run of targets) {
     const patched = patchRunStyle(bytes, run, style, page, objects);
     bytes = patched.bytes;
     addedUnderline = addedUnderline || patched.addedUnderline;
+    removedUnderline = removedUnderline || patched.removedUnderline;
   }
 
   if (style.align && line.runs.length > 0) {
@@ -174,6 +238,7 @@ export function applyStyleToSelection(
     missingCharCodes: [],
     usedSyntheticItalic: false,
     addedUnderline,
+    removedUnderline,
   };
 }
 
@@ -228,18 +293,19 @@ function patchRunStyle(
   style: TextStylePatch,
   page: PDFPageInfo,
   objects: Map<string, PDFObject>,
-): { bytes: Uint8Array; addedUnderline: boolean } {
+): { bytes: Uint8Array; addedUnderline: boolean; removedUnderline: boolean } {
   const instructions = parseContentStream(contentBytes);
   const indices = run.sourceInstructionIndices ?? [];
   if (indices.length === 0) {
-    return { bytes: contentBytes, addedUnderline: false };
+    return { bytes: contentBytes, addedUnderline: false, removedUnderline: false };
   }
 
   const textIndex = Math.min(...indices);
   const range = findBtEtRange(instructions, textIndex);
-  if (!range) return { bytes: contentBytes, addedUnderline: false };
+  if (!range) return { bytes: contentBytes, addedUnderline: false, removedUnderline: false };
 
   let addedUnderline = false;
+  let removedUnderline = false;
 
   // Color: patch or insert rg just after BT
   if (style.color) {
@@ -259,30 +325,51 @@ function patchRunStyle(
     }
   }
 
-  // Font size / face: patch existing Tf only
+  // Font size / face: patch existing Tf / Tm only
   if (style.fontSize != null || style.bold != null || style.italic != null) {
     let fontKey: string | null = null;
     if (style.bold != null || style.italic != null) {
-      const desired = resolveStyledFontName(
-        run.fontName,
-        style.bold ?? /bold/i.test(run.fontName),
-        style.italic ?? /italic|oblique/i.test(run.fontName),
-      );
-      // Only switch if we can embed/ensure a Standard14 face
-      fontKey = ensureStandard14Font(page, objects, desired);
-      const existing = listPageFontKeys(page, objects);
-      // Prefer existing resource that matches
-      for (const k of existing) {
-        if (k === run.fontName.replace(/^\//, '')) {
-          // keep using current unless we created a styled face
-        }
+      const currentFlags = fontNameStyleFlags(run.fontName);
+      const wantBold = style.bold ?? currentFlags.bold;
+      const wantItalic = style.italic ?? currentFlags.italic;
+
+      // 1) Prefer a sibling already on the page (embedded resume fonts)
+      fontKey = findSiblingFontKey(page, objects, run.fontName, wantBold, wantItalic);
+
+      // 2) Fall back to Standard14 face we can inject
+      if (!fontKey) {
+        const desired = resolveStyledFontName(run.fontName, wantBold, wantItalic);
+        fontKey = ensureStandard14Font(page, objects, desired);
       }
     }
 
-    for (let i = textIndex; i >= range.bt; i--) {
+    // Re-find range after possible splices above
+    const range2 = findBtEtRange(instructions, textIndex) ?? range;
+
+    for (let i = textIndex; i >= range2.bt; i--) {
       if (instructions[i].operator === 'Tf' && instructions[i].operands.length >= 2) {
         if (style.fontSize != null) {
-          instructions[i].operands[1] = new PDFNumber(style.fontSize);
+          const tfSize = instructions[i].operands[1];
+          const curTf = tfSize instanceof PDFNumber ? tfSize.value : run.fontSize;
+          const visual = visualFontSize(run);
+          // Resumes often use `1 Tf` + scaled Tm. Changing Tf to the visual
+          // size would double-scale — scale Tm instead when Tf is a unit size.
+          if (curTf > 0 && curTf <= 1.5 && Math.abs(visual - curTf) > 1) {
+            const scale = style.fontSize / visual;
+            for (let j = textIndex; j >= range2.bt; j--) {
+              if (instructions[j].operator === 'Tm' && instructions[j].operands.length >= 6) {
+                for (const idx of [0, 1, 2, 3]) {
+                  const n = instructions[j].operands[idx];
+                  if (n instanceof PDFNumber) {
+                    instructions[j].operands[idx] = new PDFNumber(n.value * scale);
+                  }
+                }
+                break;
+              }
+            }
+          } else {
+            instructions[i].operands[1] = new PDFNumber(style.fontSize);
+          }
         }
         if (fontKey) {
           instructions[i].operands[0] = new PDFName(fontKey);
@@ -292,28 +379,64 @@ function patchRunStyle(
     }
   }
 
-  // Underline: draw after ET (outside text object) using run bounds
-  if (style.underline) {
+  // Underline: add stroke after ET, or remove a stroke we previously inserted
+  if (style.underline === true) {
     const color = style.color ?? run.fillColor ?? [0, 0, 0];
-    const y = run.y - run.fontSize * 0.12;
-    const w = Math.max(run.width, run.fontSize * 0.5 * Math.max(1, run.text.length));
+    const y = run.y - visualFontSize(run) * 0.12;
+    const w = Math.max(run.width, visualFontSize(run) * 0.5 * Math.max(1, run.text.length));
     const ul: CSInstruction[] = [
       op('q'),
       op('RG', [new PDFNumber(color[0]), new PDFNumber(color[1]), new PDFNumber(color[2])]),
-      op('w', [new PDFNumber(Math.max(0.4, run.fontSize * 0.05))]),
+      op('w', [new PDFNumber(Math.max(0.4, visualFontSize(run) * 0.05))]),
       op('m', [new PDFNumber(run.x), new PDFNumber(y)]),
       op('l', [new PDFNumber(run.x + w), new PDFNumber(y)]),
       op('S'),
       op('Q'),
     ];
-    // Recompute et after possible splices
     const range2 = findBtEtRange(instructions, Math.min(...(run.sourceInstructionIndices ?? [textIndex])));
     const insertAt = (range2?.et ?? range.et) + 1;
     instructions.splice(insertAt, 0, ...ul);
     addedUnderline = true;
+  } else if (style.underline === false) {
+    removedUnderline = removeUnderlineNearRun(instructions, run) || removedUnderline;
   }
 
-  return { bytes: compileInstructions(instructions), addedUnderline };
+  return { bytes: compileInstructions(instructions), addedUnderline, removedUnderline };
+}
+
+/** Remove a short horizontal stroke under the run (editor-added underline). */
+function removeUnderlineNearRun(instructions: CSInstruction[], run: TextRun): boolean {
+  const fs = visualFontSize(run);
+  const targetY = run.y - fs * 0.12;
+  for (let i = 0; i < instructions.length - 6; i++) {
+    if (instructions[i].operator !== 'q') continue;
+    // q … m l S Q  — simple underline block
+    let mIdx = -1;
+    let lIdx = -1;
+    let sIdx = -1;
+    let qIdx = -1;
+    for (let j = i + 1; j < Math.min(i + 10, instructions.length); j++) {
+      const opName = instructions[j].operator;
+      if (opName === 'm' && mIdx < 0) mIdx = j;
+      else if (opName === 'l' && mIdx >= 0 && lIdx < 0) lIdx = j;
+      else if (opName === 'S' && lIdx >= 0 && sIdx < 0) sIdx = j;
+      else if (opName === 'Q' && sIdx >= 0) { qIdx = j; break; }
+      else if (opName === 'q' || opName === 'BT') break;
+    }
+    if (mIdx < 0 || lIdx < 0 || sIdx < 0 || qIdx < 0) continue;
+    const mx = instructions[mIdx].operands[0];
+    const my = instructions[mIdx].operands[1];
+    const lx = instructions[lIdx].operands[0];
+    const ly = instructions[lIdx].operands[1];
+    if (!(mx instanceof PDFNumber) || !(my instanceof PDFNumber)) continue;
+    if (!(lx instanceof PDFNumber) || !(ly instanceof PDFNumber)) continue;
+    if (Math.abs(my.value - ly.value) > 0.5) continue; // not horizontal
+    if (Math.abs(my.value - targetY) > fs * 0.35) continue;
+    if (Math.abs(mx.value - run.x) > fs * 0.5) continue;
+    instructions.splice(i, qIdx - i + 1);
+    return true;
+  }
+  return false;
 }
 
 function applyAlignmentShift(

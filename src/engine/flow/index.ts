@@ -33,8 +33,16 @@ export {
   distributeGlue,
   opticalMarginAdjust,
 } from './justification';
-export { detectTabSplitIndex, detectJustifiedBodyText, shouldUseFlowDraw } from './justification-detect';
-export { computeBaseline, getRunBounds, averageCharWidth, estimateTextWidth } from './metrics';
+export { detectTabSplitIndex, detectJustifiedBodyText, shouldUseFlowDraw, measureWordGaps } from './justification-detect';
+export {
+  computeBaseline,
+  getRunBounds,
+  averageCharWidth,
+  estimateTextWidth,
+  visualFontSize,
+  fontNameStyleFlags,
+  resolveRunStyleFlags,
+} from './metrics';
 export { greedyWrap, previewWrap, knuthPlassWrap } from './line-break';
 export type { KnuthPlassOptions } from './line-break';
 export { hyphenateBreaks, hyphenateWord } from './hyphenation';
@@ -49,6 +57,8 @@ export {
   computeFlowDrawPositions,
   buildLineDrawMap,
   buildFlowDrawIndex,
+  shouldPackLine,
+  lineHasAnomalousIntraWordGaps,
 } from './flow-draw';
 export { shapeText, measureText, layoutShapedGlyphs } from './shaping';
 export {

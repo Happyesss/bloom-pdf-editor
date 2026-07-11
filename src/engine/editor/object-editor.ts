@@ -174,21 +174,32 @@ function findObjectInstructionIndex(
 
   if (obj.kind === 'path') {
     const paintOps = new Set(['S', 's', 'f', 'F', 'f*', 'B', 'B*', 'b', 'b*', 'n']);
+    let bestIdx = -1;
+    let bestScore = Infinity;
     for (let i = 0; i < instructions.length; i++) {
       if (!paintOps.has(instructions[i].operator)) continue;
-      for (let j = i - 1; j >= Math.max(0, i - 15); j--) {
+      for (let j = i - 1; j >= Math.max(0, i - 20); j--) {
         if (instructions[j].operator === 're' && instructions[j].operands.length >= 4) {
           const x = numVal(instructions[j].operands[0]);
           const y = numVal(instructions[j].operands[1]);
-          if (Math.abs(x - obj.bbox.x) < 8 && Math.abs(y - obj.bbox.y) < 8) {
-            return i;
+          const w = numVal(instructions[j].operands[2]);
+          const h = numVal(instructions[j].operands[3]);
+          const dx = Math.abs(x - obj.bbox.x);
+          const dy = Math.abs(y - obj.bbox.y);
+          const dw = Math.abs(w - obj.bbox.width);
+          const dh = Math.abs(h - obj.bbox.height);
+          if (dx < 8 && dy < 8 && dw < 8 && dh < 8) {
+            const score = dx + dy + dw + dh;
+            if (score < bestScore) {
+              bestScore = score;
+              bestIdx = i;
+            }
           }
         }
       }
     }
-    for (let i = instructions.length - 1; i >= 0; i--) {
-      if (paintOps.has(instructions[i].operator)) return i;
-    }
+    if (bestIdx >= 0) return bestIdx;
+    return -1; // never fall back to "last paint op" — that deletes unrelated content
   }
 
   if (obj.kind === 'text') {

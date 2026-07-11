@@ -1,11 +1,17 @@
 /**
  * Justification vs tab detection — distinguish body-text justification
  * from left/right column layouts (e.g. title + dates on same baseline).
+ *
+ * Core issue: PDF justification is often encoded as TJ displacements *inside*
+ * a single text run. Detecting only inter-run gaps misses that, so flow-draw
+ * never fires and rivers of whitespace remain on canvas.
  */
 
 import type { TextRun } from '../content/interpreter';
 import type { TextLine } from './types';
 import { averageCharWidth, gapBetweenRuns, getRunBounds } from './metrics';
+
+const BULLET_CHARS = /^[\u2022\u2023\u25E6\u2043\u2219\u00B7\u25CF\u25CB•∙]$/;
 
 /**
  * Detect a tab-style gap splitting left content from right-aligned content.
@@ -36,8 +42,72 @@ export function detectTabSplitIndex(runs: TextRun[], fontSize: number): number {
 }
 
 /**
- * True only for dense body-text lines with multiple expanded inter-word gaps.
- * Rejects tab-aligned lines, short lines, headers, and bullet lines.
+ * Measure true inter-word gaps from glyph positions.
+ * Uses space glyphs when present; otherwise gaps in the word-space band
+ * between non-space glyphs. Skips tiny kerning and huge tab gaps.
+ */
+export function measureWordGaps(line: TextLine): number[] {
+  type G = { x: number; width: number; unicode: string };
+  const glyphs: G[] = [];
+  for (let r = 0; r < line.runs.length; r++) {
+    const run = line.runs[r];
+    for (let g = 0; g < run.glyphs.length; g++) {
+      const gl = run.glyphs[g];
+      glyphs.push({ x: gl.tRm.e, width: gl.width, unicode: gl.unicode });
+    }
+  }
+  if (glyphs.length < 2) return [];
+  glyphs.sort((a, b) => a.x - b.x);
+
+  const fs = line.fontSize || 12;
+  const minWord = Math.max(fs * 0.12, 1.5);
+  const maxWord = fs * 3.5; // above this is tab/column, not a word space
+  const gaps: number[] = [];
+
+  let i = 0;
+  while (i < glyphs.length) {
+    // skip leading spaces / bullets for gap measurement start
+    if (glyphs[i].unicode === ' ' || glyphs[i].unicode === '\u00A0' || BULLET_CHARS.test(glyphs[i].unicode)) {
+      i++;
+      continue;
+    }
+    // end of current word
+    let end = i;
+    while (
+      end + 1 < glyphs.length &&
+      glyphs[end + 1].unicode !== ' ' &&
+      glyphs[end + 1].unicode !== '\u00A0' &&
+      !BULLET_CHARS.test(glyphs[end + 1].unicode)
+    ) {
+      const gap = glyphs[end + 1].x - (glyphs[end].x + glyphs[end].width);
+      // Large gap without a space glyph still ends the word (TJ word spacing)
+      if (gap > minWord) break;
+      end++;
+    }
+
+    // find next word start
+    let j = end + 1;
+    while (
+      j < glyphs.length &&
+      (glyphs[j].unicode === ' ' || glyphs[j].unicode === '\u00A0' || BULLET_CHARS.test(glyphs[j].unicode))
+    ) {
+      j++;
+    }
+    if (j >= glyphs.length) break;
+
+    const gap = glyphs[j].x - (glyphs[end].x + glyphs[end].width);
+    if (gap >= minWord && gap <= maxWord) {
+      gaps.push(gap);
+    }
+    i = j;
+  }
+
+  return gaps;
+}
+
+/**
+ * True for dense body-text lines with multiple expanded inter-word gaps.
+ * Uses glyph-level gaps so TJ-justified single runs are detected too.
  */
 export function detectJustifiedBodyText(
   runs: TextRun[],
@@ -46,60 +116,52 @@ export function detectJustifiedBodyText(
   tabSplitIndex: number,
 ): boolean {
   if (tabSplitIndex >= 0) return false;
-  if (runs.length < 2) return false;
 
   const wordCount = text.trim().split(/\s+/).filter(w => w.length > 0).length;
   if (wordCount < 4) return false;
 
+  // Prefer glyph-level measurement (catches TJ-inside-run justification)
+  const probe: TextLine = {
+    id: '',
+    runs,
+    text,
+    segments: [],
+    baseline: 0,
+    x: 0, y: 0, width: 0, height: 0,
+    leftMargin: 0, rightEdge: 0,
+    fontSize,
+    isJustified: false,
+    tabSplitIndex: -1,
+  };
+  const glyphGaps = measureWordGaps(probe);
+  if (glyphGaps.length >= 2) {
+    const median = [...glyphGaps].sort((a, b) => a - b)[Math.floor(glyphGaps.length / 2)];
+    const max = Math.max(...glyphGaps);
+    // Uneven word spaces → treated as justified (needs evening)
+    if (max > median * 1.6 || max > fontSize * 0.55) return true;
+  }
+
+  // Fallback: inter-run gaps (legacy)
+  if (runs.length < 2) return false;
   const avgCharW = runs.reduce((s, r) => s + averageCharWidth(r), 0) / runs.length;
   const naturalThreshold = Math.max(fontSize * 0.5, avgCharW * 1.8);
-  const largeGaps: number[] = [];
-
+  let largeGaps = 0;
   for (let i = 0; i < runs.length - 1; i++) {
-    const gap = gapBetweenRuns(runs[i], runs[i + 1]);
-    if (gap > naturalThreshold) largeGaps.push(gap);
+    if (gapBetweenRuns(runs[i], runs[i + 1]) > naturalThreshold) largeGaps++;
   }
-
-  // Body justification expands multiple word gaps, not a single tab column.
-  return largeGaps.length >= 2;
-}
-
-/**
- * Measure inter-word gaps from native glyph x-positions.
- * Returns gap sizes for gaps large enough to be word boundaries.
- */
-function measureNativeWordGaps(line: TextLine): number[] {
-  const positions: Array<{ x: number; width: number }> = [];
-  for (let r = 0; r < line.runs.length; r++) {
-    const run = line.runs[r];
-    for (let g = 0; g < run.glyphs.length; g++) {
-      const gl = run.glyphs[g];
-      positions.push({ x: gl.tRm.e, width: gl.width });
-    }
-  }
-
-  if (positions.length < 2) return [];
-  positions.sort((a, b) => a.x - b.x);
-
-  let totalW = 0;
-  for (let i = 0; i < positions.length; i++) totalW += positions[i].width;
-  const avgW = totalW / positions.length;
-  // Use a low threshold to catch most word boundaries (including narrow spaces)
-  const wordGapMin = avgW * 0.2;
-
-  const gaps: number[] = [];
-  for (let i = 1; i < positions.length; i++) {
-    const gap = positions[i].x - (positions[i - 1].x + positions[i - 1].width);
-    if (gap > wordGapMin) gaps.push(gap);
-  }
-
-  return gaps;
+  return largeGaps >= 2;
 }
 
 /** Whether flow-based redraw should replace raw PDF positions for this line. */
 export function shouldUseFlowDraw(line: TextLine): boolean {
-  if (!line.isJustified) return false;
   if (line.tabSplitIndex >= 0) return false;
+
+  // Structured title lines (project headings, etc.) must keep native gaps —
+  // evening them collapses spaces after ")" / around "|" / before icons.
+  if (looksLikeStructuredTitleLine(line)) return false;
+
+  // Contact / header chrome — icons, emails, phones, URLs
+  if (looksLikeContactOrHeaderLine(line)) return false;
 
   const wordCount = line.text.trim().split(/\s+/).filter(w => w.length > 0).length;
   if (wordCount < 4) return false;
@@ -112,38 +174,66 @@ export function shouldUseFlowDraw(line: TextLine): boolean {
     naturalWidth += getRunBounds(line.runs[r]).width;
   }
 
-  // Line is mostly empty space — tab/header layout, not justified prose.
+  // Mostly empty → tab/header, not body prose
   if (naturalWidth / targetWidth < 0.55) return false;
 
-  const extraSpace = targetWidth - naturalWidth;
-  const numGaps = wordCount - 1;
-  if (numGaps <= 0) return false;
+  const gaps = measureWordGaps(line);
+  if (gaps.length < 2) return false;
 
-  const evenGap = extraSpace / numGaps;
-  const normalSpace = Math.max(line.fontSize * 0.25, 2);
+  const sorted = [...gaps].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  const max = sorted[sorted.length - 1];
+  const min = sorted[0];
+  if (median <= 0) return false;
 
-  // If gaps would exceed ~2× normal word space, PDF positions are better.
-  if (evenGap > normalSpace * 2) return false;
-
-  // Check if native glyph positions already have reasonable inter-word gaps.
-  // The PDF's own positioning is almost always better than flow-draw's
-  // recalculation, so only override when gaps are wildly disproportionate.
-  const nativeGaps = measureNativeWordGaps(line);
-
-  // Not enough measurable gaps — can't confirm text needs redistribution
-  if (nativeGaps.length < 3) return false;
-
-  const mean = nativeGaps.reduce((s, g) => s + g, 0) / nativeGaps.length;
-  if (mean <= 0) return false;
-
-  const variance = nativeGaps.reduce((s, g) => s + (g - mean) ** 2, 0) / nativeGaps.length;
+  const mean = gaps.reduce((s, g) => s + g, 0) / gaps.length;
+  const variance = gaps.reduce((s, g) => s + (g - mean) ** 2, 0) / gaps.length;
   const cv = Math.sqrt(variance) / mean;
 
-  // Only override when gaps are extremely uneven (CV > 0.8)
-  // AND the largest gap is more than 3× the smallest (truly broken layout)
-  const minGap = Math.min(...nativeGaps);
-  const maxGap = Math.max(...nativeGaps);
-  if (cv < 0.8 || minGap <= 0 || maxGap / minGap < 3) return false;
+  // Prefer bullet body lines — that's where TJ rivers show up
+  const startsWithBullet = /^[\u2022\u2023\u25E6\u2043\u2219\u00B7\u25CF\u25CB•∙]/.test(line.text.trim());
+
+  // Activate when gaps are noticeably uneven
+  const uneven = cv >= 0.35 || max > median * 1.7 || (min > 0 && max / min >= 2.2);
+  if (!uneven && !(line.isJustified && cv >= 0.25)) return false;
+
+  // Non-bullet lines need stronger evidence (avoid project/skills headings)
+  if (!startsWithBullet && !line.isJustified && cv < 0.5) return false;
 
   return true;
+}
+
+/** Project titles, link rows, pipe-separated meta — not prose to reflow. */
+function looksLikeStructuredTitleLine(line: TextLine): boolean {
+  const text = line.text;
+  if (text.includes('|')) return true;
+  for (let i = 0; i < line.runs.length; i++) {
+    if (line.runs[i].isUnderline) return true;
+  }
+  // "Open Source)" followed by tech stack without being a bullet
+  if (/\(Open Source\)/i.test(text) && !/^[\u2022\u2023\u25E6\u2043\u2219\u00B7\u25CF\u25CB•∙]/.test(text.trim())) {
+    return true;
+  }
+  return false;
+}
+
+/** Resume contact rows and short large headers must keep native glyph positions. */
+function looksLikeContactOrHeaderLine(line: TextLine): boolean {
+  const text = line.text;
+  if (/https?:\/\/|www\.|linkedin\.com|github\.com|mailto:/i.test(text)) return true;
+  if (/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i.test(text)) return true;
+  if (/\+?\d[\d\s().-]{8,}\d/.test(text)) return true;
+  if (/\b(portfolio|linkedin|github|phone|email|mobile)\b/i.test(text)) return true;
+
+  // Short large display lines (names) — never evening
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  if (words.length <= 4 && line.fontSize >= 16) return true;
+
+  // Many tiny runs (icon font glyphs + labels) → contact chrome
+  if (line.runs.length >= 5 && words.length <= 12) {
+    const tinyRuns = line.runs.filter(r => r.text.trim().length <= 2).length;
+    if (tinyRuns >= 3) return true;
+  }
+
+  return false;
 }

@@ -19,6 +19,12 @@ export function distributeTextToSegments(line: TextLine, newText: string): Segme
     return [{ run: line.segments[0].run, newText }];
   }
 
+  // Preserve style boundaries when the user edits inside one segment:
+  // keep a matching prefix/suffix of segment texts, put the middle delta
+  // into the changed segment only.
+  const preserved = preserveSegmentBoundaries(line, newText);
+  if (preserved) return preserved;
+
   const oldLen = Math.max(1, line.text.length);
   const edits: SegmentEdit[] = [];
   let pos = 0;
@@ -49,6 +55,47 @@ export function distributeTextToSegments(line: TextLine, newText: string): Segme
     edits[edits.length - 1].newText += newText.substring(pos);
   }
 
+  return edits;
+}
+
+/**
+ * If newText shares the same segment prefix/suffix as the old line,
+ * only rewrite the middle segment(s) — keeps bold/italic runs intact.
+ */
+function preserveSegmentBoundaries(line: TextLine, newText: string): SegmentEdit[] | null {
+  const segs = line.segments;
+  if (segs.length < 2) return null;
+
+  let prefixLen = 0;
+  let prefixText = '';
+  for (let i = 0; i < segs.length; i++) {
+    const next = prefixText + segs[i].text;
+    if (!newText.startsWith(next)) break;
+    prefixText = next;
+    prefixLen = i + 1;
+  }
+
+  let suffixLen = 0;
+  let suffixText = '';
+  for (let i = segs.length - 1; i >= prefixLen; i--) {
+    const next = segs[i].text + suffixText;
+    if (!newText.endsWith(next)) break;
+    if (prefixText.length + next.length > newText.length) break;
+    suffixText = next;
+    suffixLen = segs.length - i;
+  }
+
+  const middleCount = segs.length - prefixLen - suffixLen;
+  if (middleCount !== 1) return null;
+  if (prefixLen === 0 && suffixLen === 0) return null;
+
+  const middleText = newText.slice(prefixText.length, newText.length - suffixText.length);
+  const middleIdx = prefixLen;
+  const edits: SegmentEdit[] = [];
+  for (let i = 0; i < segs.length; i++) {
+    if (i === middleIdx) edits.push({ run: segs[i].run, newText: middleText });
+    else edits.push({ run: segs[i].run, newText: segs[i].text });
+  }
   return edits;
 }
 

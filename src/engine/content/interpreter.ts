@@ -377,17 +377,30 @@ function glyphNameToUnicode(name: string): string {
   return '';
 }
 
+/** Symbols that broken ToUnicode cmaps often emit instead of quotes/punctuation. */
+function isObscureSymbol(ch: string): boolean {
+  if (!ch || ch.length === 0) return true;
+  const cp = ch.codePointAt(0) ?? 0;
+  // § ¶ † ‡ • ※ ¤ and other marks that rarely appear mid-word in form labels
+  return (
+    cp === 0x00A7 || cp === 0x00B6 || cp === 0x00A4 ||
+    cp === 0x2020 || cp === 0x2021 || cp === 0x2022 ||
+    cp === 0x203B || cp === 0x00A6 || cp === 0x00AC
+  );
+}
+
 /**
  * Map a byte value to Unicode using the specified encoding.
  * Handles the critical WinAnsiEncoding 0x80–0x9F range that
  * String.fromCharCode gets wrong.
  */
 function encodingCharToUnicode(charCode: number, encoding: string): string {
-  if (encoding === 'WinAnsiEncoding' || encoding === 'Identity-H') {
-    if (charCode >= 0x80 && charCode <= 0x9F) {
-      const mapped = WIN_ANSI_TO_UNICODE[charCode];
-      if (mapped) return String.fromCodePoint(mapped);
-    }
+  // WinAnsiEncoding 0x80–0x9F range has special Unicode mappings.
+  // Many PDF producers use these byte values regardless of the stated encoding,
+  // so we apply this mapping universally for the 0x80–0x9F range as a first check.
+  if (charCode >= 0x80 && charCode <= 0x9F) {
+    const mapped = WIN_ANSI_TO_UNICODE[charCode];
+    if (mapped) return String.fromCodePoint(mapped);
   }
   // For all other byte values and encodings, direct mapping works
   return String.fromCharCode(charCode);
@@ -809,11 +822,19 @@ export function interpretPage(
       case 'b': { currentPath.push({ type: 'Z', points: [] }); emitPath('both'); break; }
       case 'b*': { currentPath.push({ type: 'Z', points: [] }); emitPath('both'); break; }
       case 'W': {
-        gs.clipPaths.push({ segments: [...currentPath], windingRule: 'nonzero' });
+        // Per PDF spec §8.5.4: W modifies the clipping path by intersecting
+        // the current path with it. Only add non-degenerate clip paths.
+        const wSegments = [...currentPath];
+        if (wSegments.length > 0 && !isDegenerateClipPath(wSegments)) {
+          gs.clipPaths = [...gs.clipPaths, { segments: wSegments, windingRule: 'nonzero' as const }];
+        }
         break;
       }
       case 'W*': {
-        gs.clipPaths.push({ segments: [...currentPath], windingRule: 'evenodd' });
+        const wsSegments = [...currentPath];
+        if (wsSegments.length > 0 && !isDegenerateClipPath(wsSegments)) {
+          gs.clipPaths = [...gs.clipPaths, { segments: wsSegments, windingRule: 'evenodd' as const }];
+        }
         break;
       }
       case 'n': { currentPath = []; break; } // Discard path
@@ -909,7 +930,48 @@ export function interpretPage(
     currentPath = [];
   }
 
+  // Apostrophe often arrives as its own Tj ("FATHER" + "§" + "S NAME")
+  repairApostrophesAcrossRuns(rawTextRuns);
+
   return { displayList, textRuns: rawTextRuns, fonts };
+}
+
+// ─── Clip path helpers ──────────────────────────────────────────────────────
+
+/**
+ * Detect degenerate clip paths that have zero or near-zero area.
+ * Such clips would make everything invisible and are usually an artifact
+ * of malformed content streams or empty re/m/l sequences.
+ */
+function isDegenerateClipPath(segments: PathSegment[]): boolean {
+  // An empty path is degenerate
+  if (segments.length === 0) return true;
+
+  // Collect all points to compute bounds
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  let hasPoints = false;
+
+  for (const seg of segments) {
+    for (let i = 0; i < seg.points.length; i += 2) {
+      const x = seg.points[i];
+      const y = seg.points[i + 1];
+      if (!isFinite(x) || !isFinite(y)) continue;
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+      hasPoints = true;
+    }
+  }
+
+  if (!hasPoints) return true;
+
+  // A clip region smaller than 0.5 user units in either dimension is degenerate
+  const width = maxX - minX;
+  const height = maxY - minY;
+  if (width < 0.5 || height < 0.5) return true;
+
+  return false;
 }
 
 // ─── Text rendering helpers ─────────────────────────────────────────────────
@@ -968,18 +1030,51 @@ function showTextString(
       idx += 1;
     }
 
-    // Map to Unicode — priority: ToUnicode CMap > Differences > Encoding table > ASCII fallback
+    // Map to Unicode.
+    // Differences→AGL often matches the drawn glyph better than a broken ToUnicode
+    // (e.g. apostrophe glyph mapped to U+00A7 § on certificate PDFs). Prefer
+    // Differences when present; fall back to ToUnicode, then encoding tables.
     let unicode: string;
-    if (font?.toUnicode?.has(charCode)) {
-      unicode = font.toUnicode.get(charCode)!;
-    } else if (!isComposite && font?.differences?.has(charCode)) {
-      // Encoding Differences: charCode → glyph name → Unicode
-      const glyphName = font.differences.get(charCode)!;
-      const mapped = glyphNameToUnicode(glyphName);
-      unicode = mapped || encodingCharToUnicode(charCode, font?.encoding ?? 'StandardEncoding');
+    const diffName = !isComposite ? font?.differences?.get(charCode) : undefined;
+    const fromDiff = diffName ? glyphNameToUnicode(diffName) : '';
+    const fromToUnicode = font?.toUnicode?.get(charCode);
+
+    if (fromDiff) {
+      unicode = fromDiff;
+      // If Differences and ToUnicode disagree and ToUnicode looks like real text
+      // while Differences yielded an obscure symbol, keep ToUnicode — but never
+      // let ToUnicode override a clear punctuation/letter glyph name with §/¶.
+      if (
+        fromToUnicode &&
+        fromToUnicode !== fromDiff &&
+        isObscureSymbol(fromDiff) &&
+        !isObscureSymbol(fromToUnicode)
+      ) {
+        unicode = fromToUnicode;
+      }
+    } else if (fromToUnicode) {
+      unicode = fromToUnicode;
+      // Broken ToUnicode sometimes maps quotesingle-slot bytes to §. Prefer
+      // WinAnsi/encoding when the cmap yields an obscure symbol for a byte that
+      // encoding would treat as a quote or ASCII punctuation.
+      if (isObscureSymbol(unicode) && !isComposite) {
+        const fromEnc = encodingCharToUnicode(charCode, font?.encoding ?? 'StandardEncoding');
+        if (fromEnc && fromEnc !== unicode && !isObscureSymbol(fromEnc)) {
+          unicode = fromEnc;
+        } else if (charCode === 0x27 || charCode === 0x91 || charCode === 0x92) {
+          unicode = charCode === 0x91 ? '\u2018' : charCode === 0x92 ? '\u2019' : "'";
+        }
+      }
     } else if (!isComposite) {
       // Use encoding-aware mapping (handles WinAnsi 0x80–0x9F correctly)
       unicode = encodingCharToUnicode(charCode, font?.encoding ?? 'StandardEncoding');
+      // If result is a C0/C1 control character, it's likely a mis-mapped byte.
+      // Fall back to WinAnsi mapping as a heuristic.
+      const cp = unicode.codePointAt(0) ?? 0;
+      if (cp > 0 && cp < 0x20 && charCode >= 0x80) {
+        const winAnsiMapped = WIN_ANSI_TO_UNICODE[charCode];
+        if (winAnsiMapped) unicode = String.fromCodePoint(winAnsiMapped);
+      }
     } else {
       unicode = String.fromCharCode(charCode);
     }
@@ -1043,6 +1138,9 @@ function showTextString(
 
   if (glyphs.length === 0) return null;
 
+  repairObscureApostropheGlyphs(glyphs);
+  text = glyphs.map(g => g.unicode).join('');
+
   // Compute bounding box
   const effectiveMatrix = multiplyMatrices(textMatrix, gs.ctm);
   const startX = glyphs[0].x;
@@ -1072,6 +1170,92 @@ function showTextString(
     },
     newTextMatrix: textMatrix,
   };
+}
+
+/**
+ * Broken ToUnicode/Differences often map apostrophes to §/¶.
+ * - Mid-word between letters → '
+ * - Lone glyph run that is only an obscure mark → ' (apostrophe is often its own Tj)
+ */
+function repairObscureApostropheGlyphs(glyphs: GlyphPosition[]): void {
+  if (glyphs.length === 0) return;
+
+  const onlyObscure = glyphs.every(
+    g => !g.unicode || g.unicode === ' ' || g.unicode === '\u00A0' || isObscureSymbol(g.unicode),
+  );
+  if (onlyObscure) {
+    for (let gi = 0; gi < glyphs.length; gi++) {
+      if (isObscureSymbol(glyphs[gi].unicode)) {
+        glyphs[gi] = { ...glyphs[gi], unicode: "'" };
+      }
+    }
+    return;
+  }
+
+  for (let gi = 0; gi < glyphs.length; gi++) {
+    if (!isObscureSymbol(glyphs[gi].unicode)) continue;
+    const prev = gi > 0 ? glyphs[gi - 1].unicode : '';
+    const next = gi + 1 < glyphs.length ? glyphs[gi + 1].unicode : '';
+    const prevLetter = /[A-Za-z]/.test(prev.slice(-1));
+    const nextLetter = /[A-Za-z]/.test(next.charAt(0));
+    if (prevLetter && nextLetter) {
+      glyphs[gi] = { ...glyphs[gi], unicode: "'" };
+    }
+  }
+}
+
+/**
+ * Second pass: apostrophe often arrives as its own text run between
+ * "FATHER" and "S NAME". Repair using neighboring runs on the same baseline.
+ */
+function repairApostrophesAcrossRuns(runs: TextRun[]): void {
+  for (let i = 0; i < runs.length; i++) {
+    repairObscureApostropheGlyphs(runs[i].glyphs);
+    runs[i].text = runs[i].glyphs.map(g => g.unicode).join('');
+  }
+
+  for (let i = 0; i < runs.length; i++) {
+    const run = runs[i];
+    if (run.glyphs.length === 0) continue;
+    const onlyObscure = run.glyphs.every(g => isObscureSymbol(g.unicode));
+    if (!onlyObscure && !run.glyphs.some(g => isObscureSymbol(g.unicode))) continue;
+
+    // Find nearest letter glyphs on the same baseline to the left/right
+    const baseline = run.glyphs[0].tRm.f;
+    const fs = run.fontSize || 12;
+    let leftLetter = false;
+    let rightLetter = false;
+
+    for (let j = i - 1; j >= 0; j--) {
+      const other = runs[j];
+      if (other.glyphs.length === 0) continue;
+      if (Math.abs(other.glyphs[other.glyphs.length - 1].tRm.f - baseline) > fs * 0.35) continue;
+      const gap = run.glyphs[0].tRm.e - (other.glyphs[other.glyphs.length - 1].tRm.e + other.glyphs[other.glyphs.length - 1].width);
+      if (gap > fs * 2) break;
+      const ch = other.glyphs[other.glyphs.length - 1].unicode.slice(-1);
+      if (/[A-Za-z]/.test(ch)) { leftLetter = true; break; }
+      if (ch.trim()) break;
+    }
+    for (let j = i + 1; j < runs.length; j++) {
+      const other = runs[j];
+      if (other.glyphs.length === 0) continue;
+      if (Math.abs(other.glyphs[0].tRm.f - baseline) > fs * 0.35) continue;
+      const gap = other.glyphs[0].tRm.e - (run.glyphs[run.glyphs.length - 1].tRm.e + run.glyphs[run.glyphs.length - 1].width);
+      if (gap > fs * 2) break;
+      const ch = other.glyphs[0].unicode.charAt(0);
+      if (/[A-Za-z]/.test(ch)) { rightLetter = true; break; }
+      if (ch.trim()) break;
+    }
+
+    if (leftLetter && rightLetter) {
+      for (let gi = 0; gi < run.glyphs.length; gi++) {
+        if (isObscureSymbol(run.glyphs[gi].unicode)) {
+          run.glyphs[gi] = { ...run.glyphs[gi], unicode: "'" };
+        }
+      }
+      run.text = run.glyphs.map(g => g.unicode).join('');
+    }
+  }
 }
 
 function mergeEditableTextRuns(runs: TextRun[]): TextRun[] {

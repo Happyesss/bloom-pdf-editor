@@ -39,8 +39,12 @@ function collectLineGlyphs(line: TextLine): IndexedGlyph[] {
   let charOffset = 0;
   for (let r = 0; r < line.runs.length; r++) {
     const run = line.runs[r];
+    let within = 0;
     for (let g = 0; g < run.glyphs.length; g++) {
-      glyphs.push({ glyph: run.glyphs[g], run, charIndex: charOffset + g });
+      // Index by cumulative unicode length so ligatures / empty glyphs stay
+      // aligned with splitWords(line.text) character ranges.
+      glyphs.push({ glyph: run.glyphs[g], run, charIndex: charOffset + within });
+      within += run.glyphs[g].unicode.length;
     }
     charOffset += run.text.length;
   }
@@ -334,6 +338,8 @@ function isStructuredTitleLine(line: TextLine): boolean {
   for (let i = 0; i < line.runs.length; i++) {
     if (line.runs[i].isUnderline) return true;
   }
+  // Certificate / form rows: "NAME : VALUE", "FATHER'S NAME: …"
+  if (/^[A-Z][A-Z0-9\s.'’]{1,28}\s*:/.test(text.trim())) return true;
   if (/\(Open Source\)/i.test(text) && !BULLET_CHARS.test(text.trim()[0] ?? '')) {
     return true;
   }

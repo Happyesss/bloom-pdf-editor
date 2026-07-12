@@ -63,6 +63,8 @@ export interface FontData {
   italicAngle: number;
   /** Font flags (bit field) */
   flags: number;
+  /** FontWeight from FontDescriptor (100–900), if present */
+  fontWeight: number | null;
   /** CSS font string for canvas rendering */
   cssFontString: string;
   /** Type 3 Font Matrix */
@@ -133,6 +135,7 @@ export function loadFont(
     descent: -200,
     italicAngle: 0,
     flags: 0,
+    fontWeight: null,
     cssFontString: '12px sans-serif',
     fontMatrix: null,
     charProcs: null,
@@ -378,6 +381,8 @@ function loadFontDescriptor(
   fontData.descent = fd.getNumber('Descent') ?? fontData.descent;
   fontData.italicAngle = fd.getNumber('ItalicAngle') ?? 0;
   fontData.flags = fd.getNumber('Flags') ?? 0;
+  const weight = fd.getNumber('FontWeight');
+  if (weight != null) fontData.fontWeight = weight;
 
   const fontFile = fd.get('FontFile') ?? fd.get('FontFile2') ?? fd.get('FontFile3');
   if (fontFile) {
@@ -523,24 +528,69 @@ function buildCSSFont(fontData: FontData): string {
  *   4. Direct mapping (Latin-1)
  */
 export function charCodeToUnicode(charCode: number, fontData: FontData): string {
-  // 1. ToUnicode CMap
-  const fromCMap = fontData.toUnicode.get(charCode);
-  if (fromCMap) return fromCMap;
-
-  // 2. Encoding differences
+  // Prefer Encoding Differences→AGL when present — matches drawn glyphs better
+  // than broken ToUnicode maps (apostrophe → § on some certificate PDFs).
   const glyphName = fontData.differences.get(charCode);
   if (glyphName) {
-    const unicode = glyphNameToUnicode(glyphName);
-    if (unicode) return unicode;
+    const fromDiff = glyphNameToUnicode(glyphName);
+    if (fromDiff) {
+      const fromCMap = fontData.toUnicode.get(charCode);
+      if (
+        fromCMap &&
+        fromCMap !== fromDiff &&
+        isObscureSymbolChar(fromDiff) &&
+        !isObscureSymbolChar(fromCMap)
+      ) {
+        return fromCMap;
+      }
+      return fromDiff;
+    }
   }
 
-  // 3. For non-composite fonts with standard range
+  // ToUnicode CMap
+  const fromCMap = fontData.toUnicode.get(charCode);
+  if (fromCMap) {
+    if (isObscureSymbolChar(fromCMap)) {
+      if (charCode === 0x27) return "'";
+      if (charCode === 0x91) return '\u2018';
+      if (charCode === 0x92) return '\u2019';
+    }
+    return fromCMap;
+  }
+
+  // WinAnsiEncoding 0x80–0x9F range has special Unicode mappings.
+  // Many PDF producers use these byte values regardless of the stated encoding.
+  if (charCode >= 0x80 && charCode <= 0x9F) {
+    const winAnsiMap: Record<number, number> = {
+      0x80: 0x20AC, 0x82: 0x201A, 0x83: 0x0192, 0x84: 0x201E,
+      0x85: 0x2026, 0x86: 0x2020, 0x87: 0x2021, 0x88: 0x02C6,
+      0x89: 0x2030, 0x8A: 0x0160, 0x8B: 0x2039, 0x8C: 0x0152,
+      0x8E: 0x017D, 0x91: 0x2018, 0x92: 0x2019, 0x93: 0x201C,
+      0x94: 0x201D, 0x95: 0x2022, 0x96: 0x2013, 0x97: 0x2014,
+      0x98: 0x02DC, 0x99: 0x2122, 0x9A: 0x0161, 0x9B: 0x203A,
+      0x9C: 0x0153, 0x9E: 0x017E, 0x9F: 0x0178,
+    };
+    const mapped = winAnsiMap[charCode];
+    if (mapped) return String.fromCodePoint(mapped);
+  }
+
+  // For non-composite fonts with standard range
   if (!fontData.isComposite && charCode >= 0x20 && charCode <= 0x7e) {
     return String.fromCharCode(charCode);
   }
 
-  // 4. Direct mapping
+  // Direct mapping
   return String.fromCharCode(charCode);
+}
+
+function isObscureSymbolChar(ch: string): boolean {
+  if (!ch || ch.length === 0) return true;
+  const cp = ch.codePointAt(0) ?? 0;
+  return (
+    cp === 0x00A7 || cp === 0x00B6 || cp === 0x00A4 ||
+    cp === 0x2020 || cp === 0x2021 || cp === 0x2022 ||
+    cp === 0x203B || cp === 0x00A6 || cp === 0x00AC
+  );
 }
 
 /**

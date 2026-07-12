@@ -210,6 +210,8 @@ function looksLikeStructuredTitleLine(line: TextLine): boolean {
   for (let i = 0; i < line.runs.length; i++) {
     if (line.runs[i].isUnderline) return true;
   }
+  // Certificate / form rows: "NAME : VALUE", "INSTITUTE NAME: …"
+  if (/^[A-Z][A-Z0-9\s.'’]{1,28}\s*:/.test(text.trim())) return true;
   // "Open Source)" followed by tech stack without being a bullet
   if (/\(Open Source\)/i.test(text) && !/^[\u2022\u2023\u25E6\u2043\u2219\u00B7\u25CF\u25CB•∙]/.test(text.trim())) {
     return true;

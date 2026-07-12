@@ -598,7 +598,7 @@ function drawTextRunAtPositions(
   drawWithSoftMask(ctx, run.softMask, maskMap, bounds, () => {
     ctx.save();
     ctx.globalCompositeOperation = toCanvasBlendMode(run.blendMode);
-    applyClipPaths(ctx, run.clipPaths);
+    applyClipPaths(ctx, run.clipPaths, bounds);
 
     const fontData = fonts.get(run.fontName);
     const fillColor = rgbToCSSColor(run.fillColor, run.fillAlpha);
@@ -606,6 +606,7 @@ function drawTextRunAtPositions(
     ctx.fillStyle = fillColor;
 
     if (fontData?.charProcs) {
+      // Type3 — must draw glyph-by-glyph
       for (let i = 0; i < positions.length; i++) {
         const glyph = positions[i].glyph;
         if (glyph.unicode === ' ' || glyph.unicode === '\u00A0') continue;
@@ -614,6 +615,8 @@ function drawTextRunAtPositions(
           drawType3Glyph(
             ctx, fontData, charName, positions[i].x, positions[i].f, run.fontSize
           );
+        } else {
+          drawGlyph(ctx, glyph, run, family, weight, style, fillColor, positions[i].x, positions[i].f);
         }
       }
     } else {
@@ -733,7 +736,7 @@ function drawTextRun(
   drawWithSoftMask(ctx, run.softMask, maskMap, bounds, () => {
     ctx.save();
     ctx.globalCompositeOperation = toCanvasBlendMode(run.blendMode);
-    applyClipPaths(ctx, run.clipPaths);
+    applyClipPaths(ctx, run.clipPaths, bounds);
 
     const fontData = fonts.get(run.fontName);
     const fillColor = rgbToCSSColor(run.fillColor, run.fillAlpha);
@@ -760,6 +763,8 @@ function drawTextRun(
       // Group consecutive non-space glyphs into word chunks and render each
       // as a single fillText call. This lets the browser's text shaper handle
       // intra-word spacing, eliminating font-substitution gaps within words.
+      // (Do NOT force per-glyph just because clipPaths exist — page-level clips
+      // are common and per-glyph substitute fonts overlap into "double" text.)
       drawWordGrouped(ctx, run, family, weight, style, fillColor);
     }
 
@@ -919,6 +924,7 @@ function drawGlyph(
   const { tRm } = glyph;
   const effFontSize = Math.sqrt(tRm.c * tRm.c + tRm.d * tRm.d);
   if (effFontSize < 0.1) return;
+  if (glyph.unicode === ' ' || glyph.unicode === '\u00A0') return;
 
   ctx.save();
   ctx.transform(
@@ -928,6 +934,18 @@ function drawGlyph(
   );
   ctx.scale(1, -1);
   ctx.font = `${style} ${weight} ${effFontSize}px ${family}`;
+
+  // Fit substitute-font glyph into the PDF advance so letters don't overlap.
+  const pdfAdvance = Math.max(glyph.width, 0.01);
+  const hScale = Math.abs(tRm.a) / effFontSize || 1;
+  const expected = pdfAdvance / hScale;
+  const measured = ctx.measureText(glyph.unicode).width;
+  if (measured > 0.1) {
+    let ratio = expected / measured;
+    ratio = Math.max(0.45, Math.min(1.85, ratio));
+    if (Math.abs(ratio - 1) > 0.005) ctx.scale(ratio, 1);
+  }
+
   ctx.fillText(glyph.unicode, 0, 0);
 
   if (run.isUnderline) {
@@ -949,53 +967,74 @@ function drawGlyph(
  * Extract CSS font properties (family, style, weight) without the size,
  * because size is handled by the transformation matrix.
  */
+function fontLooksBold(fontData: FontData | undefined, fontName: string): boolean {
+  if (!fontData) {
+    return /bold|black|heavy|demi/i.test(fontName);
+  }
+  if (fontData.standardMetrics?.isBold) return true;
+  if ((fontData.fontWeight ?? 0) >= 600) return true;
+  // PDF FontDescriptor Flags bit 18 = ForceBold
+  if (fontData.flags & (1 << 18)) return true;
+  const base = stripFontSubsetPrefix(fontData.baseFont) || fontData.baseFont || fontName;
+  return /bold|black|heavy|demi/i.test(base);
+}
+
+function fontLooksItalic(fontData: FontData | undefined, fontName: string): boolean {
+  if (!fontData) {
+    return /italic|oblique/i.test(fontName);
+  }
+  if (fontData.standardMetrics?.isItalic) return true;
+  if (Math.abs(fontData.italicAngle) > 1) return true;
+  // Flags bit 6 = Italic
+  if (fontData.flags & (1 << 6)) return true;
+  const base = stripFontSubsetPrefix(fontData.baseFont) || fontData.baseFont || fontName;
+  return /italic|oblique/i.test(base);
+}
+
 function getCanvasFontProperties(
   fontName: string,
   fontData?: FontData,
 ): { family: string; weight: string; style: string } {
+  const weight = fontLooksBold(fontData, fontName) ? 'bold' : 'normal';
+  const style = fontLooksItalic(fontData, fontName) ? 'italic' : 'normal';
   let family = 'sans-serif';
-  let weight = 'normal';
-  let style = 'normal';
 
   if (fontData) {
     const stripped = stripFontSubsetPrefix(fontData.baseFont);
+    const lower = (stripped || fontData.baseFont || '').toLowerCase();
+
     if (fontData.fontBytes && stripped) {
-      // Prefer the stripped name — matches how registerEmbeddedFonts registers faces.
-      family = `"${stripped}", "${fontData.baseFont}"`;
-      const lower = stripped.toLowerCase();
-      weight = lower.includes('bold') ? 'bold' : 'normal';
-      style = (lower.includes('italic') || lower.includes('oblique')) ? 'italic' : 'normal';
-      return { family, weight, style };
-    }
-
-    const std = fontData.standardMetrics;
-    if (std) {
-      family = std.cssFamily;
-      weight = std.isBold ? 'bold' : 'normal';
-      style = std.isItalic ? 'italic' : 'normal';
-    } else {
-      const lower = stripped.toLowerCase();
-      weight = lower.includes('bold') ? 'bold' : 'normal';
-      style = (lower.includes('italic') || lower.includes('oblique')) ? 'italic' : 'normal';
-
-      if (lower.includes('courier') || lower.includes('mono') || lower.includes('cmtt') || lower.includes('lmtt')) {
-        family = '"Courier New", Courier, monospace';
+      // Always keep CSS weight/style from the PDF font identity. Embedded faces
+      // often fail to load (Type1) or load as a non-bold substitute under the
+      // same family name — dropping CSS bold made certificate headers regular.
+      let fallback = 'serif';
+      if (lower.includes('courier') || lower.includes('mono')) {
+        fallback = '"Courier New", Courier, monospace';
+      } else if (lower.includes('helv') || lower.includes('arial') || lower.includes('sans')) {
+        fallback = 'Helvetica, Arial, sans-serif';
       } else if (
         lower.includes('times') || lower.includes('roman') ||
-        lower.includes('cmr') || lower.includes('lmr') || lower.includes('ptm')
+        lower.includes('serif') || lower.includes('cmr') || lower.includes('ptm')
       ) {
-        family = '"Times New Roman", Times, serif';
-      } else if (lower.includes('helv') || lower.includes('arial') || lower.includes('cms') || lower.includes('lmss')) {
-        family = 'Helvetica, Arial, sans-serif';
-      } else {
-        family = `"${stripped}", serif`;
+        fallback = '"Times New Roman", Times, serif';
       }
+      family = `"${stripped}", "${fontData.baseFont}", ${fallback}`;
+    } else if (fontData.standardMetrics) {
+      family = fontData.standardMetrics.cssFamily;
+    } else if (lower.includes('courier') || lower.includes('mono') || lower.includes('cmtt') || lower.includes('lmtt')) {
+      family = '"Courier New", Courier, monospace';
+    } else if (
+      lower.includes('times') || lower.includes('roman') ||
+      lower.includes('cmr') || lower.includes('lmr') || lower.includes('ptm')
+    ) {
+      family = '"Times New Roman", Times, serif';
+    } else if (lower.includes('helv') || lower.includes('arial') || lower.includes('cms') || lower.includes('lmss')) {
+      family = 'Helvetica, Arial, sans-serif';
+    } else if (stripped) {
+      family = `"${stripped}", serif`;
     }
   } else {
     family = getCSSFontFamily(fontName);
-    const lower = fontName.toLowerCase();
-    weight = lower.includes('bold') ? 'bold' : 'normal';
-    style = (lower.includes('italic') || lower.includes('oblique')) ? 'italic' : 'normal';
   }
 
   return { family, weight, style };

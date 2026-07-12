@@ -213,15 +213,31 @@ export function applyStyleToSelection(
   selectionEnd: number,
   style: TextStylePatch,
 ): StyleEditResult {
-  const end = selectionEnd <= selectionStart ? line.text.length : selectionEnd;
-  const hits = mapSelectionToSegments(line, selectionStart, end);
-  const targets = hits.length > 0 ? hits.map(h => h.segment.run) : line.runs;
+  const start = Math.max(0, Math.min(selectionStart, line.text.length));
+  const end = Math.max(start, Math.min(selectionEnd, line.text.length));
+  // Collapsed ranges are a no-op here — callers must expand to a segment/line first.
+  const hits = end > start ? mapSelectionToSegments(line, start, end) : [];
+  const targets = hits.map(h => h.segment.run);
+  if (targets.length === 0) {
+    return {
+      newContentBytes: contentBytes,
+      needsFontAugmentation: false,
+      missingCharCodes: [],
+      usedSyntheticItalic: false,
+      addedUnderline: false,
+      removedUnderline: false,
+    };
+  }
 
   let bytes = contentBytes;
   let addedUnderline = false;
   let removedUnderline = false;
 
+  // Deduplicate runs (multiple hits can share a run)
+  const seen = new Set<TextRun>();
   for (const run of targets) {
+    if (seen.has(run)) continue;
+    seen.add(run);
     const patched = patchRunStyle(bytes, run, style, page, objects);
     bytes = patched.bytes;
     addedUnderline = addedUnderline || patched.addedUnderline;

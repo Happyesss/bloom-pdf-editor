@@ -16,14 +16,14 @@ import {
   hitTestTextLine, findNearestTextLine, caretIndexFromLineX,
   getLineBounds, getOverlayFontFamily,
 } from './utils';
-import { buildDisplayListIndex, hitTestDisplayList, isSelectableDisplayItem, TransactionStack, deleteObject, visualFontSize, resolveRunStyleFlags, transformObject, applyObjectTransform } from '@/engine';
+import { buildDisplayListIndex, hitTestDisplayList, isSelectableDisplayItem, TransactionStack, deleteObject, visualFontSize, resolveRunStyleFlags, transformObject, applyObjectTransform, distributeTextToSegments, segmentAtIndex } from '@/engine';
 import type { QuadTree, SelectableItem, EditableObject } from '@/engine';
 import { findMatchingFlowLine } from './flowLineMatch';
 
 import { Toolbar } from './components/Toolbar';
 import { ToolsSidebar } from './components/ToolsSidebar';
 import { PropertiesSidebar } from './components/PropertiesSidebar';
-import { EditableLineBox } from './components/EditableLineBox';
+import { EditableLineBox, type OverlaySegmentStyle } from './components/EditableLineBox';
 import { EmbeddedImageOverlay } from './components/EmbeddedImageOverlay';
 import { WatermarkPreview } from './components/WatermarkPreview';
 import { ThumbnailsSidebar } from './components/ThumbnailsSidebar';
@@ -31,6 +31,34 @@ import { FindReplacePanel } from './components/FindReplacePanel';
 import { StatusBar } from './components/StatusBar';
 import { useTextStyleActions, type TextStyleUI } from './hooks/useTextStyleActions';
 
+/** True if the run is underlined or a thin stroke path sits under it (certificate labels). */
+function runHasPathUnderline(run: TextRun, paths: PathItem[]): boolean {
+  if (run.isUnderline) return true;
+  const fs = visualFontSize(run);
+  const yTarget = run.y - fs * 0.12;
+  for (const p of paths) {
+    if (p.paintType !== 'stroke' && p.paintType !== 'both') continue;
+    if (p.height > fs * 0.5) continue;
+    if (p.width < fs * 0.4) continue;
+    if (p.lineWidth > fs * 0.4) continue;
+    const py = p.y + p.height * 0.5;
+    if (Math.abs(py - yTarget) > fs * 0.45 && Math.abs(p.y - yTarget) > fs * 0.45) continue;
+    const overlapL = Math.max(p.x, run.x);
+    const overlapR = Math.min(p.x + p.width, run.x + Math.max(run.width, fs));
+    if (overlapR - overlapL < fs * 0.3) continue;
+    return true;
+  }
+  return false;
+}
+
+type EditStyleOverride = {
+  start: number;
+  end: number;
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  color?: string;
+};
 
 // ─── Component ──────────────────────────────────────────────────────────────
 
@@ -71,9 +99,13 @@ export default function EditorPage() {
   }, []);
   const initialRunTextRef = useRef<string>('');
   const editAnchorLineRef = useRef<TextLine | null>(null);
-  const pendingStyleRef = useRef<Partial<TextStyleUI> | null>(null);
+  /** Pending style patches queued while typing, each with a char range. */
+  const pendingStylesRef = useRef<Array<{ patch: Partial<TextStyleUI>; start: number; end: number }>>([]);
   const [editText, setEditText] = useState('');
   const [caretPos, setCaretPos] = useState(0); // character index for caret
+  const editSelRef = useRef({ start: 0, end: 0 });
+  /** Live style overrides for the edit overlay (selection-scoped). */
+  const [editStyleOverrides, setEditStyleOverrides] = useState<EditStyleOverride[]>([]);
   /** CSS-pixel offset of the edit box from its natural position. */
   const [editOffsetCss, setEditOffsetCss] = useState({ x: 0, y: 0 });
   /** Manual size override in CSS px (null = auto-grow from content). */
@@ -134,12 +166,14 @@ export default function EditorPage() {
   const [watermarkImageBytes, setWatermarkImageBytes] = useState<Uint8Array | null>(null);
   const [watermarkImageDims, setWatermarkImageDims] = useState<{ width: number; height: number } | null>(null);
   const [watermarkBlendMode, setWatermarkBlendMode] = useState('Normal');
-  
+
   const [detectedWatermarks, setDetectedWatermarks] = useState<DetectedWatermark[] | null>(null);
   const [isConfirmingRemoval, setIsConfirmingRemoval] = useState(false);
 
   // Display items (images/paths) for selection overlays
   const [displayItems, setDisplayItems] = useState<(ImageItem | PathItem)[]>([]);
+  /** Thin stroke paths (underlines) excluded from selection but needed for edit overlay. */
+  const [strokePaths, setStrokePaths] = useState<PathItem[]>([]);
   const [selectedDisplayItem, setSelectedDisplayItem] = useState<ImageItem | PathItem | null>(null);
   const spatialIndexRef = useRef<QuadTree<SelectableItem> | null>(null);
 
@@ -184,23 +218,86 @@ export default function EditorPage() {
     setRenderKey(k => k + 1);
   }, []);
 
+  const getEditSelectionRange = useCallback(() => {
+    if (!editingLineRef.current) return null;
+    return editSelRef.current;
+  }, []);
+
+  const resolveEditStyleRange = useCallback((line: TextLine, start: number, end: number) => {
+    let s = Math.max(0, Math.min(start, line.text.length));
+    let e = Math.max(s, Math.min(end, line.text.length));
+    if (e <= s) {
+      const seg = segmentAtIndex(line, s);
+      if (seg) return { start: seg.startIndex, end: seg.endIndex };
+      return { start: 0, end: line.text.length };
+    }
+    return { start: s, end: e };
+  }, []);
+
   const { applyStyle } = useTextStyleActions(
     engineRef,
     doc,
     currentPage,
     selectedLine,
     bumpRender,
+    getEditSelectionRange,
   );
 
   // Apply style changes from properties sidebar to the PDF
   const queueOrApplyStyle = useCallback((patch: Partial<TextStyleUI>) => {
     if (!selectedLine) return;
     if (editingLineRef.current) {
-      pendingStyleRef.current = { ...(pendingStyleRef.current ?? {}), ...patch };
+      const line = editAnchorLineRef.current ?? selectedLine;
+      const range = resolveEditStyleRange(line, editSelRef.current.start, editSelRef.current.end);
+      pendingStylesRef.current = [...pendingStylesRef.current, { patch, ...range }];
+      setEditStyleOverrides(prev => [
+        ...prev,
+        {
+          start: range.start,
+          end: range.end,
+          bold: patch.bold,
+          italic: patch.italic,
+          underline: patch.underline,
+          color: patch.color,
+        },
+      ]);
       return;
     }
     void applyStyle(patch);
-  }, [selectedLine, applyStyle]);
+  }, [selectedLine, applyStyle, resolveEditStyleRange]);
+
+  const handleEditSelection = useCallback((start: number, end: number) => {
+    editSelRef.current = { start, end };
+    setCaretPos(start === end ? start : start);
+
+    // Sync sidebar toggles from the run under the caret / selection start
+    const line = editAnchorLineRef.current;
+    if (!line || !renderResult) return;
+    const seg = segmentAtIndex(line, start);
+    if (!seg) return;
+    const run = seg.run;
+    const fontData = renderResult.fonts.get(run.fontName);
+    const flags = resolveRunStyleFlags(run.fontName, fontData);
+    let bold = flags.bold;
+    let italic = flags.italic;
+    let underline = !!run.isUnderline || runHasPathUnderline(run, strokePaths);
+    for (const ov of editStyleOverrides) {
+      if (start >= ov.start && start < ov.end) {
+        if (ov.bold != null) bold = ov.bold;
+        if (ov.italic != null) italic = ov.italic;
+        if (ov.underline != null) underline = ov.underline;
+      }
+    }
+    setTextBold(bold);
+    setTextItalic(italic);
+    setTextUnderline(underline);
+    setTextFontSize(visualFontSize(run));
+    if (run.fillColor) {
+      const [r, g, b] = run.fillColor;
+      const hex = '#' + [r, g, b].map(c => Math.round(c * 255).toString(16).padStart(2, '0')).join('');
+      setTextColor(hex);
+    }
+  }, [renderResult, strokePaths, editStyleOverrides]);
 
   const handleTextBold = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
     setTextBold(prev => {
@@ -342,7 +439,8 @@ export default function EditorPage() {
   useEffect(() => {
     if (selectedLine && selectedLine.runs.length > 0) {
       const run = selectedLine.runs[0];
-      setTextFontSize(Math.round(visualFontSize(run)));
+      // Keep fractional size so overlay matches canvas (rounding caused a visible jump)
+      setTextFontSize(visualFontSize(run));
       if (run.fontName) setTextFontFamily(run.fontName);
       const fontData = renderResult?.fonts.get(run.fontName);
       const flags = resolveRunStyleFlags(run.fontName, fontData);
@@ -385,7 +483,16 @@ export default function EditorPage() {
           const visItems = interpreted.displayList.filter(
             (di: DisplayItem) => isSelectableDisplayItem(di, pageBounds),
           );
+          // Keep thin strokes (form-label underlines) for edit-overlay decoration
+          const thinStrokes = interpreted.displayList.filter((di: DisplayItem) => {
+            if (di.type !== 'path') return false;
+            const p = di as PathItem;
+            if (p.paintType !== 'stroke' && p.paintType !== 'both') return false;
+            // Horizontal underline: short height, meaningful width
+            return (p.height || 0) <= 8 && (p.width || 0) >= 10;
+          }) as PathItem[];
           if (!cancelled) setDisplayItems(visItems as (ImageItem | PathItem)[]);
+          if (!cancelled) setStrokePaths(thinStrokes);
           if (!cancelled) {
             spatialIndexRef.current = buildDisplayListIndex(
               visItems as DisplayItem[],
@@ -408,6 +515,7 @@ export default function EditorPage() {
         } catch (dispErr) {
           console.warn('[Editor] Display items extraction failed:', dispErr);
           if (!cancelled) setDisplayItems([]);
+          if (!cancelled) setStrokePaths([]);
           if (!cancelled) spatialIndexRef.current = null;
         }
 
@@ -492,32 +600,36 @@ export default function EditorPage() {
     const { mediaBox } = page;
 
     // ── Edit: white-out only the active line (HTML input shows typed text) ──
+    // Match EditableLineBox placement: baseline-aligned. Keep descent small so
+    // native path underlines under form labels stay visible on the canvas.
     if (editingLine && editAnchorLineRef.current) {
       const anchor = editAnchorLineRef.current;
       const bounds = getLineBounds(anchor);
       const fontSize = anchor.runs[0] ? visualFontSize(anchor.runs[0]) : anchor.fontSize;
-      const pad = Math.max(2, fontSize * 0.15);
+      const fontSizeCss = fontSize * scale;
+      const baseline = anchor.baseline;
+      const ascent = fontSizeCss * 0.8;
+      const descent = fontSizeCss * 0.05;
 
       ctx.save();
       ctx.scale(dpr, dpr);
 
-      const maskTopLeft = pdfToCanvas(
-        bounds.x - pad,
-        bounds.y + bounds.height + pad,
+      const leftPt = pdfToCanvas(
+        bounds.x,
+        baseline,
         scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
       );
-      const maskBottomRight = pdfToCanvas(
-        Math.max(bounds.x + bounds.width, bounds.x + editText.length * fontSize * 0.55) + pad,
-        bounds.y - pad,
-        scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
+      const growW = Math.max(
+        bounds.width * scale,
+        editText.length > 0 ? editText.length * fontSizeCss * 0.55 : 0,
       );
-      const rx = Math.min(maskTopLeft.cssX, maskBottomRight.cssX) + editOffsetCss.x;
-      const ry = Math.min(maskTopLeft.cssY, maskBottomRight.cssY) + editOffsetCss.y;
-      const rw = editManualSize.w ?? Math.abs(maskBottomRight.cssX - maskTopLeft.cssX);
-      const rh = editManualSize.h ?? Math.abs(maskBottomRight.cssY - maskTopLeft.cssY);
-      
+      const rx = leftPt.cssX + editOffsetCss.x;
+      const ry = leftPt.cssY - ascent + editOffsetCss.y;
+      const rw = editManualSize.w ?? growW;
+      const rh = editManualSize.h ?? (ascent + descent);
+
       ctx.fillStyle = '#ffffff';
-      ctx.fillRect(rx - 2, ry - 2, rw + 4, rh + 4);
+      ctx.fillRect(rx - 1, ry - 1, rw + 2, rh + 2);
 
       ctx.restore();
     }
@@ -677,7 +789,7 @@ export default function EditorPage() {
     }
   }, [editingLine, drawOverlay]);
 
-  // ── Focus hidden input when entering edit mode ──
+  // ── Focus hidden input when entering edit mode (don't collapse selection on caret moves)
   useEffect(() => {
     if (editingLine && hiddenInputRef.current) {
       if (blurTimeoutRef.current) {
@@ -686,9 +798,16 @@ export default function EditorPage() {
       }
       hiddenInputRef.current.focus({ preventScroll: true });
       const pos = caretPos;
-      hiddenInputRef.current.setSelectionRange(pos, pos);
+      const sel = editSelRef.current;
+      if (sel.end > sel.start) {
+        hiddenInputRef.current.setSelectionRange(sel.start, sel.end);
+      } else {
+        hiddenInputRef.current.setSelectionRange(pos, pos);
+      }
     }
-  }, [editingLine, caretPos]);
+    // Only re-focus when the edit session starts, not on every caret tick
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingLine]);
 
   // ── Begin an edit session with frozen line anchor + undo snapshot ──
   const beginEditSession = useCallback((line: TextLine, caretAt?: number) => {
@@ -705,7 +824,8 @@ export default function EditorPage() {
       segments: line.segments.map(s => ({ ...s, run: s.run })),
     };
     editingBlockIdRef.current = line.id;
-    pendingStyleRef.current = null;
+    pendingStylesRef.current = [];
+    setEditStyleOverrides([]);
     setEditOffsetCss({ x: 0, y: 0 });
     setEditManualSize({ w: null, h: null });
     setSelectedDisplayItem(null);
@@ -713,7 +833,29 @@ export default function EditorPage() {
     setSelectedLine(line);
     setEditingLine(line);
     setEditText(line.text);
-    setCaretPos(caretAt ?? line.text.length);
+    const caret = caretAt ?? line.text.length;
+    setCaretPos(caret);
+    editSelRef.current = { start: caret, end: caret };
+
+    // Sync sidebar styles from the run under the caret (not always runs[0])
+    {
+      const seg = segmentAtIndex(line, caret) ?? (line.segments[0] ?? null);
+      const run = seg?.run ?? line.runs[0];
+      if (run) {
+        setTextFontSize(visualFontSize(run));
+        if (run.fontName) setTextFontFamily(run.fontName);
+        const fontData = renderResult?.fonts.get(run.fontName);
+        const flags = resolveRunStyleFlags(run.fontName, fontData);
+        setTextBold(flags.bold);
+        setTextItalic(flags.italic);
+        setTextUnderline(!!run.isUnderline || runHasPathUnderline(run, strokePaths));
+        if (run.fillColor) {
+          const [r, g, b] = run.fillColor;
+          const hex = '#' + [r, g, b].map(c => Math.round(c * 255).toString(16).padStart(2, '0')).join('');
+          setTextColor(hex);
+        }
+      }
+    }
 
     if (doc && engineRef.current) {
       const page = doc.pages[currentPage];
@@ -723,7 +865,7 @@ export default function EditorPage() {
         contentBytes: new Uint8Array(contentBytes),
       };
     }
-  }, [doc, currentPage, setEditingLine]);
+  }, [doc, currentPage, setEditingLine, renderResult, strokePaths]);
 
   // ── Text edit submit — surgical in-place line edit (preserve positions) ──
   const handleEditSubmit = useCallback(async (closeEdit: boolean = true) => {
@@ -737,13 +879,15 @@ export default function EditorPage() {
     const pdfDx = editOffsetCss.x / scale;
     const pdfDy = -editOffsetCss.y / scale; // CSS down is PDF down in screen, PDF y up
     const moved = Math.abs(pdfDx) > 0.5 || Math.abs(pdfDy) > 0.5;
-    const pendingStyle = pendingStyleRef.current;
+    const pendingStyles = pendingStylesRef.current;
+    const hasPendingStyles = pendingStyles.length > 0;
 
-    if (!textChanged && !moved && !pendingStyle) {
+    if (!textChanged && !moved && !hasPendingStyles) {
       editAnchorLineRef.current = null;
       undoSnapshotRef.current = null;
       editingBlockIdRef.current = null;
-      pendingStyleRef.current = null;
+      pendingStylesRef.current = [];
+      setEditStyleOverrides([]);
       setEditOffsetCss({ x: 0, y: 0 });
       setEditManualSize({ w: null, h: null });
       if (closeEdit) {
@@ -793,9 +937,12 @@ export default function EditorPage() {
 
       await engine.updatePageContent(page.contentRefs, bytes, doc.objects);
 
-      if (pendingStyle) {
-        pendingStyleRef.current = null;
-        await applyStyle(pendingStyle);
+      if (hasPendingStyles) {
+        const queued = [...pendingStyles];
+        pendingStylesRef.current = [];
+        for (const item of queued) {
+          await applyStyle(item.patch, { start: item.start, end: item.end });
+        }
       }
 
       txStackRef.current.push({
@@ -810,7 +957,8 @@ export default function EditorPage() {
       editAnchorLineRef.current = null;
       undoSnapshotRef.current = null;
       editingBlockIdRef.current = null;
-      pendingStyleRef.current = null;
+      pendingStylesRef.current = [];
+      setEditStyleOverrides([]);
       setEditOffsetCss({ x: 0, y: 0 });
       setEditManualSize({ w: null, h: null });
       setIsDirty(true);
@@ -836,7 +984,8 @@ export default function EditorPage() {
     editAnchorLineRef.current = null;
     undoSnapshotRef.current = null;
     editingBlockIdRef.current = null;
-    pendingStyleRef.current = null;
+    pendingStylesRef.current = [];
+    setEditStyleOverrides([]);
     setEditOffsetCss({ x: 0, y: 0 });
     setEditManualSize({ w: null, h: null });
     setEditingLine(null);
@@ -1068,29 +1217,29 @@ export default function EditorPage() {
       }
 
       {
-          const spatialHit = spatialIndexRef.current
-            ? hitTestDisplayList(spatialIndexRef.current, pdfX, pdfY)
-            : null;
-          const itemHit = spatialHit && (spatialHit.data.type === 'image' || spatialHit.data.type === 'path')
-            ? spatialHit.data as ImageItem | PathItem
-            : null;
-          if (itemHit) {
-            if (editingLine) handleEditSubmit();
-            setSelectedDisplayItem(itemHit);
-            setSelectedLine(null);
-            setEditingLine(null);
-            setActiveTool('select');
-            return;
-          }
-          setSelectedDisplayItem(null);
-          if (editingLine) {
-            handleEditSubmit();
-          } else {
-            setEditingLine(null);
-            setSelectedLine(null);
-          }
-          setActiveFloatingTextId(null);
-          setActiveFloatingImageId(null);
+        const spatialHit = spatialIndexRef.current
+          ? hitTestDisplayList(spatialIndexRef.current, pdfX, pdfY)
+          : null;
+        const itemHit = spatialHit && (spatialHit.data.type === 'image' || spatialHit.data.type === 'path')
+          ? spatialHit.data as ImageItem | PathItem
+          : null;
+        if (itemHit) {
+          if (editingLine) handleEditSubmit();
+          setSelectedDisplayItem(itemHit);
+          setSelectedLine(null);
+          setEditingLine(null);
+          setActiveTool('select');
+          return;
+        }
+        setSelectedDisplayItem(null);
+        if (editingLine) {
+          handleEditSubmit();
+        } else {
+          setEditingLine(null);
+          setSelectedLine(null);
+        }
+        setActiveFloatingTextId(null);
+        setActiveFloatingImageId(null);
       }
     } else if (activeTool === 'addtext') {
       if (blurTimeoutRef.current) {
@@ -1774,7 +1923,7 @@ export default function EditorPage() {
 
         const fontSizePt = Math.round(72 * (watermarkSize / 100));
         const textWidth = watermarkText.length * fontSizePt * 0.5;
-        
+
         let finalWidth = textWidth + 40;
         let finalHeight = fontSizePt + 40;
         if (watermarkShapeType === 'circle') {
@@ -1782,7 +1931,7 @@ export default function EditorPage() {
           finalWidth = maxDim;
           finalHeight = maxDim;
         }
-        
+
         wm = {
           id: `wm-${Date.now()}`,
           type: 'shape',
@@ -2267,7 +2416,7 @@ export default function EditorPage() {
 
             {/* DOM overlays for FloatingText */}
             {activeTool === 'watermark' && watermarkLivePreview && (
-              <WatermarkPreview 
+              <WatermarkPreview
                 doc={doc}
                 currentPage={currentPage}
                 scale={scale}
@@ -2287,14 +2436,14 @@ export default function EditorPage() {
                 watermarkBlendMode={watermarkBlendMode}
               />
             )}
-            
+
             {/* Detected watermarks dotted boxes */}
-            {activeTool === 'watermark' && detectedWatermarks?.filter(d => d.pageIndex === currentPage).map(dw => 
+            {activeTool === 'watermark' && detectedWatermarks?.filter(d => d.pageIndex === currentPage).map(dw =>
               dw.positions.map((pos, i) => {
                 const { cssX, cssY } = pdfToCanvas(
-                  pos.x, 
-                  pos.y, 
-                  scale, 
+                  pos.x,
+                  pos.y,
+                  scale,
                   doc?.pages[currentPage]?.mediaBox.height || 0,
                   doc?.pages[currentPage]?.mediaBox.x || 0,
                   doc?.pages[currentPage]?.mediaBox.y || 0
@@ -2302,17 +2451,17 @@ export default function EditorPage() {
                 const boxW = (pos.width || 120) * scale;
                 const boxH = (pos.height || 60) * scale;
                 const rot = pos.rotation ?? dw.rotation ?? 0;
-                
+
                 return (
-                  <div 
+                  <div
                     key={`det-${dw.id}-${i}`}
                     className="absolute border-2 border-red-500 border-dashed bg-red-500/20 rounded z-50 pointer-events-none animate-in fade-in zoom-in duration-200"
-                    style={{ 
-                      left: cssX, 
-                      top: cssY, 
-                      width: boxW, 
-                      height: boxH, 
-                      transform: `translate(-50%, -50%) rotate(${-rot}deg)` 
+                    style={{
+                      left: cssX,
+                      top: cssY,
+                      width: boxW,
+                      height: boxH,
+                      transform: `translate(-50%, -50%) rotate(${-rot}deg)`
                     }}
                   />
                 );
@@ -2351,7 +2500,7 @@ export default function EditorPage() {
                 />
               );
             })()}
-            
+
             {floatingTexts.map(ft => {
               const { cssX, cssY } = pdfToCanvas(
                 ft.pdfX,
@@ -2541,7 +2690,7 @@ export default function EditorPage() {
               );
             })}
 
-            {/* Word-like line editor — drag, resize, auto-grow */}
+            {/* Word-like line editor — same size/position as canvas text */}
             {editingLine && editAnchorLineRef.current && renderResult && doc && (() => {
               const anchor = editAnchorLineRef.current!;
               const bounds = getLineBounds(anchor);
@@ -2549,42 +2698,131 @@ export default function EditorPage() {
               const { mediaBox } = page;
               const primaryRun = anchor.runs[0];
               const visualSize = primaryRun ? visualFontSize(primaryRun) : anchor.fontSize;
-              const pad = Math.max(1, visualSize * 0.08);
-              const topLeft = pdfToCanvas(
-                bounds.x - pad,
-                bounds.y + bounds.height + pad,
+              const fontSizeCss = (textFontSize || visualSize) * scale;
+              const baseline = anchor.baseline;
+              const ascent = fontSizeCss * 0.8;
+              const descent = fontSizeCss * 0.2;
+              const origin = pdfToCanvas(
+                bounds.x,
+                baseline,
                 scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
               );
-              const bottomRight = pdfToCanvas(
-                bounds.x + bounds.width + pad * 2,
-                bounds.y - pad,
-                scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
-              );
-              const left = Math.min(topLeft.cssX, bottomRight.cssX);
-              const top = Math.min(topLeft.cssY, bottomRight.cssY);
-              const naturalWidth = Math.max(40, Math.abs(bottomRight.cssX - topLeft.cssX));
-              const naturalHeight = Math.max(visualSize * scale * 1.15, Math.abs(bottomRight.cssY - topLeft.cssY));
+              const left = origin.cssX;
+              const top = origin.cssY - ascent;
+              const naturalWidth = Math.max(20, bounds.width * scale);
+              const naturalHeight = ascent + descent;
               const fontData = primaryRun ? renderResult.fonts.get(primaryRun.fontName) : undefined;
               const [r, g, b] = primaryRun?.fillColor || [0, 0, 0];
               const colorCss = textColor.startsWith('#')
                 ? textColor
                 : `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)})`;
+
+              const pathItems = strokePaths;
+              const edits = distributeTextToSegments(anchor, editText);
+
+              type Piece = {
+                start: number;
+                end: number;
+                text: string;
+                run: TextRun;
+              };
+              let pieces: Piece[] = [];
+              {
+                let pos = 0;
+                for (const edit of edits) {
+                  pieces.push({
+                    start: pos,
+                    end: pos + edit.newText.length,
+                    text: edit.newText,
+                    run: edit.run,
+                  });
+                  pos += edit.newText.length;
+                }
+              }
+
+              // Split pieces at override boundaries so bold-off only affects the selection
+              for (const ov of editStyleOverrides) {
+                if (ov.end <= ov.start) continue;
+                const next: Piece[] = [];
+                for (const p of pieces) {
+                  if (ov.end <= p.start || ov.start >= p.end) {
+                    next.push(p);
+                    continue;
+                  }
+                  if (ov.start > p.start) {
+                    next.push({
+                      ...p,
+                      end: ov.start,
+                      text: p.text.slice(0, ov.start - p.start),
+                    });
+                  }
+                  const midStart = Math.max(p.start, ov.start);
+                  const midEnd = Math.min(p.end, ov.end);
+                  next.push({
+                    ...p,
+                    start: midStart,
+                    end: midEnd,
+                    text: p.text.slice(midStart - p.start, midEnd - p.start),
+                  });
+                  if (ov.end < p.end) {
+                    next.push({
+                      ...p,
+                      start: ov.end,
+                      text: p.text.slice(ov.end - p.start),
+                    });
+                  }
+                }
+                pieces = next.filter(p => p.text.length > 0 || p.end > p.start);
+              }
+
+              const overlaySegments: OverlaySegmentStyle[] = pieces.map((piece) => {
+                const run = piece.run;
+                const fd = renderResult.fonts.get(run.fontName);
+                const flags = resolveRunStyleFlags(run.fontName, fd);
+                let bold = flags.bold;
+                let italic = flags.italic;
+                let underline = !!run.isUnderline || runHasPathUnderline(run, pathItems);
+                let color = run.fillColor
+                  ? `rgb(${Math.round(run.fillColor[0] * 255)}, ${Math.round(run.fillColor[1] * 255)}, ${Math.round(run.fillColor[2] * 255)})`
+                  : colorCss;
+
+                for (const ov of editStyleOverrides) {
+                  if (piece.start >= ov.start && piece.end <= ov.end) {
+                    if (ov.bold != null) bold = ov.bold;
+                    if (ov.italic != null) italic = ov.italic;
+                    if (ov.underline != null) underline = ov.underline;
+                    if (ov.color) color = ov.color.startsWith('#') ? ov.color : color;
+                  }
+                }
+
+                return {
+                  text: piece.text,
+                  fontFamily: getOverlayFontFamily(run.fontName, fd),
+                  fontWeight: bold ? 'bold' : 'normal',
+                  fontStyle: italic ? 'italic' : 'normal',
+                  underline,
+                  color,
+                };
+              });
+
               return (
                 <EditableLineBox
                   left={left}
                   top={top}
                   naturalWidth={naturalWidth}
                   naturalHeight={naturalHeight}
-                  fontSizeCss={(textFontSize || visualSize) * scale}
+                  fontSizeCss={fontSizeCss}
                   fontFamily={getOverlayFontFamily(primaryRun?.fontName || '', fontData)}
                   fontWeight={textBold ? 'bold' : 'normal'}
                   fontStyle={textItalic ? 'italic' : 'normal'}
                   underline={textUnderline}
                   color={colorCss}
+                  segments={overlaySegments}
                   text={editText}
                   textRef={hiddenInputRef}
                   onTextInput={handleHiddenInput}
                   onKeyDown={handleHiddenKeyDown}
+                  onSelect={handleEditSelection}
                   onBlur={handleHiddenBlur}
                   offsetCssX={editOffsetCss.x}
                   offsetCssY={editOffsetCss.y}
@@ -2642,13 +2880,13 @@ export default function EditorPage() {
               Do you really want to remove the detected watermarks from this document? This action cannot be undone.
             </p>
             <div className="flex gap-3 justify-end">
-              <button 
+              <button
                 onClick={() => setIsConfirmingRemoval(false)}
                 className="px-4 py-2 rounded font-medium text-sm text-zinc-300 hover:text-white hover:bg-zinc-800 transition-colors"
               >
                 Cancel
               </button>
-              <button 
+              <button
                 onClick={executeRemoveWatermarks}
                 className="px-4 py-2 rounded font-medium text-sm bg-red-600 hover:bg-red-700 text-white transition-colors"
               >
@@ -2666,7 +2904,7 @@ export default function EditorPage() {
             <p className="text-zinc-400 text-sm mb-6 leading-relaxed">
               Watermark has been applied and live preview is off. To add more watermarks, turn on the live preview to preview it live.
             </p>
-            <button 
+            <button
               onClick={() => setShowApplySuccessModal(false)}
               className="w-full px-4 py-2.5 rounded font-medium text-sm bg-blue-600 hover:bg-blue-700 text-white transition-colors"
             >

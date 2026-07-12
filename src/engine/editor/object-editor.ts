@@ -4,6 +4,7 @@
  */
 
 import {
+  PDFName,
   PDFNumber,
   type PDFDocumentData,
   type PDFObject,
@@ -13,6 +14,7 @@ import { parseContentStream, type CSInstruction } from '../content/operator-lexe
 import { compileInstructions } from './text-editor';
 import { updatePageContent } from './stream-compiler';
 import type { EditableObject } from '../editing/scene-graph';
+import type { ImageItem } from '../content/interpreter';
 
 function op(operator: string, operands: PDFObject[] = []): CSInstruction {
   return { operator, operands, offset: 0 };
@@ -20,6 +22,11 @@ function op(operator: string, operands: PDFObject[] = []): CSInstruction {
 
 function numVal(obj: PDFObject | undefined): number {
   return obj instanceof PDFNumber ? obj.value : 0;
+}
+
+function doOperandName(inst: CSInstruction): string {
+  const op0 = inst.operands[0];
+  return op0 instanceof PDFName ? op0.name.replace(/^\//, '') : '';
 }
 
 /**
@@ -38,19 +45,11 @@ export async function applyObjectTransform(
   if (targetIndex < 0) return;
 
   if (obj.kind === 'image') {
-    // Replace preceding cm operands
-    for (let j = targetIndex - 1; j >= Math.max(0, targetIndex - 5); j--) {
-      if (instructions[j].operator === 'cm' && instructions[j].operands.length >= 6) {
-        instructions[j].operands = newCtm.map(n => new PDFNumber(n));
-        const next = compileInstructions(instructions);
-        await updatePageContent(page.contentRefs, next, doc.objects);
-        return;
-      }
-    }
+    await applyImageTransform(instructions, targetIndex, obj, newCtm, page, doc);
+    return;
   }
 
   // Generic: wrap with q / cm / Q using delta from identity toward newCtm
-  // For paths: inject cm before path construction
   let start = targetIndex;
   if (obj.kind === 'path') {
     while (start > 0) {
@@ -61,30 +60,7 @@ export async function applyObjectTransform(
     }
   }
 
-  const dx = (obj.bbox.x !== undefined && newCtm.length >= 6)
-    ? newCtm[4] - (obj.ctm[4] ?? 0)
-    : 0;
-  const dy = newCtm.length >= 6 ? newCtm[5] - (obj.ctm[5] ?? 0) : 0;
-
-  // Prefer translating path coords for simple re rectangles
   if (obj.kind === 'path') {
-    for (let i = start; i <= targetIndex; i++) {
-      if (instructions[i].operator === 're' && instructions[i].operands.length >= 4) {
-        const x = numVal(instructions[i].operands[0]) + (newCtm[4] - obj.bbox.x);
-        const y = numVal(instructions[i].operands[1]) + (newCtm[5] - obj.bbox.y);
-        // When transformObject set ctm with translation, bbox already has new position
-        // Use delta from original bbox to new ctm translation relative to identity
-        const ndx = obj.bbox.x !== undefined ? (/* moved */ 0) : 0;
-        void ndx;
-        // Simpler: new position is encoded in transformObject's bbox; compute delta
-        break;
-      }
-    }
-    // Compute delta from original bbox to implied translation
-    // newCtm from transformObject after translate is typically [1,0,0,1,dx,dy] composed
-    // For path with identity ctm, translation is in newCtm[4], newCtm[5] if pure translate
-    // Actually transformObject sets ctm via composeTransform on identity + translate
-    // so newCtm ≈ [1,0,0,1,dx,dy] when only translating from identity ctm
     const tdx = newCtm[4] - obj.ctm[4];
     const tdy = newCtm[5] - obj.ctm[5];
     for (let i = start; i <= targetIndex; i++) {
@@ -103,10 +79,107 @@ export async function applyObjectTransform(
   }
 
   // Fallback wrap
-  void dx; void dy;
   const cmOps = newCtm.map(n => new PDFNumber(n));
   instructions.splice(start, 0, op('q'), op('cm', cmOps));
   instructions.splice(targetIndex + 3, 0, op('Q'));
+  const next = compileInstructions(instructions);
+  await updatePageContent(page.contentRefs, next, doc.objects);
+}
+
+/**
+ * Move/resize an image without disturbing shared clips/text.
+ *
+ * Strategy: remove only the image's own placement (`cm`/`Do`, or a tight
+ * image-only `q…Q`), then append a fresh unclipped `q cm Do Q` at the new
+ * CTM. Never translate/strip geometry in a shared graphics block — that was
+ * cropping certificate text when the logo moved.
+ */
+async function applyImageTransform(
+  instructions: CSInstruction[],
+  targetIndex: number,
+  obj: EditableObject,
+  newCtm: number[],
+  page: PDFDocumentData['pages'][number],
+  doc: PDFDocumentData,
+): Promise<void> {
+  const img = obj.source as ImageItem | undefined;
+  const imgName = (
+    doOperandName(instructions[targetIndex]) ||
+    img?.name ||
+    ''
+  ).replace(/^\//, '');
+  if (!imgName) return;
+
+  let cmIdx = -1;
+  for (let j = targetIndex - 1; j >= Math.max(0, targetIndex - 20); j--) {
+    if (instructions[j].operator === 'cm' && instructions[j].operands.length >= 6) {
+      cmIdx = j;
+      break;
+    }
+  }
+
+  let removeStart = cmIdx >= 0 ? cmIdx : targetIndex;
+  let removeEnd = targetIndex;
+
+  // If wrapped in a tight image-only q…Q, remove the whole wrapper
+  // (optional dedicated clip + cm + Do only — no text/paint/other Do).
+  if (removeStart > 0 && instructions[removeStart - 1].operator === 'q') {
+    const qStart = removeStart - 1;
+    let depth = 0;
+    let qEnd = -1;
+    for (let j = removeEnd + 1; j < instructions.length; j++) {
+      if (instructions[j].operator === 'q') depth++;
+      else if (instructions[j].operator === 'Q') {
+        if (depth === 0) { qEnd = j; break; }
+        depth--;
+      }
+    }
+    if (qEnd > removeEnd) {
+      let foreign = false;
+      for (let j = qStart + 1; j < qEnd; j++) {
+        if (j === targetIndex || j === cmIdx) continue;
+        const o = instructions[j].operator;
+        if (
+          o === 'Do' ||
+          o === 'BT' || o === 'ET' || o === 'Tj' || o === 'TJ' || o === 'Tf' ||
+          o === "'" || o === '"' || o === 'Td' || o === 'TD' || o === 'Tm' || o === 'T*' ||
+          o === 'f' || o === 'F' || o === 'f*' || o === 'S' || o === 's' ||
+          o === 'B' || o === 'b' || o === 'B*' || o === 'b*'
+        ) {
+          foreign = true;
+          break;
+        }
+        // Allowed in image-only block: clip path construction + W/n, cm
+        if (!['m', 'l', 'c', 'v', 'y', 'h', 're', 'W', 'W*', 'n', 'cm', 'q', 'Q', 'gs', 'rg', 'RG', 'g', 'G', 'k', 'K', 'CS', 'cs', 'SC', 'sc', 'SCN', 'scn', 'w', 'J', 'j', 'M', 'd', 'ri', 'i'].includes(o)) {
+          foreign = true;
+          break;
+        }
+      }
+      if (!foreign) {
+        removeStart = qStart;
+        removeEnd = qEnd;
+      }
+    }
+  }
+
+  const simple =
+    Math.abs(newCtm[1]) < 0.001 && Math.abs(newCtm[2]) < 0.001;
+  const placementCtm = simple
+    ? [newCtm[0], 0, 0, newCtm[3], newCtm[4], newCtm[5]]
+    : [...newCtm];
+
+  const placement: CSInstruction[] = [
+    op('q'),
+    op('cm', placementCtm.map(n => new PDFNumber(n))),
+    op('Do', [new PDFName(imgName)]),
+    op('Q'),
+  ];
+
+  // Remove old placement, then append unclipped placement at end so the
+  // image paints above existing content and never mutates shared clips.
+  instructions.splice(removeStart, removeEnd - removeStart + 1);
+  instructions.push(...placement);
+
   const next = compileInstructions(instructions);
   await updatePageContent(page.contentRefs, next, doc.objects);
 }
@@ -121,15 +194,39 @@ export async function deleteObject(
   const contentBytes = getPageContentBytes(page, doc.objects);
   const instructions = parseContentStream(contentBytes);
   const targetIndex = findObjectInstructionIndex(instructions, obj);
-  if (targetIndex < 0) return;
+  if (targetIndex < 0) {
+    throw new Error('Could not locate object in content stream — refuse to delete');
+  }
 
   let start = targetIndex;
   let end = targetIndex;
 
   if (obj.kind === 'image') {
-    if (start > 0 && instructions[start - 1].operator === 'cm') start--;
-    if (start > 0 && instructions[start - 1].operator === 'q') start--;
-    if (end + 1 < instructions.length && instructions[end + 1].operator === 'Q') end++;
+    // ONLY remove a tight image placement block. Never peel an outer q/Q that
+    // wraps other page content — that blanks the whole page.
+    // Allowed patterns:
+    //   q cm Do Q   (contiguous)
+    //   cm Do
+    //   Do
+    if (
+      targetIndex >= 2 &&
+      targetIndex + 1 < instructions.length &&
+      instructions[targetIndex - 2].operator === 'q' &&
+      instructions[targetIndex - 1].operator === 'cm' &&
+      instructions[targetIndex].operator === 'Do' &&
+      instructions[targetIndex + 1].operator === 'Q'
+    ) {
+      start = targetIndex - 2;
+      end = targetIndex + 1;
+    } else if (
+      targetIndex >= 1 &&
+      instructions[targetIndex - 1].operator === 'cm' &&
+      instructions[targetIndex].operator === 'Do'
+    ) {
+      start = targetIndex - 1;
+      end = targetIndex;
+    }
+    // else: just the Do at targetIndex
   } else if (obj.kind === 'path') {
     while (start > 0) {
       const prev = instructions[start - 1].operator;
@@ -138,7 +235,6 @@ export async function deleteObject(
       } else break;
     }
   } else if (obj.kind === 'text') {
-    // Remove from BT to ET if possible
     for (let i = targetIndex; i >= 0; i--) {
       if (instructions[i].operator === 'BT') { start = i; break; }
     }
@@ -152,24 +248,72 @@ export async function deleteObject(
   await updatePageContent(page.contentRefs, next, doc.objects);
 }
 
-function findObjectInstructionIndex(
+/**
+ * Locate the content-stream instruction for an editable object.
+ * Images: never fall back to "first Do" — that blanks pages when a Form
+ * XObject or another image is matched by mistake.
+ */
+export function findObjectInstructionIndex(
   instructions: CSInstruction[],
   obj: EditableObject,
 ): number {
   if (obj.kind === 'image') {
+    const img = obj.source as ImageItem | undefined;
+    const targetName = (img?.name || '').replace(/^\//, '');
+    const sourceIdx = img?.sourceInstructionIndex;
+
+    // Prefer the exact instruction index captured during interpretation
+    if (
+      sourceIdx != null &&
+      sourceIdx >= 0 &&
+      sourceIdx < instructions.length &&
+      instructions[sourceIdx].operator === 'Do'
+    ) {
+      const name = doOperandName(instructions[sourceIdx]);
+      if (!targetName || name === targetName) return sourceIdx;
+    }
+
+    let bestIdx = -1;
+    let bestScore = Infinity;
+    const nameMatches: number[] = [];
+
     for (let i = 0; i < instructions.length; i++) {
       if (instructions[i].operator !== 'Do') continue;
-      for (let j = i - 1; j >= Math.max(0, i - 5); j--) {
-        if (instructions[j].operator === 'cm' && instructions[j].operands.length >= 6) {
-          const e = numVal(instructions[j].operands[4]);
-          const f = numVal(instructions[j].operands[5]);
-          if (Math.abs(e - obj.bbox.x) < 5 && Math.abs(f - obj.bbox.y) < 5) {
-            return i;
-          }
+      const name = doOperandName(instructions[i]);
+
+      // Name mismatch → skip (critical: don't delete Form XObjects named differently)
+      if (targetName && name && name !== targetName) continue;
+      if (targetName && name === targetName) nameMatches.push(i);
+
+      // Score by nearest preceding cm vs object CTM / bbox
+      let score = targetName && name === targetName ? 0 : 50;
+      let foundCm = false;
+      for (let j = i - 1; j >= Math.max(0, i - 20); j--) {
+        if (instructions[j].operator !== 'cm' || instructions[j].operands.length < 6) continue;
+        foundCm = true;
+        const a = numVal(instructions[j].operands[0]);
+        const d = numVal(instructions[j].operands[3]);
+        const e = numVal(instructions[j].operands[4]);
+        const f = numVal(instructions[j].operands[5]);
+        score += Math.abs(e - obj.bbox.x) + Math.abs(f - obj.bbox.y);
+        score += Math.abs(Math.abs(a) - obj.bbox.width) * 0.25;
+        score += Math.abs(Math.abs(d) - obj.bbox.height) * 0.25;
+        if (obj.ctm.length >= 6) {
+          score += Math.abs(e - obj.ctm[4]) + Math.abs(f - obj.ctm[5]);
         }
+        break;
       }
-      return i;
+      if (!foundCm) score += 200;
+      if (score < bestScore) {
+        bestScore = score;
+        bestIdx = i;
+      }
     }
+
+    // Unique resource name match is authoritative even if CTM scoring is loose
+    if (nameMatches.length === 1) return nameMatches[0];
+    if (bestIdx >= 0 && bestScore < 120) return bestIdx;
+    return -1;
   }
 
   if (obj.kind === 'path') {
@@ -199,7 +343,7 @@ function findObjectInstructionIndex(
       }
     }
     if (bestIdx >= 0) return bestIdx;
-    return -1; // never fall back to "last paint op" — that deletes unrelated content
+    return -1;
   }
 
   if (obj.kind === 'text') {

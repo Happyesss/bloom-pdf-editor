@@ -47,6 +47,8 @@ interface PropertiesSidebarProps {
   selectedDisplayItem: ImageItem | PathItem | null;
   setSelectedDisplayItem: (item: ImageItem | PathItem | null) => void;
   onDeleteSelectedDisplayItem?: () => void;
+  onReplaceSelectedImage?: () => void;
+  onClearImageReplaceMode?: () => void;
   displayItems: (ImageItem | PathItem)[];
 
   formFields?: AcroFormWidget[];
@@ -109,7 +111,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
     drawColor, setDrawColor, drawSize, setDrawSize,
     highlightColor, setHighlightColor, highlightSize, setHighlightSize,
     eraserSize, setEraserSize,
-    selectedDisplayItem, setSelectedDisplayItem, onDeleteSelectedDisplayItem, displayItems,
+    selectedDisplayItem, setSelectedDisplayItem, onDeleteSelectedDisplayItem, onReplaceSelectedImage, onClearImageReplaceMode, displayItems,
     formFields = [], selectedFormField, formFieldDraft = '',
     onFormFieldSelect, onFormFieldChange, onFlattenForms,
     watermarkType = 'text', setWatermarkType,
@@ -326,6 +328,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             <button
               onClick={() => {
                 replacingImageIdRef.current = null;
+                onClearImageReplaceMode?.();
                 if (fileInputRef.current) {
                   fileInputRef.current.click();
                 }
@@ -508,6 +511,14 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             </div>
           </div>
           <div className="space-y-2 pt-2">
+            {selectedDisplayItem.type === 'image' && (
+              <button
+                onClick={() => onReplaceSelectedImage?.()}
+                className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-medium bg-blue-500/10 text-blue-400 border border-blue-500/30 hover:bg-blue-500/20 transition-colors"
+              >
+                <Image size={12} /> Replace Image
+              </button>
+            )}
             <button
               onClick={() => setSelectedDisplayItem(null)}
               className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-medium bg-zinc-800 text-zinc-300 border border-zinc-700 hover:bg-zinc-700 transition-colors"

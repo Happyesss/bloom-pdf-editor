@@ -214,6 +214,8 @@ export interface ImageItem {
   blendMode: string;
   softMask: PDFDict | null;
   clipPaths: ClipPathNode[];
+  /** Index of the Do instruction in the content stream (for precise edit/delete). */
+  sourceInstructionIndex?: number;
 }
 
 export interface FormItem {
@@ -839,6 +841,7 @@ export function interpretPage(
                 blendMode: gs.blendMode,
                 softMask: gs.softMask,
                 clipPaths: [...gs.clipPaths],
+                sourceInstructionIndex: i,
               });
             } else if (subtype === 'Form') {
               displayList.push({

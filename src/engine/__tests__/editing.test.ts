@@ -360,6 +360,80 @@ describe('object-editor: deleteObject', () => {
     expect(after.some((d) => d.type === 'image')).toBe(false);
   });
 
+  it('deletes only the targeted image when two images exist', async () => {
+    // Register a second image resource
+    const { doc, page } = buildTestDoc(
+      'q\n40 0 0 40 50 500 cm\n/Im1 Do\nQ\nq\n60 0 0 60 200 100 cm\n/Im2 Do\nQ\n',
+    );
+    // Add Im2 to resources
+    const resources = page.dict.get('Resources') as PDFDict;
+    const xobjects = resources.get('XObject') as PDFDict;
+    const imageDict = new PDFDict();
+    imageDict.set('Type', new PDFName('XObject'));
+    imageDict.set('Subtype', new PDFName('Image'));
+    imageDict.set('Width', new PDFNumber(10));
+    imageDict.set('Height', new PDFNumber(10));
+    imageDict.set('ColorSpace', new PDFName('DeviceRGB'));
+    imageDict.set('BitsPerComponent', new PDFNumber(8));
+    const imageStream = new PDFStream(imageDict, new Uint8Array(300));
+    const imgRef = new PDFRef(30, 0);
+    doc.objects.set(imgRef.toKey(), imageStream);
+    xobjects.set('Im2', imgRef);
+
+    const before = interpretDoc(doc, page);
+    const images = before.filter((d): d is ImageItem => d.type === 'image');
+    expect(images.length).toBe(2);
+
+    const scene = buildSceneGraph(before);
+    const second = scene.find((o) => o.kind === 'image' && (o.source as ImageItem).name === 'Im2')!;
+    await deleteObject(doc, 0, second);
+
+    const after = interpretDoc(doc, page);
+    const remaining = after.filter((d): d is ImageItem => d.type === 'image');
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].name).toBe('Im1');
+  });
+
+  it('refuses to delete when image cannot be located (no blanking)', async () => {
+    const { doc, page } = buildTestDoc('q\n50 0 0 50 100 200 cm\n/Im1 Do\nQ\n');
+    const fake: EditableObject = {
+      id: 'bogus',
+      kind: 'image',
+      bbox: { x: 999, y: 999, width: 10, height: 10 },
+      ctm: [10, 0, 0, 10, 999, 999],
+      source: {
+        type: 'image',
+        name: 'DoesNotExist',
+        ctm: { a: 10, b: 0, c: 0, d: 10, e: 999, f: 999 },
+        x: 999, y: 999, width: 10, height: 10,
+        blendMode: 'Normal', softMask: null, clipPaths: [],
+      },
+    };
+    await expect(deleteObject(doc, 0, fake)).rejects.toThrow(/Could not locate/);
+    const after = interpretDoc(doc, page);
+    expect(after.some((d) => d.type === 'image')).toBe(true);
+  });
+
+  it('deletes only the image Do — not other content inside the same q/Q', async () => {
+    // Outer q/Q wraps text AND an image. Old bug peeled q…Q and wiped the page.
+    const { doc, page } = buildTestDoc(
+      'q\nBT\n/F1 12 Tf\n100 700 Td\n(Keep me) Tj\nET\n40 0 0 40 200 100 cm\n/Im1 Do\nQ\n',
+    );
+    const before = interpretDoc(doc, page);
+    expect(before.some((d) => d.type === 'text')).toBe(true);
+    expect(before.some((d) => d.type === 'image')).toBe(true);
+
+    const scene = buildSceneGraph(before);
+    const imageObj = scene.find((o) => o.kind === 'image')!;
+    await deleteObject(doc, 0, imageObj);
+
+    const after = interpretDoc(doc, page);
+    expect(after.some((d) => d.type === 'image')).toBe(false);
+    expect(after.some((d) => d.type === 'text')).toBe(true);
+    const text = after.find((d): d is TextRun => d.type === 'text')!;
+    expect(text.text).toContain('Keep me');
+  });
+
   it('removes a text run from the content stream', async () => {
     const { doc, page } = buildTestDoc('BT\n/F1 12 Tf\n100 700 Td\n(Hello) Tj\nET\n');
     const scene = buildSceneGraph(interpretDoc(doc, page));
@@ -372,6 +446,69 @@ describe('object-editor: deleteObject', () => {
   });
 });
 
+describe('object-editor: resize image', () => {
+  it('scales an image placement via applyObjectTransform', async () => {
+    const { doc, page } = buildTestDoc('q\n50 0 0 50 100 200 cm\n/Im1 Do\nQ\n');
+    const before = interpretDoc(doc, page);
+    const scene = buildSceneGraph(before);
+    const imageObj = scene.find((o) => o.kind === 'image')!;
+
+    await applyObjectTransform(doc, 0, imageObj, [100, 0, 0, 80, 100, 170]);
+
+    const after = interpretDoc(doc, page);
+    const img = after.find((d): d is ImageItem => d.type === 'image')!;
+    expect(img.width).toBeCloseTo(100, 1);
+    expect(img.height).toBeCloseTo(80, 1);
+    expect(img.x).toBeCloseTo(100, 1);
+    expect(img.y).toBeCloseTo(170, 1);
+  });
+
+  it('moves a clipped image by re-placing it unclipped (leaves shared clips alone)', async () => {
+    // Classic certificate pattern: clip rect then image cm/Do inside q/Q
+    const { doc, page } = buildTestDoc(
+      'q\n100 200 50 50 re\nW\nn\n50 0 0 50 100 200 cm\n/Im1 Do\nQ\n',
+    );
+    const before = interpretDoc(doc, page);
+    const scene = buildSceneGraph(before);
+    const imageObj = scene.find((o) => o.kind === 'image')!;
+    expect(imageObj.bbox.x).toBeCloseTo(100, 1);
+
+    const moved = transformObject(imageObj, { dx: 40, dy: -20 });
+    await applyObjectTransform(doc, 0, imageObj, moved.ctm);
+
+    const after = interpretDoc(doc, page);
+    const img = after.find((d): d is ImageItem => d.type === 'image')!;
+    expect(img.x).toBeCloseTo(140, 1);
+    expect(img.y).toBeCloseTo(180, 1);
+    // Extract-and-reinsert places the image without the old clip so it cannot
+    // sit under a stale rect (and we never mutate clips that also crop text).
+    expect(img.clipPaths.length).toBe(0);
+  });
+
+  it('does not disturb text when moving an image inside a shared clip', async () => {
+    const { doc, page } = buildTestDoc(
+      'q\n50 50 400 700 re\nW\nn\n' +
+      'BT\n/F1 12 Tf\n100 600 Td\n(INSTITUTE NAME ACADEMY) Tj\nET\n' +
+      '50 0 0 50 200 500 cm\n/Im1 Do\n' +
+      'Q\n',
+    );
+    const before = interpretDoc(doc, page);
+    const scene = buildSceneGraph(before);
+    const imageObj = scene.find((o) => o.kind === 'image')!;
+    const textBefore = before.find((d) => d.type === 'text') as { text: string } | undefined;
+    expect(textBefore?.text).toContain('INSTITUTE');
+
+    const moved = transformObject(imageObj, { dx: 30, dy: 10 });
+    await applyObjectTransform(doc, 0, imageObj, moved.ctm);
+
+    const after = interpretDoc(doc, page);
+    const textAfter = after.find((d) => d.type === 'text') as { text: string } | undefined;
+    expect(textAfter?.text).toBe(textBefore?.text);
+    const img = after.find((d): d is ImageItem => d.type === 'image')!;
+    expect(img.x).toBeCloseTo(230, 1);
+    expect(img.y).toBeCloseTo(510, 1);
+  });
+});
 // ─── Redaction ──────────────────────────────────────────────────────────────
 
 describe('redaction: unionRects / rectsOverlap', () => {

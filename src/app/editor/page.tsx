@@ -16,7 +16,7 @@ import {
   hitTestTextLine, findNearestTextLine, caretIndexFromLineX,
   getLineBounds, getOverlayFontFamily,
 } from './utils';
-import { buildDisplayListIndex, hitTestDisplayList, isSelectableDisplayItem, TransactionStack, deleteObject, visualFontSize, resolveRunStyleFlags } from '@/engine';
+import { buildDisplayListIndex, hitTestDisplayList, isSelectableDisplayItem, TransactionStack, deleteObject, visualFontSize, resolveRunStyleFlags, transformObject, applyObjectTransform } from '@/engine';
 import type { QuadTree, SelectableItem, EditableObject } from '@/engine';
 import { findMatchingFlowLine } from './flowLineMatch';
 
@@ -24,6 +24,7 @@ import { Toolbar } from './components/Toolbar';
 import { ToolsSidebar } from './components/ToolsSidebar';
 import { PropertiesSidebar } from './components/PropertiesSidebar';
 import { EditableLineBox } from './components/EditableLineBox';
+import { EmbeddedImageOverlay } from './components/EmbeddedImageOverlay';
 import { WatermarkPreview } from './components/WatermarkPreview';
 import { ThumbnailsSidebar } from './components/ThumbnailsSidebar';
 import { FindReplacePanel } from './components/FindReplacePanel';
@@ -47,6 +48,7 @@ export default function EditorPage() {
   const [error, setError] = useState<string | null>(null);
   const [renderResult, setRenderResult] = useState<RenderResult | null>(null);
   const [thumbnails, setThumbnails] = useState<string[]>([]);
+  const [thumbnailKey, setThumbnailKey] = useState(0);
   const [isGeneratingThumbnails, setIsGeneratingThumbnails] = useState(false);
 
   // ── Phase 4 state ──
@@ -99,6 +101,8 @@ export default function EditorPage() {
   const [floatingImages, setFloatingImages] = useState<FloatingImage[]>([]);
   const [activeFloatingImageId, setActiveFloatingImageId] = useState<string | null>(null);
   const replacingImageIdRef = useRef<string | null>(null);
+  /** When set, next file pick replaces this embedded PDF image in-place. */
+  const replacingEmbeddedImageRef = useRef<ImageItem | null>(null);
 
   const dragInfo = useRef<{ id: string; type: 'text' | 'image'; startX: number; startY: number; startPdfX: number; startPdfY: number } | null>(null);
 
@@ -322,7 +326,7 @@ export default function EditorPage() {
 
     generateThumbnails();
     return () => { cancelled = true; };
-  }, [doc]);
+  }, [doc, thumbnailKey]);
 
   // Reset edit state when doc or page changes
   useEffect(() => {
@@ -1472,46 +1476,141 @@ export default function EditorPage() {
     reader.onload = (event) => {
       const dataUrl = event.target?.result as string;
       const img = new window.Image();
-      img.onload = () => {
-        if (replacingImageIdRef.current) {
-          // Replace existing
-          setFloatingImages(prev => prev.map(p => p.id === replacingImageIdRef.current ? { ...p, dataUrl } : p));
-          replacingImageIdRef.current = null;
-        } else {
-          // Add new
-          if (!doc || !renderResult) return;
-          const page = doc.pages[currentPage];
+      img.onload = async () => {
+        // Always convert to JPEG — engine image XObjects use DCTDecode
+        const canvas = document.createElement('canvas');
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0);
+        const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.92);
 
-          let pdfWidth = img.width;
-          let pdfHeight = img.height;
-          const maxDim = 200;
-          if (pdfWidth > maxDim || pdfHeight > maxDim) {
-            const ratio = Math.min(maxDim / pdfWidth, maxDim / pdfHeight);
-            pdfWidth *= ratio;
-            pdfHeight *= ratio;
+        // Replace embedded PDF image in-place (same cm / bbox)
+        if (replacingEmbeddedImageRef.current && doc && engineRef.current) {
+          const target = replacingEmbeddedImageRef.current;
+          replacingEmbeddedImageRef.current = null;
+          try {
+            await engineRef.current.replaceImageXObject(doc, currentPage, target, jpegDataUrl);
+            const page = doc.pages[currentPage];
+            const nextBytes = engineRef.current.getPageContentBytes(page, doc.objects);
+            txStackRef.current.push({
+              pageIndex: currentPage,
+              contentBytes: new Uint8Array(nextBytes),
+              label: 'replace-image',
+              timestamp: Date.now(),
+            });
+            syncTxState();
+            setIsDirty(true);
+            setSelectedDisplayItem(null);
+            setRenderKey(k => k + 1);
+          } catch (err) {
+            console.error('[Editor] Replace embedded image failed:', err);
+            setError(`Replace failed: ${err instanceof Error ? err.message : String(err)}`);
           }
-
-          const pdfX = page.mediaBox.width / 2 - pdfWidth / 2;
-          const pdfY = page.mediaBox.height / 2 + pdfHeight / 2; // Center of screen
-
-          const newImg: FloatingImage = {
-            id: Math.random().toString(36).substr(2, 9),
-            pdfX,
-            pdfY,
-            pdfWidth,
-            pdfHeight,
-            dataUrl
-          };
-          setFloatingImages(prev => [...prev, newImg]);
-          setActiveFloatingImageId(newImg.id);
+          return;
         }
+
+        if (replacingImageIdRef.current) {
+          setFloatingImages(prev => prev.map(p => p.id === replacingImageIdRef.current ? { ...p, dataUrl: jpegDataUrl } : p));
+          replacingImageIdRef.current = null;
+          return;
+        }
+
+        // Add new floating image
+        if (!doc || !renderResult) return;
+        const page = doc.pages[currentPage];
+
+        let pdfWidth = img.width;
+        let pdfHeight = img.height;
+        const maxDim = 200;
+        if (pdfWidth > maxDim || pdfHeight > maxDim) {
+          const ratio = Math.min(maxDim / pdfWidth, maxDim / pdfHeight);
+          pdfWidth *= ratio;
+          pdfHeight *= ratio;
+        }
+
+        const pdfX = page.mediaBox.width / 2 - pdfWidth / 2;
+        const pdfY = page.mediaBox.height / 2 + pdfHeight / 2;
+
+        const newImg: FloatingImage = {
+          id: Math.random().toString(36).substr(2, 9),
+          pdfX,
+          pdfY,
+          pdfWidth,
+          pdfHeight,
+          dataUrl: jpegDataUrl,
+        };
+        setFloatingImages(prev => [...prev, newImg]);
+        setActiveFloatingImageId(newImg.id);
       };
       img.src = dataUrl;
     };
     reader.readAsDataURL(file);
-    if (fileInputRef.current) fileInputRef.current.value = ''; // reset
-  }, [doc, currentPage, renderResult]);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }, [doc, currentPage, renderResult, syncTxState]);
 
+  const toEditableImage = useCallback((item: ImageItem): EditableObject => ({
+    id: `sel-image-${item.name}`,
+    kind: 'image',
+    bbox: { x: item.x, y: item.y, width: item.width, height: item.height },
+    ctm: item.ctm
+      ? [item.ctm.a, item.ctm.b, item.ctm.c, item.ctm.d, item.ctm.e, item.ctm.f]
+      : [item.width, 0, 0, item.height, item.x, item.y],
+    source: item,
+  }), []);
+
+  const handleEmbeddedImageMove = useCallback(async (pdfDx: number, pdfDy: number) => {
+    if (!doc || !engineRef.current || selectedDisplayItem?.type !== 'image') return;
+    const item = selectedDisplayItem as ImageItem;
+    const editable = toEditableImage(item);
+    const moved = transformObject(editable, { dx: pdfDx, dy: pdfDy });
+    await applyObjectTransform(doc, currentPage, editable, moved.ctm);
+    const page = doc.pages[currentPage];
+    const nextBytes = engineRef.current.getPageContentBytes(page, doc.objects);
+    txStackRef.current.push({
+      pageIndex: currentPage,
+      contentBytes: new Uint8Array(nextBytes),
+      label: 'move-image',
+      timestamp: Date.now(),
+    });
+    syncTxState();
+    setIsDirty(true);
+    setSelectedDisplayItem(null);
+    setRenderKey(k => k + 1);
+  }, [doc, currentPage, selectedDisplayItem, toEditableImage, syncTxState]);
+
+  const handleEmbeddedImageResize = useCallback(async (newWidth: number, newHeight: number) => {
+    if (!doc || !engineRef.current || selectedDisplayItem?.type !== 'image') return;
+    const item = selectedDisplayItem as ImageItem;
+    const editable = toEditableImage(item);
+    // Keep screen top-left fixed → PDF x fixed, top (y+h) fixed
+    const top = item.y + item.height;
+    const newY = top - newHeight;
+    const newCtm = [newWidth, 0, 0, newHeight, item.x, newY];
+    await applyObjectTransform(doc, currentPage, editable, newCtm);
+    const page = doc.pages[currentPage];
+    const nextBytes = engineRef.current.getPageContentBytes(page, doc.objects);
+    txStackRef.current.push({
+      pageIndex: currentPage,
+      contentBytes: new Uint8Array(nextBytes),
+      label: 'resize-image',
+      timestamp: Date.now(),
+    });
+    syncTxState();
+    setIsDirty(true);
+    setSelectedDisplayItem(null);
+    setRenderKey(k => k + 1);
+  }, [doc, currentPage, selectedDisplayItem, toEditableImage, syncTxState]);
+
+  const handleReplaceEmbeddedImage = useCallback(() => {
+    if (selectedDisplayItem?.type !== 'image') return;
+    replacingEmbeddedImageRef.current = selectedDisplayItem as ImageItem;
+    replacingImageIdRef.current = null;
+    fileInputRef.current?.click();
+  }, [selectedDisplayItem]);
 
   // ── Hidden / line input — preview only; PDF commits on submit ──
   const handleHiddenInput = useCallback((e: React.FormEvent<HTMLTextAreaElement | HTMLInputElement>) => {
@@ -1840,6 +1939,19 @@ export default function EditorPage() {
       const engine = engineRef.current;
       const page = doc.pages[currentPage];
       const item = selectedDisplayItem;
+
+      // Warn when removing a near-full-page image (common for scanned certificates)
+      if (item.type === 'image') {
+        const pageArea = Math.max(1, page.mediaBox.width * page.mediaBox.height);
+        const imgArea = Math.max(0, item.width) * Math.max(0, item.height);
+        if (imgArea / pageArea >= 0.5) {
+          const ok = window.confirm(
+            'This image covers most of the page. Deleting it will remove most of what you see. Continue?',
+          );
+          if (!ok) return;
+        }
+      }
+
       const editable: EditableObject = {
         id: `sel-${item.type}`,
         kind: item.type,
@@ -1863,6 +1975,7 @@ export default function EditorPage() {
       setSelectedDisplayItem(null);
       setIsDirty(true);
       setRenderKey(k => k + 1);
+      setThumbnailKey(k => k + 1);
     } catch (e) {
       console.error('[Editor] Delete object failed:', e);
       setError(`Delete failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -2043,6 +2156,8 @@ export default function EditorPage() {
           selectedDisplayItem={selectedDisplayItem}
           setSelectedDisplayItem={setSelectedDisplayItem}
           onDeleteSelectedDisplayItem={handleDeleteSelectedDisplayItem}
+          onReplaceSelectedImage={handleReplaceEmbeddedImage}
+          onClearImageReplaceMode={() => { replacingEmbeddedImageRef.current = null; }}
           displayItems={displayItems}
           formFields={formFields}
           selectedFormField={selectedFormField}
@@ -2203,6 +2318,39 @@ export default function EditorPage() {
                 );
               })
             )}
+
+            {/* Interactive overlay for selected embedded PDF image */}
+            {selectedDisplayItem?.type === 'image' && renderResult && doc && (() => {
+              const item = selectedDisplayItem as ImageItem;
+              const page = doc.pages[currentPage];
+              const { mediaBox } = page;
+              return (
+                <EmbeddedImageOverlay
+                  item={item}
+                  scale={scale}
+                  toCss={(b) => {
+                    const tl = pdfToCanvas(
+                      b.x, b.y + b.height,
+                      scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
+                    );
+                    const br = pdfToCanvas(
+                      b.x + b.width, b.y,
+                      scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
+                    );
+                    return {
+                      left: Math.min(tl.cssX, br.cssX),
+                      top: Math.min(tl.cssY, br.cssY),
+                      width: Math.abs(br.cssX - tl.cssX),
+                      height: Math.abs(br.cssY - tl.cssY),
+                    };
+                  }}
+                  onCommitMove={handleEmbeddedImageMove}
+                  onCommitResize={handleEmbeddedImageResize}
+                  onReplace={handleReplaceEmbeddedImage}
+                  onDeselect={() => setSelectedDisplayItem(null)}
+                />
+              );
+            })()}
             
             {floatingTexts.map(ft => {
               const { cssX, cssY } = pdfToCanvas(

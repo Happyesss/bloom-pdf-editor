@@ -1,5 +1,7 @@
 import { PDFDict, PDFName, PDFNumber, PDFStream, PDFRef } from '../types';
 import type { PDFDocumentData, PDFPageInfo, PDFObject } from '../types';
+import type { ImageItem } from '../content/interpreter';
+import { getResource } from '../parser/parser';
 
 /**
  * Inserts an image into the PDF content stream by creating an Image XObject.
@@ -89,4 +91,59 @@ export async function insertImageRun(
   newContentBytes.set(injectionBytes, contentBytes.length);
 
   return { newContentBytes };
+}
+
+/**
+ * Replace an embedded image's pixel data while keeping the same placement
+ * (cm / Do / bbox). The content stream is untouched — only the XObject stream
+ * and Width/Height dictionary entries are updated.
+ *
+ * @param imageDataUrl must be image/jpeg
+ */
+export async function replaceImageXObject(
+  doc: PDFDocumentData,
+  pageIndex: number,
+  image: ImageItem,
+  imageDataUrl: string,
+): Promise<void> {
+  const page = doc.pages[pageIndex];
+  const name = image.name.replace(/^\//, '');
+  const xobj = getResource(page.resources, 'XObject', name, doc.objects);
+  if (!(xobj instanceof PDFStream)) {
+    throw new Error(`Image XObject /${name} not found`);
+  }
+  if (xobj.dict.getName('Subtype') !== 'Image') {
+    throw new Error(`XObject /${name} is not an Image`);
+  }
+
+  const base64Data = imageDataUrl.split(',')[1];
+  if (!base64Data) throw new Error('Invalid image data URL');
+  const binaryString = atob(base64Data);
+  const imageBytes = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) {
+    imageBytes[i] = binaryString.charCodeAt(i);
+  }
+
+  const img = new Image();
+  await new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error('Failed to decode replacement image'));
+    img.src = imageDataUrl;
+  });
+
+  const trueWidth = img.naturalWidth;
+  const trueHeight = img.naturalHeight;
+
+  xobj.dict.set('Width', new PDFNumber(trueWidth));
+  xobj.dict.set('Height', new PDFNumber(trueHeight));
+  xobj.dict.set('ColorSpace', new PDFName('DeviceRGB'));
+  xobj.dict.set('BitsPerComponent', new PDFNumber(8));
+  xobj.dict.set('Filter', new PDFName('DCTDecode'));
+  xobj.dict.set('Length', new PDFNumber(imageBytes.length));
+  // Drop filters that don't apply to the new JPEG bytes
+  xobj.dict.delete('DecodeParms');
+  xobj.dict.delete('SMask');
+
+  xobj.rawBytes = imageBytes;
+  xobj.decodedBytes = null;
 }

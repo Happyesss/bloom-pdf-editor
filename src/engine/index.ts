@@ -203,7 +203,7 @@ export type {
 
 // ── Editor ──
 export { applyTextEdits, applyRunPositionShifts, findTextInPage, findAndReplace, insertTextRun } from './editor/text-editor';
-export { insertImageRun } from './editor/image-editor';
+export { insertImageRun, replaceImageXObject } from './editor/image-editor';
 export type { TextEdit, EditResult, RunPositionShift } from './editor/text-editor';
 export {
   applyObjectTransform,

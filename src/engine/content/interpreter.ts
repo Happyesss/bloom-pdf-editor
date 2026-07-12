@@ -26,6 +26,16 @@ import {
 import type { PDFPageInfo } from '../types';
 import { resolveRef, getResource } from '../parser/parser';
 import { getStandardFont } from '../fonts/standard14';
+import {
+  isSuspiciousDingbatToUnicode,
+  isSymbolFont,
+  isZapfDingbatsFont,
+  symbolCharToUnicode,
+  unicodeFromGlyphId,
+  zapfDingbatsCharToUnicode,
+  ZAPF_DINGBATS_GLYPH_TO_UNICODE,
+} from '../fonts/dingbat-encodings';
+import { parseTTF, isTrueTypeFontData } from '../fonts/truetype-parser';
 
 // ─── Graphics State ─────────────────────────────────────────────────────────
 
@@ -262,6 +272,11 @@ export interface FontInfo {
   lastChar: number;
   /** Encoding Differences: charCode → glyph name */
   differences: Map<number, string>;
+  /**
+   * Identity-H / embedded-font fallback: CID or glyph ID → Unicode.
+   * Used when ToUnicode is missing (e.g. Symbol bullet GID → "•").
+   */
+  cidToUnicode: Map<number, string> | null;
 }
 
 // ─── WinAnsiEncoding (Windows-1252) byte → Unicode mapping for 0x80–0x9F ────
@@ -369,6 +384,7 @@ const GLYPH_NAME_TO_UNICODE: Record<string, string> = {
 function glyphNameToUnicode(name: string): string {
   // Direct lookup
   if (GLYPH_NAME_TO_UNICODE[name]) return GLYPH_NAME_TO_UNICODE[name];
+  if (ZAPF_DINGBATS_GLYPH_TO_UNICODE[name]) return ZAPF_DINGBATS_GLYPH_TO_UNICODE[name];
   // Try uniXXXX format (e.g., uni2022 → U+2022)
   if (name.startsWith('uni') && name.length === 7) {
     const code = parseInt(name.substring(3), 16);
@@ -1140,7 +1156,41 @@ function showTextString(
     const fromDiff = diffName ? glyphNameToUnicode(diffName) : '';
     const fromToUnicode = font?.toUnicode?.get(charCode);
 
-    if (fromDiff) {
+    // ZapfDingbats: PDF viewers always use the dingbat encoding for this font.
+    // Broken ToUnicode often maps bullets to Latin "x"/"l" — ignore those.
+    const dingbatMapped =
+      font && isZapfDingbatsFont(font.baseFont)
+        ? zapfDingbatsCharToUnicode(charCode, font.differences)
+        : null;
+
+    // Simple Symbol fonts: SymbolSetEncoding (byte 183 = •, not Latin letters).
+    const symbolMapped =
+      !dingbatMapped && font && isSymbolFont(font.baseFont) && !isComposite
+        ? symbolCharToUnicode(charCode, font.differences)
+        : null;
+
+    // Identity-H Symbol/CID without ToUnicode: char code is often a glyph ID.
+    // Reverse the embedded cmap (e.g. GID 120 → Symbol byte 183 → •).
+    const cidMapped =
+      !dingbatMapped && !symbolMapped && font?.cidToUnicode?.has(charCode)
+        ? font.cidToUnicode.get(charCode)!
+        : null;
+
+    if (dingbatMapped) {
+      if (fromToUnicode && !isSuspiciousDingbatToUnicode(fromToUnicode)) {
+        unicode = fromToUnicode;
+      } else {
+        unicode = dingbatMapped;
+      }
+    } else if (symbolMapped) {
+      if (fromToUnicode && !isSuspiciousDingbatToUnicode(fromToUnicode)) {
+        unicode = fromToUnicode;
+      } else {
+        unicode = symbolMapped;
+      }
+    } else if (cidMapped && (!fromToUnicode || isSuspiciousDingbatToUnicode(fromToUnicode))) {
+      unicode = cidMapped;
+    } else if (fromDiff) {
       unicode = fromDiff;
       // If Differences and ToUnicode disagree and ToUnicode looks like real text
       // while Differences yielded an obscure symbol, keep ToUnicode — but never
@@ -1588,6 +1638,13 @@ function parseFontDict(
     }
   }
 
+  // Identity-H embedded fonts without ToUnicode: build CID/GID → Unicode via cmap.
+  // Critical for Symbol subsets where CID 120 is a bullet glyph, not Latin "x".
+  let cidToUnicode: Map<number, string> | null = null;
+  if (isComposite && (!toUnicode || toUnicode.size === 0)) {
+    cidToUnicode = buildCidToUnicodeFromEmbeddedFont(dict, objects, baseFont);
+  }
+
   return {
     name,
     baseFont,
@@ -1601,7 +1658,76 @@ function parseFontDict(
     firstChar,
     lastChar,
     differences,
+    cidToUnicode,
   };
+}
+
+/**
+ * For Identity-H CIDFonts, reverse the embedded TTF cmap so glyph IDs used as
+ * char codes map to drawable Unicode (Symbol bullets, etc.).
+ */
+function buildCidToUnicodeFromEmbeddedFont(
+  dict: PDFDict,
+  objects: Map<string, PDFObject>,
+  baseFont: string,
+): Map<number, string> | null {
+  const descFonts = dict.getArray('DescendantFonts');
+  if (!descFonts || descFonts.length === 0) return null;
+
+  const cidFont = resolveRef(descFonts.get(0)!, objects);
+  if (!(cidFont instanceof PDFDict)) return null;
+
+  const fdRef = cidFont.get('FontDescriptor') ?? dict.get('FontDescriptor');
+  if (!fdRef) return null;
+  const fd = resolveRef(fdRef, objects);
+  if (!(fd instanceof PDFDict)) return null;
+
+  const fontFile = fd.get('FontFile2') ?? fd.get('FontFile3') ?? fd.get('FontFile');
+  if (!fontFile) return null;
+  const fontStream = resolveRef(fontFile, objects);
+  if (!(fontStream instanceof PDFStream)) return null;
+
+  const fontBytes = fontStream.getBytes();
+  if (!isTrueTypeFontData(fontBytes)) return null;
+
+  let ttf;
+  try {
+    ttf = parseTTF(fontBytes);
+  } catch {
+    return null;
+  }
+
+  // Optional CIDToGIDMap
+  const cidToGid = new Map<number, number>();
+  const cidToGidRef = cidFont.get('CIDToGIDMap');
+  if (cidToGidRef) {
+    const resolved = resolveRef(cidToGidRef, objects);
+    if (resolved instanceof PDFStream) {
+      const mapData = resolved.getBytes();
+      for (let cid = 0; cid * 2 + 1 < mapData.length; cid++) {
+        const gid = (mapData[cid * 2] << 8) | mapData[cid * 2 + 1];
+        if (gid !== 0) cidToGid.set(cid, gid);
+      }
+    }
+  }
+
+  const out = new Map<number, string>();
+
+  // Only map glyphs that appear in the cmap (cheap + covers Symbol subsets).
+  if (cidToGid.size > 0) {
+    for (const [cid, gid] of cidToGid) {
+      const uni = unicodeFromGlyphId(gid, ttf.cmapEntries, baseFont);
+      if (uni) out.set(cid, uni);
+    }
+  } else {
+    const gids = new Set<number>(ttf.cmapEntries.values());
+    for (const gid of gids) {
+      const uni = unicodeFromGlyphId(gid, ttf.cmapEntries, baseFont);
+      if (uni) out.set(gid, uni); // Identity: CID = GID
+    }
+  }
+
+  return out.size > 0 ? out : null;
 }
 
 /**

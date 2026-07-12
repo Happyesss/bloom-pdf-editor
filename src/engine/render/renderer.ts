@@ -567,6 +567,23 @@ function stripFontSubsetPrefix(baseFont: string): string {
   return plus >= 0 ? baseFont.slice(plus + 1) : baseFont;
 }
 
+/**
+ * CSS/FontFace-safe family name.
+ * PDF BaseFonts often look like "Times New Roman,Bold" — the comma breaks
+ * unquoted CSS font-family lists, so we normalize style suffixes to spaces.
+ */
+function cssFontFamilyName(baseFont: string): string {
+  let name = stripFontSubsetPrefix(baseFont) || baseFont;
+  // "Family,Bold" / "Family,BoldItalic" → "Family Bold" / "Family BoldItalic"
+  name = name.replace(/,(\s*)(Bold|Italic|BoldItalic|Oblique|Regular|Light|Medium|Black)/gi, ' $2');
+  return name.trim();
+}
+
+function isDingbatOrSymbolFamily(baseFont: string): boolean {
+  const lower = (stripFontSubsetPrefix(baseFont) || baseFont).toLowerCase();
+  return lower.includes('zapf') || lower.includes('dingbat') || lower === 'symbol' || lower.endsWith('symbol');
+}
+
 type FlowDrawIndex = ReturnType<typeof buildFlowDrawIndex>;
 
 function drawTextRunWithFlow(
@@ -715,6 +732,13 @@ function drawTextRunAtPositions(
           firstPos.x, firstPos.f,
         );
         ctx.scale(1, -1);
+
+        if (isBulletOnlyText(chunk.text)) {
+          fillBulletDot(ctx, effFontSize, pdfSpan, fillColor);
+          ctx.restore();
+          continue;
+        }
+
         ctx.font = `${style} ${weight} ${effFontSize}px ${family}`;
 
         if (pdfSpan > 0.5 && chunk.text.length > 0) {
@@ -836,6 +860,54 @@ function chunkPdfSpan(
 }
 
 /**
+ * Bullet / list-marker code points. System Times often paints U+2022 as a
+ * square block; draw these as circles for Acrobat-like round dots.
+ */
+function isBulletCodePoint(cp: number): boolean {
+  return (
+    cp === 0x2022 || // •
+    cp === 0x25CF || // ●
+    cp === 0x25AA || // ▪
+    cp === 0x25A0 || // ■ (ZapfDingbats filled box used as bullet)
+    cp === 0x00B7 || // ·
+    cp === 0x2219 || // ∙
+    cp === 0x2043 || // ⁃
+    cp === 0x25E6 || // ◦
+    cp === 0x2023    // ‣
+  );
+}
+
+function isBulletOnlyText(text: string): boolean {
+  if (!text) return false;
+  let saw = false;
+  for (const ch of text) {
+    if (ch === ' ' || ch === '\u00A0') continue;
+    const cp = ch.codePointAt(0);
+    if (cp == null || !isBulletCodePoint(cp)) return false;
+    saw = true;
+  }
+  return saw;
+}
+
+/** Filled circle in the same local space as fillText(0,0) after scale(1,-1). */
+function fillBulletDot(
+  ctx: CanvasRenderingContext2D,
+  fontSize: number,
+  advance: number,
+  fillColor: string,
+): void {
+  const slot = Math.max(advance, fontSize * 0.35);
+  const r = Math.max(0.45, Math.min(fontSize * 0.17, slot * 0.32));
+  const cx = slot * 0.45;
+  // Optical center of a list bullet (between baseline and cap-height).
+  const cy = -fontSize * 0.32;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fillStyle = fillColor;
+  ctx.fill();
+}
+
+/**
  * Draw run text by grouping consecutive non-space glyphs into word chunks.
  * Each chunk is a single fillText call, scaled to a span that must not
  * invade the following glyph's slot.
@@ -908,6 +980,14 @@ function drawWordGrouped(
       firstGlyph.tRm.e, firstGlyph.tRm.f,
     );
     ctx.scale(1, -1);
+
+    // Round geometric dots — system Times/serif often paint U+2022 as a square.
+    if (isBulletOnlyText(chunk.text)) {
+      fillBulletDot(ctx, effFontSize, pdfSpan, fillColor);
+      ctx.restore();
+      continue;
+    }
+
     ctx.font = `${style} ${weight} ${effFontSize}px ${family}`;
 
     if (pdfSpan > 0.5 && chunk.text.length > 0) {
@@ -965,6 +1045,13 @@ function drawGlyph(
     x, f,
   );
   ctx.scale(1, -1);
+
+  if (isBulletOnlyText(glyph.unicode)) {
+    fillBulletDot(ctx, effFontSize, glyph.width || effFontSize * 0.5, fillColor);
+    ctx.restore();
+    return;
+  }
+
   ctx.font = `${style} ${weight} ${effFontSize}px ${family}`;
 
   // Fit substitute-font glyph into the PDF advance so letters don't overlap.
@@ -1032,10 +1119,17 @@ function getCanvasFontProperties(
   let family = 'sans-serif';
 
   if (fontData) {
-    const stripped = stripFontSubsetPrefix(fontData.baseFont);
+    const stripped = cssFontFamilyName(fontData.baseFont);
     const lower = (stripped || fontData.baseFont || '').toLowerCase();
 
-    if (fontData.fontBytes && stripped) {
+    // Symbol / ZapfDingbats: always paint remapped Unicode with a real system
+    // symbols face. Embedded Symbol subsets only cmap PUA/Mac bytes, so
+    // fillText("•") / fillText("x") both fail against the embedded FontFace.
+    if (isDingbatOrSymbolFamily(fontData.baseFont)) {
+      family = '"Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols", sans-serif';
+      weight = 'normal';
+      style = 'normal';
+    } else if (fontData.fontBytes && stripped) {
       // Embedded face already carries weight/style. Applying CSS bold/italic
       // on top synthesizes extra stroke and breaks measureText vs PDF Widths
       // (classic Acrobat vs canvas mismatch). Only use CSS weight when the
@@ -1051,19 +1145,27 @@ function getCanvasFontProperties(
       ) {
         fallback = '"Times New Roman", Times, serif';
       }
-      family = `"${stripped}", "${fontData.baseFont}", ${fallback}`;
+      const rawStripped = stripFontSubsetPrefix(fontData.baseFont);
+      family = `"${stripped}", "${rawStripped}", "${fontData.baseFont}", ${fallback}`;
 
+      // Only drop CSS weight/style when WE successfully registered this face.
+      // document.fonts.check() alone is a false positive (system font with a
+      // similar name) and caused certificate bold text to render regular.
       const faceReady =
-        typeof document !== 'undefined' &&
-        (loadedFontFaces.has(stripped) ||
-          loadedFontFaces.has(fontData.baseFont) ||
-          safeFontCheck(stripped));
+        loadedFontFaces.has(stripped) ||
+        loadedFontFaces.has(rawStripped) ||
+        loadedFontFaces.has(fontData.baseFont);
       if (faceReady) {
         weight = 'normal';
         style = 'normal';
       }
     } else if (fontData.standardMetrics) {
       family = fontData.standardMetrics.cssFamily;
+      if (isDingbatOrSymbolFamily(fontData.baseFont)) {
+        family = '"Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols", sans-serif';
+      }
+    } else if (isDingbatOrSymbolFamily(fontData.baseFont)) {
+      family = '"Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols", sans-serif';
     } else if (lower.includes('courier') || lower.includes('mono') || lower.includes('cmtt') || lower.includes('lmtt')) {
       family = '"Courier New", Courier, monospace';
     } else if (
@@ -1081,14 +1183,6 @@ function getCanvasFontProperties(
   }
 
   return { family, weight, style };
-}
-
-function safeFontCheck(familyName: string): boolean {
-  try {
-    return document.fonts.check(`12px "${familyName}"`);
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -1197,39 +1291,35 @@ async function registerEmbeddedFonts(fonts: Map<string, FontData>): Promise<void
 
   for (const [, fontData] of fonts.entries()) {
     if (!fontData.fontBytes || !fontData.baseFont) continue;
+    // Symbol/ZapfDingbats: canvas uses system symbol fonts + remapped Unicode
+    if (isDingbatOrSymbolFamily(fontData.baseFont)) continue;
 
     const names = new Set<string>();
     names.add(fontData.baseFont);
     const stripped = stripFontSubsetPrefix(fontData.baseFont);
     if (stripped) names.add(stripped);
+    const cssName = cssFontFamilyName(fontData.baseFont);
+    if (cssName) names.add(cssName);
 
     for (const familyName of names) {
       if (registered.has(familyName) || loadedFontFaces.has(familyName)) continue;
 
-      let alreadyLoaded = false;
-      try {
-        alreadyLoaded = document.fonts.check(`12px "${familyName}"`);
-      } catch {
-        // ignore
-      }
-
-      if (!alreadyLoaded) {
-        const fontFace = new FontFace(familyName, fontData.fontBytes.buffer.slice(
-          fontData.fontBytes.byteOffset,
-          fontData.fontBytes.byteOffset + fontData.fontBytes.byteLength,
-        ) as ArrayBuffer);
-        const p = fontFace.load().then((loadedFace) => {
-          document.fonts.add(loadedFace);
-          registered.add(familyName);
-          loadedFontFaces.add(familyName);
-        }).catch((e) => {
-          console.warn(`[Renderer] Failed to load font face for "${familyName}":`, e);
-        });
-        promises.push(p);
-      } else {
+      // Always register embedded bytes. document.fonts.check() is a false
+      // positive for names like "Times New Roman" / "Calibri" and would skip
+      // loading the PDF's bold subset, then mark the face "ready" at weight
+      // normal — certificate labels render regular.
+      const fontFace = new FontFace(familyName, fontData.fontBytes.buffer.slice(
+        fontData.fontBytes.byteOffset,
+        fontData.fontBytes.byteOffset + fontData.fontBytes.byteLength,
+      ) as ArrayBuffer);
+      const p = fontFace.load().then((loadedFace) => {
+        document.fonts.add(loadedFace);
         registered.add(familyName);
         loadedFontFaces.add(familyName);
-      }
+      }).catch((e) => {
+        console.warn(`[Renderer] Failed to load font face for "${familyName}":`, e);
+      });
+      promises.push(p);
     }
   }
 

@@ -47,6 +47,15 @@ interface PropertiesSidebarProps {
   /** Add a URI link to the current text selection / line (Acrobat-like). */
   onAddLink?: () => void;
   pageLinkCount?: number;
+  pageLinks?: Array<{ refKey: string; url: string }>;
+  onSelectPageLink?: (refKey: string) => void;
+  selectedLinkRefKey?: string | null;
+  selectedLinkUrl?: string;
+  onSelectedLinkUrlChange?: (url: string) => void;
+  onSaveSelectedLink?: () => void;
+  onRemoveSelectedLink?: () => void;
+  hasSelectedLink?: boolean;
+  linkCreatePending?: boolean;
 
   selectedDisplayItem: ImageItem | PathItem | null;
   setSelectedDisplayItem: (item: ImageItem | PathItem | null) => void;
@@ -116,6 +125,9 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
     highlightColor, setHighlightColor, highlightSize, setHighlightSize,
     eraserSize, setEraserSize,
     onAddLink, pageLinkCount = 0,
+    pageLinks = [], onSelectPageLink, selectedLinkRefKey = null,
+    selectedLinkUrl = '', onSelectedLinkUrlChange, onSaveSelectedLink, onRemoveSelectedLink,
+    hasSelectedLink = false, linkCreatePending = false,
     selectedDisplayItem, setSelectedDisplayItem, onDeleteSelectedDisplayItem, onReplaceSelectedImage, onClearImageReplaceMode, displayItems,
     formFields = [], selectedFormField, formFieldDraft = '',
     onFormFieldSelect, onFormFieldChange, onFlattenForms,
@@ -140,7 +152,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
     watermarkBlendMode = 'Normal', setWatermarkBlendMode
   } = props;
 
-  if (!['text', 'addtext', 'draw', 'highlight', 'erase', 'select', 'watermark', 'link'].includes(activeTool)) return null;
+  if (!['text', 'addtext', 'draw', 'highlight', 'erase', 'select', 'watermark'].includes(activeTool)) return null;
 
   return (
     <div className="w-64 bg-zinc-900/95 backdrop-blur-md border-r border-zinc-800/80 flex flex-col shrink-0 z-10 overflow-y-auto shadow-[4px_0_24px_rgba(0,0,0,0.2)]">
@@ -303,23 +315,89 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             </div>
           </div>
 
-          {/* Link (Acrobat-like) */}
-          {onAddLink && (
-            <div className="space-y-1.5">
-              <label className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase">Link</label>
-              <button
-                type="button"
-                onClick={onAddLink}
-                className="w-full flex items-center justify-center gap-2 py-2 rounded-lg bg-blue-600/15 text-blue-400 border border-blue-500/30 hover:bg-blue-600/25 text-xs font-semibold transition-colors"
-              >
-                <Link2 size={14} />
-                Add link to selection
-              </button>
-              <p className="text-[10px] text-zinc-500 leading-relaxed">
-                Select text in the line, then add a URL. Or use the Link tool and click a line.
-              </p>
-            </div>
-          )}
+          {/* Link — list page links, create from selection, edit selected */}
+          <div className="space-y-1.5">
+            <label className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase">
+              Links {pageLinkCount > 0 ? `(${pageLinkCount})` : ''}
+            </label>
+
+            {pageLinks.length > 0 && (
+              <div className="space-y-1 max-h-36 overflow-y-auto rounded-lg border border-zinc-700/50 bg-zinc-800/40 p-1">
+                {pageLinks.map((link, i) => {
+                  const selected = selectedLinkRefKey === link.refKey;
+                  const label = link.url?.trim() || '(empty URL)';
+                  return (
+                    <button
+                      key={link.refKey}
+                      type="button"
+                      onClick={() => onSelectPageLink?.(link.refKey)}
+                      className={`w-full text-left px-2.5 py-2 rounded-md text-[11px] transition-colors ${
+                        selected
+                          ? 'bg-blue-500/20 text-blue-200 border border-blue-500/40'
+                          : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 border border-transparent'
+                      }`}
+                    >
+                      <div className="font-medium text-[10px] text-zinc-500 mb-0.5">
+                        Link {i + 1}
+                      </div>
+                      <div className="truncate font-mono">{label}</div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {(hasSelectedLink || linkCreatePending) ? (
+              <div className="space-y-2 rounded-lg border border-blue-500/30 bg-blue-500/5 p-2.5">
+                <p className="text-[10px] text-blue-300 font-medium">
+                  {hasSelectedLink ? 'Editing selected link' : 'New link URL'}
+                </p>
+                <input
+                  type="url"
+                  value={selectedLinkUrl}
+                  onChange={(e) => onSelectedLinkUrlChange?.(e.target.value)}
+                  placeholder="https://example.com"
+                  className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-xs text-zinc-200 outline-none focus:border-blue-500"
+                  autoFocus
+                />
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={onSaveSelectedLink}
+                    className="flex-1 py-1.5 rounded-lg bg-blue-600 text-white text-[11px] font-semibold hover:bg-blue-500"
+                  >
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onRemoveSelectedLink}
+                    className="flex-1 py-1.5 rounded-lg bg-red-500/15 text-red-400 border border-red-500/30 text-[11px] font-semibold hover:bg-red-500/25"
+                  >
+                    {hasSelectedLink ? 'Remove' : 'Cancel'}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                {onAddLink && (
+                  <button
+                    type="button"
+                    onClick={onAddLink}
+                    className="w-full flex items-center justify-center gap-2 py-2 rounded-lg bg-blue-600/15 text-blue-400 border border-blue-500/30 hover:bg-blue-600/25 text-xs font-semibold transition-colors"
+                  >
+                    <Link2 size={14} />
+                    Add link to selection
+                  </button>
+                )}
+                <p className="text-[10px] text-zinc-500 leading-relaxed">
+                  {pageLinks.length > 0
+                    ? 'Click a link above (or its blue box on the page) to edit. Select text to add a new one.'
+                    : 'Select text, then add a URL. Links on the page appear here once created.'}
+                  {' '}Ctrl/Cmd+click opens a link.
+                </p>
+              </>
+            )}
+          </div>
 
           {/* Opacity */}
           <div className="space-y-1.5">
@@ -485,33 +563,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
         </div>
       )}
 
-      {/* LINK TOOL PROPERTIES */}
-      {activeTool === 'link' && (
-        <div className="p-4 space-y-4 animate-in fade-in slide-in-from-left-4 duration-300">
-          <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-zinc-400 uppercase">
-            <Link2 size={14} />
-            Link
-          </div>
-          <div className="bg-zinc-800/60 rounded-lg p-3 text-[11px] text-zinc-400 border border-zinc-700/50 space-y-2 leading-relaxed">
-            <p><span className="text-zinc-200 font-medium">Create:</span> click a text line, then enter a URL.</p>
-            <p><span className="text-zinc-200 font-medium">Edit / remove:</span> click an existing blue link box.</p>
-            <p><span className="text-zinc-200 font-medium">Open:</span> Ctrl/Cmd+click a link in Select or Edit Text mode.</p>
-          </div>
-          <div className="text-[11px] text-zinc-500">
-            Links on this page: <span className="text-zinc-200 font-mono">{pageLinkCount}</span>
-          </div>
-          {onAddLink && (
-            <button
-              type="button"
-              onClick={onAddLink}
-              className="w-full flex items-center justify-center gap-2 py-2 rounded-lg bg-blue-600/15 text-blue-400 border border-blue-500/30 hover:bg-blue-600/25 text-xs font-semibold transition-colors"
-            >
-              <Link2 size={14} />
-              Link current selection
-            </button>
-          )}
-        </div>
-      )}
+      {/* LINK TOOL PROPERTIES — removed; links live in Text Properties */}
 
       {/* ERASER PROPERTIES */}
       {activeTool === 'erase' && (
@@ -615,7 +667,8 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
         </div>
       )}
 
-      {/* FORM FIELDS — always visible so users know the feature exists */}
+      {/* FORM FIELDS — Select tool only (not watermark / draw / etc.) */}
+      {activeTool === 'select' && (
       <div className="p-4 space-y-3 border-t border-zinc-800 animate-in fade-in slide-in-from-left-4 duration-300">
           <div className="flex items-center justify-between">
             <span className="text-[10px] font-bold tracking-widest text-zinc-400 uppercase">
@@ -698,6 +751,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
           </>
           )}
         </div>
+      )}
 
       {/* WATERMARK PROPERTIES */}
       {activeTool === 'watermark' && (

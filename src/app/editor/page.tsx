@@ -134,6 +134,10 @@ export default function EditorPage() {
   const lastErasePosRef = useRef<{ x: number; y: number } | null>(null);
   const [pageLinks, setPageLinks] = useState<import('@/engine').PageLinkInfo[]>([]);
   const [selectedLink, setSelectedLink] = useState<import('@/engine').PageLinkInfo | null>(null);
+  const [linkDraftUrl, setLinkDraftUrl] = useState('');
+  /** Pending "add link" flow: waiting for URL in the text sidebar. */
+  const [linkCreatePending, setLinkCreatePending] = useState(false);
+
 
   const [floatingTexts, setFloatingTexts] = useState<FloatingText[]>([]);
   const [activeFloatingTextId, setActiveFloatingTextId] = useState<string | null>(null);
@@ -145,6 +149,18 @@ export default function EditorPage() {
   const replacingEmbeddedImageRef = useRef<ImageItem | null>(null);
 
   const dragInfo = useRef<{ id: string; type: 'text' | 'image'; startX: number; startY: number; startPdfX: number; startPdfY: number } | null>(null);
+
+  /** Viewport grab-to-pan while zoomed (or Space held). */
+  const [isPanning, setIsPanning] = useState(false);
+  const [spacePanHeld, setSpacePanHeld] = useState(false);
+  const panDragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    scrollLeft: number;
+    scrollTop: number;
+    moved: boolean;
+  } | null>(null);
 
   // Tool properties
   const [drawColor, setDrawColor] = useState('#ff3b30');
@@ -214,6 +230,7 @@ export default function EditorPage() {
 
   // ── Refs (declared early for hooks that need them) ──
   const canvasContainerRef = useRef<HTMLDivElement>(null);
+  const scrollViewportRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
   const hiddenInputRef = useRef<HTMLTextAreaElement>(null);
   const blurTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -716,8 +733,8 @@ export default function EditorPage() {
       ctx.restore();
     }
 
-    // ── AcroForm field overlays ──
-    if (formFields.length > 0 && renderResult) {
+    // ── AcroForm field overlays (Select tool only) ──
+    if (activeTool === 'select' && formFields.length > 0 && renderResult) {
       ctx.save();
       ctx.scale(dpr, dpr);
       for (const field of formFields) {
@@ -753,8 +770,8 @@ export default function EditorPage() {
       ctx.restore();
     }
 
-    // ── Link annotation overlays (Acrobat-style blue boxes) ──
-    if ((activeTool === 'link' || activeTool === 'select') && pageLinks.length > 0 && !editingLine) {
+    // ── Link annotation overlays (visible in text / select) ──
+    if ((activeTool === 'text' || activeTool === 'select' || activeTool === 'addtext') && pageLinks.length > 0 && !editingLine) {
       ctx.save();
       ctx.scale(dpr, dpr);
       for (const link of pageLinks) {
@@ -774,12 +791,10 @@ export default function EditorPage() {
         ctx.strokeStyle = selected ? '#2563eb' : 'rgba(37, 99, 235, 0.85)';
         ctx.lineWidth = selected ? 2 : 1;
         ctx.setLineDash(selected ? [] : [4, 3]);
+        ctx.fillStyle = selected ? 'rgba(37, 99, 235, 0.12)' : 'rgba(37, 99, 235, 0.06)';
+        ctx.fillRect(bx, by, bw, bh);
         ctx.strokeRect(bx, by, bw, bh);
         ctx.setLineDash([]);
-        if (activeTool === 'link') {
-          ctx.fillStyle = 'rgba(37, 99, 235, 0.08)';
-          ctx.fillRect(bx, by, bw, bh);
-        }
       }
       ctx.restore();
     }
@@ -1229,6 +1244,21 @@ export default function EditorPage() {
         }
       }
 
+      // Click a link box → select it for editing in the text sidebar
+      if (engineRef.current) {
+        const linkHit = engineRef.current.hitTestPageLink(doc, currentPage, pdfX, pdfY);
+        if (linkHit) {
+          if (editingLine) void handleEditSubmit(false);
+          setSelectedLink(linkHit);
+          setLinkDraftUrl(linkHit.url || 'https://');
+          setLinkCreatePending(false);
+          setSelectedLine(null);
+          setSelectedDisplayItem(null);
+          setActiveTool('text');
+          return;
+        }
+      }
+
       // Prefer real flow lines (sourceInstructionIndices) — never edit synthetic Bloom lines
       const startEditOnLine = (line: TextLine, newCaret: number) => {
         const flowLine = findMatchingFlowLine(line, renderResult.textLines) ?? line;
@@ -1346,47 +1376,8 @@ export default function EditorPage() {
           console.warn('[Editor] Highlight annotation failed:', err);
         }
       }
-    } else if (activeTool === 'link') {
-      if (!engineRef.current) return;
-      // Click existing link → edit or remove
-      const existing = engineRef.current.hitTestPageLink(doc, currentPage, pdfX, pdfY);
-      if (existing) {
-        setSelectedLink(existing);
-        const next = window.prompt('Edit link URL (leave empty to remove):', existing.url);
-        if (next === null) return;
-        if (!next.trim()) {
-          engineRef.current.removePageLink(doc, currentPage, existing.ref);
-        } else {
-          engineRef.current.updatePageLinkUrl(doc, currentPage, existing, next);
-        }
-        setSelectedLink(null);
-        setIsDirty(true);
-        setRenderKey(k => k + 1);
-        return;
-      }
-
-      const hit = hitTestTextLine(pdfX, pdfY, renderResult.textLines);
-      if (!hit) return;
-      const url = window.prompt('Enter link URL (e.g. https://example.com):', 'https://');
-      if (!url || !url.trim() || url.trim() === 'https://') return;
-      try {
-        const ref = engineRef.current.addLinkFromLineSelection(
-          doc,
-          currentPage,
-          hit,
-          0,
-          hit.text.length,
-          url,
-        );
-        if (ref) {
-          setIsDirty(true);
-          setRenderKey(k => k + 1);
-        }
-      } catch (err) {
-        console.warn('[Editor] Link annotation failed:', err);
-      }
     }
-  }, [renderResult, doc, currentPage, scale, activeTool, editingLine, handleEditSubmit, beginEditSession, displayItems, textFontSize, textColor, highlightColor]);
+  }, [renderResult, doc, currentPage, scale, activeTool, editingLine, handleEditSubmit, beginEditSession, displayItems, textFontSize, textColor, textFontFamily, highlightColor]);
 
   // Double-click in select mode → enter text edit
   const handleCanvasDoubleClick = useCallback((e: React.MouseEvent) => {
@@ -1993,21 +1984,52 @@ export default function EditorPage() {
   // ── Navigation handlers ──
   const goToPrev = useCallback(() => {
     commitDrawingsToPdf();
+    setSelectedLink(null);
+    setLinkCreatePending(false);
+    setLinkDraftUrl('');
     setCurrentPage(p => Math.max(0, p - 1));
   }, [commitDrawingsToPdf]);
 
   const goToNext = useCallback(() => {
     commitDrawingsToPdf();
+    setSelectedLink(null);
+    setLinkCreatePending(false);
+    setLinkDraftUrl('');
     setCurrentPage(p => Math.min(totalPages - 1, p + 1));
   }, [totalPages, commitDrawingsToPdf]);
 
   const zoomIn = useCallback(() => {
-    setScale(s => Math.min(4, s + 0.25));
+    setScale(s => Math.min(4, Math.round((s + 0.25) * 100) / 100));
   }, []);
 
   const zoomOut = useCallback(() => {
-    setScale(s => Math.max(0.5, s - 0.25));
+    setScale(s => Math.max(0.5, Math.round((s - 0.25) * 100) / 100));
   }, []);
+
+  // Trackpad pinch / Ctrl+wheel zoom (browsers fire wheel+ctrlKey for pinch)
+  useEffect(() => {
+    if (isLoading || !doc) return;
+    const viewport = scrollViewportRef.current;
+    if (!viewport) return;
+
+    const onWheel = (e: WheelEvent) => {
+      // Pinch-to-zoom on macOS/Chrome sets ctrlKey; also support Ctrl/Cmd+wheel
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      const intensity = Math.max(0.05, Math.min(0.25, Math.abs(e.deltaY) * 0.012));
+      const direction = e.deltaY < 0 ? 1 : -1;
+      setScale(s => {
+        const next = s + direction * intensity;
+        const clamped = Math.min(4, Math.max(0.5, next));
+        return Math.round(clamped * 100) / 100;
+      });
+    };
+
+    viewport.addEventListener('wheel', onWheel, { passive: false });
+    return () => viewport.removeEventListener('wheel', onWheel);
+  }, [doc, isLoading, currentPage]);
   // ── Watermark Handlers ──
   const handleWatermarkImageUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -2367,7 +2389,7 @@ export default function EditorPage() {
       } else if (e.key === 'h' || e.key === 'H') {
         if (!e.metaKey && !e.ctrlKey) setActiveTool('highlight');
       } else if (e.key === 'l' || e.key === 'L') {
-        if (!e.metaKey && !e.ctrlKey) setActiveTool('link');
+        if (!e.metaKey && !e.ctrlKey) setActiveTool('text');
       } else if (e.key === 'd') {
         setActiveTool('draw');
       } else if (e.key === 'e' || e.key === 'E') {
@@ -2377,6 +2399,136 @@ export default function EditorPage() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [goToPrev, goToNext, zoomIn, zoomOut, editingLine]);
+
+  const eraserSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${eraserSize}" height="${eraserSize}" viewBox="0 0 ${eraserSize} ${eraserSize}"><circle cx="${eraserSize / 2}" cy="${eraserSize / 2}" r="${eraserSize / 2 - 1}" fill="rgba(255,255,255,0.4)" stroke="black" stroke-width="1"/></svg>`;
+  const eraserCursorUrl = `url('data:image/svg+xml;utf8,${encodeURIComponent(eraserSvg)}') ${eraserSize / 2} ${eraserSize / 2}, auto`;
+
+  const cursorForTool = isPanning ? 'grabbing'
+    : spacePanHeld || (scale > 1 && !['draw', 'highlight', 'erase'].includes(activeTool)) ? 'grab'
+    : activeTool === 'text' ? 'text'
+      : activeTool === 'draw' ? 'crosshair'
+        : activeTool === 'highlight' ? 'pointer'
+          : activeTool === 'erase' ? eraserCursorUrl
+            : activeTool === 'select' ? 'grab'
+              : 'default';
+
+  const isPanIgnoreTarget = useCallback((target: EventTarget | null) => {
+    if (!(target instanceof Element)) return false;
+    return !!target.closest(
+      'textarea, input, button, a, [data-no-pan], [contenteditable="true"]',
+    );
+  }, []);
+
+  const endPanDrag = useCallback((pointerId?: number) => {
+    const drag = panDragRef.current;
+    if (!drag) return false;
+    if (pointerId != null && drag.pointerId !== pointerId) return false;
+    const didPan = drag.moved;
+    panDragRef.current = null;
+    setIsPanning(false);
+    const viewport = scrollViewportRef.current;
+    try {
+      viewport?.releasePointerCapture(drag.pointerId);
+    } catch {
+      // ignore
+    }
+    return didPan;
+  }, []);
+
+  const handleViewportPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0 && e.button !== 1) return;
+    if (isPanIgnoreTarget(e.target)) return;
+
+    const middle = e.button === 1;
+    const leftPan =
+      e.button === 0 &&
+      (spacePanHeld ||
+        (scale > 1 && !['draw', 'highlight', 'erase'].includes(activeTool)));
+    if (!middle && !leftPan) return;
+
+    const viewport = scrollViewportRef.current;
+    if (!viewport) return;
+
+    if (
+      e.button === 0 &&
+      !spacePanHeld &&
+      (e.target as Element).closest?.('.absolute.z-20, [data-edit-box], [data-resize-handle]')
+    ) {
+      return;
+    }
+
+    panDragRef.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      scrollLeft: viewport.scrollLeft,
+      scrollTop: viewport.scrollTop,
+      moved: false,
+    };
+
+    if (middle || spacePanHeld) {
+      setIsPanning(true);
+      try {
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      } catch {
+        // ignore
+      }
+      e.preventDefault();
+    }
+  }, [activeTool, scale, spacePanHeld, isPanIgnoreTarget]);
+
+  const handleViewportPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const drag = panDragRef.current;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    const viewport = scrollViewportRef.current;
+    if (!viewport) return;
+
+    const dx = e.clientX - drag.startX;
+    const dy = e.clientY - drag.startY;
+    if (!drag.moved) {
+      if (Math.abs(dx) <= 3 && Math.abs(dy) <= 3) return;
+      drag.moved = true;
+      setIsPanning(true);
+      try {
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      } catch {
+        // ignore
+      }
+    }
+    // Flex + justify-center breaks scrollLeft; pan via scroll on a max-content wrapper.
+    viewport.scrollLeft = drag.scrollLeft - dx;
+    viewport.scrollTop = drag.scrollTop - dy;
+  }, []);
+
+  const handleViewportPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const didPan = endPanDrag(e.pointerId);
+    if (didPan) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }, [endPanDrag]);
+
+  // Space = temporary hand tool (Photoshop-style)
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.code !== 'Space' || e.repeat) return;
+      if (editingLine) return;
+      if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA') return;
+      e.preventDefault();
+      setSpacePanHeld(true);
+    }
+    function onKeyUp(e: KeyboardEvent) {
+      if (e.code !== 'Space') return;
+      setSpacePanHeld(false);
+      if (!panDragRef.current) setIsPanning(false);
+    }
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+    };
+  }, [editingLine]);
 
   // ── Loading state ──
   if (isLoading) {
@@ -2404,15 +2556,6 @@ export default function EditorPage() {
       </div>
     );
   }
-
-  const eraserSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${eraserSize}" height="${eraserSize}" viewBox="0 0 ${eraserSize} ${eraserSize}"><circle cx="${eraserSize / 2}" cy="${eraserSize / 2}" r="${eraserSize / 2 - 1}" fill="rgba(255,255,255,0.4)" stroke="black" stroke-width="1"/></svg>`;
-  const eraserCursorUrl = `url('data:image/svg+xml;utf8,${encodeURIComponent(eraserSvg)}') ${eraserSize / 2} ${eraserSize / 2}, auto`;
-
-  const cursorForTool = activeTool === 'text' ? 'text'
-    : activeTool === 'draw' ? 'crosshair'
-      : activeTool === 'highlight' ? 'pointer'
-        : activeTool === 'erase' ? eraserCursorUrl
-          : 'default';
 
   // ── Main editor UI ──
   return (
@@ -2496,9 +2639,42 @@ export default function EditorPage() {
           eraserSize={eraserSize}
           setEraserSize={setEraserSize}
           pageLinkCount={pageLinks.length}
-          onAddLink={() => {
+          pageLinks={pageLinks.map(l => ({ refKey: l.ref.toKey(), url: l.url }))}
+          selectedLinkRefKey={selectedLink?.ref.toKey() ?? null}
+          onSelectPageLink={(refKey) => {
+            const hit = pageLinks.find(l => l.ref.toKey() === refKey);
+            if (!hit) return;
+            if (editingLine) void handleEditSubmit(false);
+            setSelectedLink(hit);
+            setLinkDraftUrl(hit.url || 'https://');
+            setLinkCreatePending(false);
+            setActiveTool('text');
+          }}
+          hasSelectedLink={!!selectedLink}
+          linkCreatePending={linkCreatePending}
+          selectedLinkUrl={linkDraftUrl}
+          onSelectedLinkUrlChange={setLinkDraftUrl}
+          onSaveSelectedLink={() => {
             if (!doc || !engineRef.current) return;
-            const line = editAnchorLineRef.current ?? selectedLine;
+            const url = linkDraftUrl.trim();
+            if (!url || url === 'https://') return;
+
+            if (selectedLink) {
+              try {
+                engineRef.current.updatePageLinkUrl(doc, currentPage, selectedLink, url);
+                setSelectedLink(null);
+                setLinkDraftUrl('');
+                setLinkCreatePending(false);
+                setIsDirty(true);
+                setRenderKey(k => k + 1);
+              } catch (err) {
+                console.warn('[Editor] Update link failed:', err);
+              }
+              return;
+            }
+
+            // Create from current text selection / line
+            const line = editAnchorLineRef.current ?? selectedLine ?? editingLine;
             if (!line) {
               window.alert('Select or click a text line first, then add a link.');
               return;
@@ -2514,19 +2690,48 @@ export default function EditorPage() {
               start = range.start;
               end = range.end;
             }
-            const url = window.prompt('Enter link URL (e.g. https://example.com):', 'https://');
-            if (!url || !url.trim() || url.trim() === 'https://') return;
             try {
               const ref = engineRef.current.addLinkFromLineSelection(
                 doc, currentPage, line, start, end, url,
               );
               if (ref) {
+                setLinkCreatePending(false);
+                setLinkDraftUrl('');
                 setIsDirty(true);
                 setRenderKey(k => k + 1);
               }
             } catch (err) {
               console.warn('[Editor] Add link failed:', err);
             }
+          }}
+          onRemoveSelectedLink={() => {
+            if (!doc || !engineRef.current || !selectedLink) {
+              setLinkCreatePending(false);
+              setLinkDraftUrl('');
+              setSelectedLink(null);
+              return;
+            }
+            try {
+              engineRef.current.removePageLink(doc, currentPage, selectedLink.ref);
+              setSelectedLink(null);
+              setLinkDraftUrl('');
+              setLinkCreatePending(false);
+              setIsDirty(true);
+              setRenderKey(k => k + 1);
+            } catch (err) {
+              console.warn('[Editor] Remove link failed:', err);
+            }
+          }}
+          onAddLink={() => {
+            const line = editAnchorLineRef.current ?? selectedLine ?? editingLine;
+            if (!line) {
+              window.alert('Select or click a text line first, then add a link.');
+              return;
+            }
+            setSelectedLink(null);
+            setLinkCreatePending(true);
+            setLinkDraftUrl('https://');
+            setActiveTool('text');
           }}
           selectedDisplayItem={selectedDisplayItem}
           setSelectedDisplayItem={setSelectedDisplayItem}
@@ -2592,8 +2797,16 @@ export default function EditorPage() {
         />
 
         {/* ── Canvas area ── */}
-        <div className="flex-1 overflow-auto relative flex justify-center items-start py-12 checkerboard">
-          {/* Floating Search & OCR Panel */}
+        <div
+          ref={scrollViewportRef}
+          className="flex-1 overflow-auto relative checkerboard"
+          style={{ cursor: cursorForTool, touchAction: scale > 1 || spacePanHeld ? 'none' : undefined }}
+          onPointerDown={handleViewportPointerDown}
+          onPointerMove={handleViewportPointerMove}
+          onPointerUp={handleViewportPointerUp}
+          onPointerCancel={handleViewportPointerUp}
+        >
+          {/* Floating Search & OCR Panel (viewport-fixed) */}
           {isSearchOpen && (
             <div className="absolute top-4 right-4 z-40 flex flex-col items-end gap-3 w-64 pointer-events-none animate-in fade-in slide-in-from-top-4 duration-200">
               <div className="pointer-events-auto flex items-center justify-between gap-2 bg-zinc-900/95 backdrop-blur-md px-3 py-2 rounded-lg border border-zinc-700/80 shadow-lg w-full">
@@ -2618,11 +2831,26 @@ export default function EditorPage() {
             </div>
           )}
 
+          {/*
+            Centering wrapper: minWidth 100% + width max-content so overflow scroll
+            works left/right after zoom (flex justify-center on the scroller breaks scrollLeft).
+          */}
+          <div
+            className="flex justify-center items-start py-12"
+            style={{ minWidth: '100%', width: 'max-content', minHeight: '100%' }}
+          >
           <div
             ref={canvasContainerRef}
-            className="relative inline-block shrink-0 shadow-2xl transition-transform duration-200"
+            className="relative inline-block shrink-0 shadow-2xl"
             style={{ cursor: cursorForTool }}
-            onClick={handleCanvasClick}
+            onClick={(e) => {
+              if (panDragRef.current?.moved || isPanning) {
+                e.preventDefault();
+                e.stopPropagation();
+                return;
+              }
+              handleCanvasClick(e);
+            }}
             onDoubleClick={handleCanvasDoubleClick}
             onMouseDown={handleDrawStart}
             onMouseMove={handleDrawMove}
@@ -3060,6 +3288,7 @@ export default function EditorPage() {
               );
             })()}
           </div>
+          </div>
         </div>
 
         {/* ── Right Sidebar: Page Thumbnails ── */}
@@ -3070,6 +3299,9 @@ export default function EditorPage() {
           isGeneratingThumbnails={isGeneratingThumbnails}
           onPageSelect={(i) => {
             commitDrawingsToPdf();
+            setSelectedLink(null);
+            setLinkCreatePending(false);
+            setLinkDraftUrl('');
             setCurrentPage(i);
           }}
           onDeletePage={handleDeletePage}

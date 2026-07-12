@@ -229,15 +229,15 @@ const STANDARD_FONTS: Record<string, StandardFontMetrics> = {
     ascent: 629, descent: -157, isMonospace: true, isSerif: true,
     cssFamily: '"Courier New", Courier, monospace', isBold: true, isItalic: true,
   },
-  'Symbol': {
-    name: 'Symbol', widths: HELVETICA_WIDTHS, defaultWidth: 250,
-    ascent: 1010, descent: -293, isMonospace: false, isSerif: false,
-    cssFamily: 'Symbol, serif', isBold: false, isItalic: false,
-  },
   'ZapfDingbats': {
     name: 'ZapfDingbats', widths: HELVETICA_WIDTHS, defaultWidth: 278,
     ascent: 820, descent: -143, isMonospace: false, isSerif: false,
-    cssFamily: '"Zapf Dingbats", serif', isBold: false, isItalic: false,
+    cssFamily: '"Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols", sans-serif', isBold: false, isItalic: false,
+  },
+  'Symbol': {
+    name: 'Symbol', widths: HELVETICA_WIDTHS, defaultWidth: 250,
+    ascent: 1010, descent: -293, isMonospace: false, isSerif: false,
+    cssFamily: '"Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols", sans-serif', isBold: false, isItalic: false,
   },
 };
 

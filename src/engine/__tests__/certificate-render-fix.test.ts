@@ -23,6 +23,7 @@ function makeFont(partial: Partial<FontData> & Pick<FontData, 'name' | 'baseFont
     defaultWidth: 500,
     ascent: 800,
     descent: -200,
+    ttfFont: null,
     ...partial,
   };
 }
@@ -116,6 +117,49 @@ describe('charCodeToUnicode: certificate apostrophe', () => {
     });
     // Raw mapping stays §; lone/mid-word repair in interpreter converts to '
     expect(charCodeToUnicode(0xa7, font)).toBe('\u00A7');
+  });
+});
+
+describe('ZapfDingbats bullets', () => {
+  it('maps dingbat code 108 to black circle, not Latin l/x', async () => {
+    const { zapfDingbatsCharToUnicode, isSuspiciousDingbatToUnicode } = await import('../fonts/dingbat-encodings');
+    expect(zapfDingbatsCharToUnicode(108)).toBe('\u25CF');
+    expect(isSuspiciousDingbatToUnicode('x')).toBe(true);
+    expect(isSuspiciousDingbatToUnicode('l')).toBe(true);
+    expect(isSuspiciousDingbatToUnicode('\u25CF')).toBe(false);
+  });
+});
+
+describe('Symbol font bullets (Identity-H GID)', () => {
+  it('maps SymbolEncoding byte 183 to bullet, not byte 120 (xi)', async () => {
+    const { symbolCharToUnicode } = await import('../fonts/dingbat-encodings');
+    expect(symbolCharToUnicode(183)).toBe('\u2022');
+    expect(symbolCharToUnicode(120)).toBe('\u03BE'); // Greek xi — NOT a bullet
+  });
+
+  it('resolves Identity-H glyph ID via cmap to bullet', async () => {
+    const { unicodeFromGlyphId } = await import('../fonts/dingbat-encodings');
+    // Embedded Symbol subset: Mac Roman 183 and/or U+F0B7 → GID 120
+    const cmap = new Map<number, number>([
+      [183, 120],
+      [0xF0B7, 120],
+    ]);
+    expect(unicodeFromGlyphId(120, cmap, 'ABCDEE+Symbol')).toBe('\u2022');
+    // Must not treat GID 120 as Latin "x"
+    expect(unicodeFromGlyphId(120, cmap, 'ABCDEE+Symbol')).not.toBe('x');
+  });
+
+  it('charCodeToUnicode uses TTF cmap for composite Symbol', () => {
+    const font = makeFont({
+      name: 'F8',
+      baseFont: 'ABCDEE+Symbol',
+      isComposite: true,
+      encoding: 'Identity-H',
+      ttfFont: {
+        cmapEntries: new Map([[183, 120], [0xF0B7, 120]]),
+      } as FontData['ttfFont'],
+    });
+    expect(charCodeToUnicode(120, font)).toBe('\u2022');
   });
 });
 

@@ -154,7 +154,20 @@ class BinaryReader {
 // ─── Main parser ────────────────────────────────────────────────────────────
 
 /**
- * Parse a TrueType/OpenType font from raw binary data.
+ * Detect TrueType / OpenType sfnt container signatures.
+ */
+export function isTrueTypeFontData(data: Uint8Array): boolean {
+  if (data.length < 4) return false;
+  const sig = (data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3];
+  return (
+    sig === 0x00010000 || // TrueType
+    sig === 0x74727565 || // 'true'
+    sig === 0x4F54544F    // 'OTTO'
+  );
+}
+
+/**
+ * Parse a TrueType / OpenType font from raw bytes.
  */
 export function parseTTF(data: Uint8Array): TTFFont {
   const reader = new BinaryReader(data);
@@ -286,9 +299,9 @@ function parseCmap(data: Uint8Array, tables: Map<string, TTFTable>, font: TTFFon
   r.skip(2); // version
   const numSubtables = r.readU16();
 
-  // Find the best subtable: prefer (3,1) Windows Unicode BMP, then (1,0) Mac Roman, then (0,*)
-  let bestOffset = -1;
-  let bestPriority = -1;
+  // Collect usable subtables. Prefer Unicode BMP, but also merge Mac Roman and
+  // Microsoft Symbol (3,0) — Symbol subsets often only expose those.
+  const subtables: Array<{ offset: number; priority: number }> = [];
 
   for (let i = 0; i < numSubtables; i++) {
     const platformID = r.readU16();
@@ -299,36 +312,62 @@ function parseCmap(data: Uint8Array, tables: Map<string, TTFTable>, font: TTFFon
     if (platformID === 3 && encodingID === 1) priority = 10; // Windows Unicode BMP
     else if (platformID === 3 && encodingID === 10) priority = 9; // Windows Unicode full
     else if (platformID === 0) priority = 8; // Unicode
+    else if (platformID === 3 && encodingID === 0) priority = 6; // Microsoft Symbol
     else if (platformID === 1 && encodingID === 0) priority = 5; // Mac Roman
 
-    if (priority > bestPriority) {
-      bestPriority = priority;
-      bestOffset = table.offset + offset;
+    if (priority > 0) {
+      subtables.push({ offset: table.offset + offset, priority });
     }
   }
 
-  if (bestOffset < 0) return;
+  subtables.sort((a, b) => b.priority - a.priority);
 
-  // Parse the selected cmap subtable
-  const sr = new BinaryReader(data, bestOffset);
-  const format = sr.readU16();
+  // Parse highest-priority first, then merge lower ones without overwriting.
+  for (const sub of subtables) {
+    const before = font.cmapEntries.size;
+    const sr = new BinaryReader(data, sub.offset);
+    const format = sr.readU16();
+    const scratch: TTFFont = before === 0 ? font : {
+      ...font,
+      cmapEntries: new Map(),
+    };
 
-  switch (format) {
-    case 0:
-      parseCmapFormat0(sr, font);
-      break;
-    case 4:
-      parseCmapFormat4(sr, font);
-      break;
-    case 6:
-      parseCmapFormat6(sr, font);
-      break;
-    case 12:
-      parseCmapFormat12(sr, font);
-      break;
-    default:
-      break;
+    switch (format) {
+      case 0:
+        parseCmapFormat0(sr, scratch);
+        break;
+      case 4:
+        parseCmapFormat4(sr, scratch);
+        break;
+      case 6:
+        parseCmapFormat6(sr, scratch);
+        break;
+      case 12:
+        parseCmapFormat12(sr, scratch);
+        break;
+      default:
+        break;
+    }
+
+    if (scratch === font) continue;
+    for (const [code, gid] of scratch.cmapEntries) {
+      if (!font.cmapEntries.has(code)) font.cmapEntries.set(code, gid);
+    }
   }
+}
+
+/**
+ * Reverse-lookup: glyph ID → a cmap character code (prefer Symbol PUA / printable).
+ */
+export function glyphIdToCmapCode(font: TTFFont, glyphId: number): number | null {
+  let best: number | null = null;
+  for (const [code, gid] of font.cmapEntries) {
+    if (gid !== glyphId) continue;
+    if (best == null) best = code;
+    if (code >= 0xF020 && code <= 0xF0FF) return code;
+    if (code >= 0x20 && code <= 0xFF && (best < 0x20 || best > 0xFF)) best = code;
+  }
+  return best;
 }
 
 function parseCmapFormat0(r: BinaryReader, font: TTFFont): void {

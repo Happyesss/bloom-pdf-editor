@@ -23,7 +23,16 @@ import {
 import { resolveRef } from '../parser/parser';
 import { getStandardFont, type StandardFontMetrics } from './standard14';
 import { parseCMap, type CMapData } from './cmap-parser';
-import { parseTTF, charCodeToGlyphId, getGlyphWidth, fontUnitsToTextSpace, type TTFFont } from './truetype-parser';
+import { parseTTF, isTrueTypeFontData, charCodeToGlyphId, getGlyphWidth, fontUnitsToTextSpace, type TTFFont } from './truetype-parser';
+import {
+  isSuspiciousDingbatToUnicode,
+  isSymbolFont,
+  isZapfDingbatsFont,
+  symbolCharToUnicode,
+  unicodeFromGlyphId,
+  zapfDingbatsCharToUnicode,
+  ZAPF_DINGBATS_GLYPH_TO_UNICODE,
+} from './dingbat-encodings';
 
 // ─── Font data structure ────────────────────────────────────────────────────
 
@@ -401,7 +410,7 @@ function loadFontDescriptor(
       fontData.fontBytes = fontBytes;
       try {
         // Detect if this is TrueType/OpenType
-        if (isTrueTypeData(fontBytes)) {
+        if (isTrueTypeFontData(fontBytes)) {
           fontData.ttfFont = parseTTF(fontBytes);
  
           // Populate widths from embedded font if not already set
@@ -478,14 +487,7 @@ function loadDescendantFont(
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function isTrueTypeData(data: Uint8Array): boolean {
-  if (data.length < 4) return false;
-  // Check for TrueType signature (0x00010000) or 'true' or 'OTTO'
-  const sig = (data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3];
-  return (
-    sig === 0x00010000 ||  // TrueType
-    sig === 0x74727565 ||  // 'true'
-    sig === 0x4F54544F     // 'OTTO' (OpenType with CFF)
-  );
+  return isTrueTypeFontData(data);
 }
 
 function populateWidthsFromTTF(fontData: FontData): void {
@@ -537,6 +539,26 @@ function buildCSSFont(fontData: FontData): string {
  *   4. Direct mapping (Latin-1)
  */
 export function charCodeToUnicode(charCode: number, fontData: FontData): string {
+  // ZapfDingbats: never trust Latin ToUnicode ("x"/"l" for bullets)
+  if (isZapfDingbatsFont(fontData.baseFont)) {
+    const dingbat = zapfDingbatsCharToUnicode(charCode, fontData.differences);
+    if (dingbat) {
+      const fromCMap = fontData.toUnicode.get(charCode);
+      if (fromCMap && !isSuspiciousDingbatToUnicode(fromCMap)) return fromCMap;
+      return dingbat;
+    }
+  }
+
+  // Simple Symbol fonts use SymbolSetEncoding (bullet = 183, not Latin "x")
+  if (isSymbolFont(fontData.baseFont) && !fontData.isComposite) {
+    const sym = symbolCharToUnicode(charCode, fontData.differences);
+    if (sym) {
+      const fromCMap = fontData.toUnicode.get(charCode);
+      if (fromCMap && !isSuspiciousDingbatToUnicode(fromCMap)) return fromCMap;
+      return sym;
+    }
+  }
+
   // Prefer Encoding Differences→AGL when present — matches drawn glyphs better
   // than broken ToUnicode maps (apostrophe → § on some certificate PDFs).
   const glyphName = fontData.differences.get(charCode);
@@ -565,6 +587,16 @@ export function charCodeToUnicode(charCode: number, fontData: FontData): string 
       if (charCode === 0x92) return '\u2019';
     }
     return fromCMap;
+  }
+
+  // Identity-H / embedded TTF without ToUnicode: CID often equals glyph ID
+  if (fontData.isComposite && fontData.ttfFont) {
+    const fromGlyph = unicodeFromGlyphId(
+      charCode,
+      fontData.ttfFont.cmapEntries,
+      fontData.baseFont,
+    );
+    if (fromGlyph) return fromGlyph;
   }
 
   // WinAnsiEncoding 0x80–0x9F range has special Unicode mappings.
@@ -667,5 +699,5 @@ function glyphNameToUnicode(name: string): string | null {
     'udieresis': '\u00FC',
   };
 
-  return map[name] ?? null;
+  return map[name] ?? ZAPF_DINGBATS_GLYPH_TO_UNICODE[name] ?? null;
 }

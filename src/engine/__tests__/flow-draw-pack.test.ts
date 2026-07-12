@@ -136,17 +136,19 @@ describe('flow-draw punctuation packing', () => {
   });
 });
 
-describe('flow-draw justification evening', () => {
-  it('detects uneven TJ word gaps inside a single run and evens them', () => {
-    // Simulate one TJ run: words with gaps 3, 14, 3, 12 (rivers)
+describe('flow-draw keeps native word spacing (Acrobat parity)', () => {
+  it('does NOT redistribute uneven TJ word gaps — preserves PDF positions', () => {
+    // Simulate one TJ run: words with gaps 3, 14, 3, 12 (as encoded in the PDF)
     const fs = 11;
     const adv = fs * 0.5;
     const parts = ['Built', 'backend', 'and', 'REST', 'APIs', 'for', 'platform'];
-    const gaps = [3, 14, 3, 12, 3, 14]; // uneven
+    const gaps = [3, 14, 3, 12, 3, 14]; // uneven — Acrobat draws these as-is
     const glyphs: GlyphPosition[] = [];
     let x = 72;
     let text = '';
+    const wordStarts: number[] = [];
     for (let wi = 0; wi < parts.length; wi++) {
+      wordStarts.push(x);
       for (const ch of parts[wi]) {
         glyphs.push(glyph(ch, x, fs, adv));
         x += adv;
@@ -167,35 +169,18 @@ describe('flow-draw justification evening', () => {
       isJustified: true,
     });
 
-    const measured = measureWordGaps(line);
-    expect(measured.length).toBeGreaterThanOrEqual(2);
+    // Detection may still flag uneven gaps, but flow-draw must not rewrite them
     expect(shouldUseFlowDraw(line)).toBe(true);
-    expect(shouldPackLine(line)).toBe(true);
+    expect(shouldPackLine(line)).toBe(false);
 
     const positions = computeFlowDrawPositions(line);
-    const nonSpace = positions.filter(p => p.glyph.unicode !== ' ' && p.glyph.unicode !== '\u00A0');
-    const wordRanges: Array<{ start: number; end: number }> = [];
-    let rangeStart = 0;
-    for (let i = 1; i <= nonSpace.length; i++) {
-      const prev = nonSpace[i - 1];
-      const cur = nonSpace[i];
-      const atEnd = i === nonSpace.length;
-      const gap = atEnd ? Infinity : cur.x - (prev.x + prev.glyph.width);
-      if (atEnd || gap > fs * 0.15) {
-        wordRanges.push({
-          start: nonSpace[rangeStart].x,
-          end: prev.x + prev.glyph.width,
-        });
-        rangeStart = i;
-      }
+    for (let wi = 0; wi < parts.length; wi++) {
+      const firstChar = parts[wi][0];
+      const pos = positions.find(
+        p => p.glyph.unicode === firstChar && Math.abs(p.x - wordStarts[wi]) < 0.01,
+      );
+      expect(pos).toBeDefined();
+      expect(pos!.x).toBeCloseTo(wordStarts[wi], 5);
     }
-    expect(wordRanges.length).toBe(parts.length);
-    const outGaps = [];
-    for (let i = 0; i < wordRanges.length - 1; i++) {
-      outGaps.push(wordRanges[i + 1].start - wordRanges[i].end);
-    }
-    const mean = outGaps.reduce((s, g) => s + g, 0) / outGaps.length;
-    const maxDev = Math.max(...outGaps.map(g => Math.abs(g - mean)));
-    expect(maxDev).toBeLessThan(fs * 0.35);
   });
 });

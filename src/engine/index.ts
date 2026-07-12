@@ -231,6 +231,8 @@ export {
   createAnnotationDict,
   addAnnotationToPage,
   removeAnnotationFromPage,
+  eraseAnnotationsAtPoint,
+  clearMarkupAnnotationsOnPage,
   pdfDateString,
 } from './editor/annotation-engine';
 export type {
@@ -243,6 +245,15 @@ export type {
   LinkAnnotation,
   Annotation,
 } from './editor/annotation-engine';
+export {
+  addLinkFromLineSelection,
+  listPageLinks,
+  hitTestPageLink,
+  removePageLink,
+  updatePageLinkUrl,
+  normalizeUrl,
+} from './editor/link';
+export type { PageLinkInfo } from './editor/link';
 
 // ── Writer ──
 export { serializeDocument, getNextObjNum } from './writer/serializer';

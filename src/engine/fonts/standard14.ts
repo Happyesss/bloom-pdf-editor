@@ -90,6 +90,78 @@ const TRW: Record<number, number> = {
 };
 Object.entries(TRW).forEach(([k, v]) => { TIMES_ROMAN_WIDTHS[Number(k)] = v; });
 
+// ─── Times-Bold widths (Adobe AFM — NOT the same as Times-Roman) ────────
+// Using Roman widths for Bold under-advances glyphs and leaves rivers before
+// the next independently-positioned run (e.g. bold word → ", " TJ).
+
+const TIMES_BOLD_WIDTHS: number[] = new Array(256).fill(250);
+const TBW: Record<number, number> = {
+  32:250, 33:333, 34:555, 35:500, 36:500, 37:1000, 38:833, 39:278,
+  40:333, 41:333, 42:500, 43:570, 44:250, 45:333, 46:250, 47:278,
+  48:500, 49:500, 50:500, 51:500, 52:500, 53:500, 54:500, 55:500,
+  56:500, 57:500, 58:333, 59:333, 60:570, 61:570, 62:570, 63:500,
+  64:930, 65:722, 66:667, 67:722, 68:722, 69:667, 70:611, 71:778,
+  72:778, 73:389, 74:500, 75:778, 76:667, 77:944, 78:722, 79:778,
+  80:611, 81:778, 82:722, 83:556, 84:667, 85:722, 86:722, 87:1000,
+  88:722, 89:722, 90:667, 91:333, 92:278, 93:333, 94:581, 95:500,
+  96:333, 97:500, 98:556, 99:444, 100:556, 101:444, 102:333, 103:500,
+  104:556, 105:278, 106:333, 107:556, 108:278, 109:833, 110:556, 111:500,
+  112:556, 113:556, 114:444, 115:389, 116:333, 117:556, 118:500, 119:722,
+  120:500, 121:500, 122:444, 123:394, 124:220, 125:394, 126:520,
+  // WinAnsi 0x80–0x9F (glyph names from Core 14 AFM)
+  128:500, 130:333, 131:556, 132:500, 133:1000, 134:500, 135:1000, 136:333,
+  137:1000, 138:667, 139:333, 140:1000, 142:667, 145:333, 146:333, 147:500,
+  148:500, 149:350, 150:500, 151:1000, 152:333, 153:1000, 154:556, 155:333,
+  156:722, 158:667, 159:722,
+};
+Object.entries(TBW).forEach(([k, v]) => { TIMES_BOLD_WIDTHS[Number(k)] = v; });
+
+// ─── Times-Italic widths (Adobe AFM) ────────────────────────────────────
+
+const TIMES_ITALIC_WIDTHS: number[] = new Array(256).fill(250);
+const TIW: Record<number, number> = {
+  32:250, 33:333, 34:420, 35:500, 36:500, 37:833, 38:778, 39:214,
+  40:333, 41:333, 42:500, 43:675, 44:250, 45:333, 46:250, 47:278,
+  48:500, 49:500, 50:500, 51:500, 52:500, 53:500, 54:500, 55:500,
+  56:500, 57:500, 58:333, 59:333, 60:675, 61:675, 62:675, 63:500,
+  64:920, 65:611, 66:611, 67:667, 68:722, 69:611, 70:611, 71:722,
+  72:722, 73:333, 74:444, 75:667, 76:556, 77:833, 78:667, 79:722,
+  80:611, 81:722, 82:611, 83:500, 84:556, 85:722, 86:611, 87:833,
+  88:611, 89:556, 90:556, 91:389, 92:278, 93:389, 94:422, 95:500,
+  96:333, 97:500, 98:500, 99:444, 100:500, 101:444, 102:278, 103:500,
+  104:500, 105:278, 106:278, 107:444, 108:278, 109:722, 110:500, 111:500,
+  112:500, 113:500, 114:389, 115:389, 116:278, 117:500, 118:444, 119:667,
+  120:444, 121:444, 122:389, 123:400, 124:275, 125:400, 126:541,
+  128:500, 130:333, 131:500, 132:556, 133:889, 134:500, 135:500, 136:333,
+  137:1000, 138:500, 139:333, 140:944, 142:556, 145:333, 146:333, 147:556,
+  148:556, 149:350, 150:500, 151:889, 152:333, 153:980, 154:389, 155:333,
+  156:667, 158:389, 159:556,
+};
+Object.entries(TIW).forEach(([k, v]) => { TIMES_ITALIC_WIDTHS[Number(k)] = v; });
+
+// ─── Times-BoldItalic widths (Adobe AFM) ────────────────────────────────
+
+const TIMES_BOLDITALIC_WIDTHS: number[] = new Array(256).fill(250);
+const TBIW: Record<number, number> = {
+  32:250, 33:389, 34:555, 35:500, 36:500, 37:833, 38:778, 39:278,
+  40:333, 41:333, 42:500, 43:570, 44:250, 45:333, 46:250, 47:278,
+  48:500, 49:500, 50:500, 51:500, 52:500, 53:500, 54:500, 55:500,
+  56:500, 57:500, 58:333, 59:333, 60:570, 61:570, 62:570, 63:500,
+  64:832, 65:667, 66:667, 67:667, 68:722, 69:667, 70:667, 71:722,
+  72:778, 73:389, 74:500, 75:667, 76:611, 77:889, 78:722, 79:722,
+  80:611, 81:722, 82:667, 83:556, 84:611, 85:722, 86:667, 87:889,
+  88:667, 89:611, 90:611, 91:333, 92:278, 93:333, 94:570, 95:500,
+  96:333, 97:500, 98:500, 99:444, 100:500, 101:444, 102:333, 103:500,
+  104:556, 105:278, 106:278, 107:500, 108:278, 109:778, 110:556, 111:500,
+  112:556, 113:500, 114:389, 115:389, 116:278, 117:556, 118:444, 119:667,
+  120:500, 121:444, 122:389, 123:348, 124:220, 125:348, 126:570,
+  128:500, 130:333, 131:500, 132:500, 133:1000, 134:500, 135:500, 136:333,
+  137:1000, 138:556, 139:333, 140:944, 142:611, 145:333, 146:333, 147:500,
+  148:500, 149:350, 150:500, 151:1000, 152:333, 153:1000, 154:389, 155:333,
+  156:722, 158:389, 159:611,
+};
+Object.entries(TBIW).forEach(([k, v]) => { TIMES_BOLDITALIC_WIDTHS[Number(k)] = v; });
+
 // ─── Courier widths (monospace — all glyphs are 600) ────────────────────
 
 const COURIER_WIDTHS: number[] = new Array(256).fill(600);
@@ -123,17 +195,17 @@ const STANDARD_FONTS: Record<string, StandardFontMetrics> = {
     cssFamily: '"Times New Roman", Times, serif', isBold: false, isItalic: false,
   },
   'Times-Bold': {
-    name: 'Times-Bold', widths: TIMES_ROMAN_WIDTHS, defaultWidth: 250,
+    name: 'Times-Bold', widths: TIMES_BOLD_WIDTHS, defaultWidth: 250,
     ascent: 683, descent: -217, isMonospace: false, isSerif: true,
     cssFamily: '"Times New Roman", Times, serif', isBold: true, isItalic: false,
   },
   'Times-Italic': {
-    name: 'Times-Italic', widths: TIMES_ROMAN_WIDTHS, defaultWidth: 250,
+    name: 'Times-Italic', widths: TIMES_ITALIC_WIDTHS, defaultWidth: 250,
     ascent: 683, descent: -217, isMonospace: false, isSerif: true,
     cssFamily: '"Times New Roman", Times, serif', isBold: false, isItalic: true,
   },
   'Times-BoldItalic': {
-    name: 'Times-BoldItalic', widths: TIMES_ROMAN_WIDTHS, defaultWidth: 250,
+    name: 'Times-BoldItalic', widths: TIMES_BOLDITALIC_WIDTHS, defaultWidth: 250,
     ascent: 683, descent: -217, isMonospace: false, isSerif: true,
     cssFamily: '"Times New Roman", Times, serif', isBold: true, isItalic: true,
   },

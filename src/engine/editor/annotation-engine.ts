@@ -231,60 +231,81 @@ export function createAnnotationDict(
 // ─── Appearance stream builders ─────────────────────────────────────────────
 
 function buildHighlightAppearance(annot: HighlightAnnotation): PDFStream {
-  const { rect, color, opacity } = annot;
-  const w = rect.width;
-  const h = rect.height;
+  const { rect, color, opacity, quadPoints } = annot;
+  const lines: string[] = [];
 
-  let streamContent: string;
+  lines.push(`${color[0]} ${color[1]} ${color[2]} rg`);
 
   switch (annot.type) {
-    case 'Highlight':
-      streamContent = [
-        `${color[0]} ${color[1]} ${color[2]} rg`,
-        `0 0 ${w} ${h} re`,
-        'f',
-      ].join('\n');
+    case 'Highlight': {
+      // Fill each text quad separately (not the union Rect) so highlights
+      // stay tight to the glyphs instead of painting a giant opaque bar.
+      for (let i = 0; i + 7 < quadPoints.length; i += 8) {
+        const tlx = quadPoints[i] - rect.x;
+        const tly = quadPoints[i + 1] - rect.y;
+        const trx = quadPoints[i + 2] - rect.x;
+        const try_ = quadPoints[i + 3] - rect.y;
+        const blx = quadPoints[i + 4] - rect.x;
+        const bly = quadPoints[i + 5] - rect.y;
+        const brx = quadPoints[i + 6] - rect.x;
+        const bry = quadPoints[i + 7] - rect.y;
+        lines.push(`${tlx} ${tly} m`);
+        lines.push(`${trx} ${try_} l`);
+        lines.push(`${brx} ${bry} l`);
+        lines.push(`${blx} ${bly} l`);
+        lines.push('h f');
+      }
       break;
+    }
 
     case 'Underline':
-      streamContent = [
-        `${color[0]} ${color[1]} ${color[2]} RG`,
-        '1 w',
-        `0 1 m ${w} 1 l`,
-        'S',
-      ].join('\n');
+      lines.push(`${color[0]} ${color[1]} ${color[2]} RG`);
+      lines.push('1 w');
+      for (let i = 0; i + 7 < quadPoints.length; i += 8) {
+        const blx = quadPoints[i + 4] - rect.x;
+        const bly = quadPoints[i + 5] - rect.y;
+        const brx = quadPoints[i + 6] - rect.x;
+        const bry = quadPoints[i + 7] - rect.y;
+        lines.push(`${blx} ${bly} m ${brx} ${bry} l S`);
+      }
       break;
 
     case 'StrikeOut':
-      streamContent = [
-        `${color[0]} ${color[1]} ${color[2]} RG`,
-        '1 w',
-        `0 ${h / 2} m ${w} ${h / 2} l`,
-        'S',
-      ].join('\n');
+      lines.push(`${color[0]} ${color[1]} ${color[2]} RG`);
+      lines.push('1 w');
+      for (let i = 0; i + 7 < quadPoints.length; i += 8) {
+        const midY =
+          ((quadPoints[i + 1] + quadPoints[i + 5]) / 2) - rect.y;
+        const left = Math.min(quadPoints[i], quadPoints[i + 4]) - rect.x;
+        const right = Math.max(quadPoints[i + 2], quadPoints[i + 6]) - rect.x;
+        lines.push(`${left} ${midY} m ${right} ${midY} l S`);
+      }
       break;
 
-    case 'Squiggly':
-      // Approximate squiggly with a zigzag path
-      let path = `0 2 m`;
-      const step = 4;
-      for (let x = step; x <= w; x += step) {
-        const y = (x / step) % 2 === 0 ? 2 : 0;
-        path += ` ${x} ${y} l`;
+    case 'Squiggly': {
+      lines.push(`${color[0]} ${color[1]} ${color[2]} RG`);
+      lines.push('0.8 w');
+      for (let i = 0; i + 7 < quadPoints.length; i += 8) {
+        const left = Math.min(quadPoints[i], quadPoints[i + 4]) - rect.x;
+        const right = Math.max(quadPoints[i + 2], quadPoints[i + 6]) - rect.x;
+        const base = Math.min(quadPoints[i + 5], quadPoints[i + 7]) - rect.y;
+        let path = `${left} ${base + 2} m`;
+        const step = 4;
+        for (let x = left + step; x <= right; x += step) {
+          const y = ((x - left) / step) % 2 === 0 ? base + 2 : base;
+          path += ` ${x} ${y} l`;
+        }
+        lines.push(path);
+        lines.push('S');
       }
-      streamContent = [
-        `${color[0]} ${color[1]} ${color[2]} RG`,
-        '0.8 w',
-        path,
-        'S',
-      ].join('\n');
       break;
+    }
 
     default:
-      streamContent = '';
+      break;
   }
 
-  return buildAppearanceStream(streamContent, rect, opacity);
+  return buildAppearanceStream(lines.join('\n'), rect, opacity);
 }
 
 function buildFreeTextAppearance(annot: FreeTextAnnotation): PDFStream {
@@ -401,8 +422,11 @@ function buildStampAppearance(annot: StampAnnotation): PDFStream {
 function buildAppearanceStream(
   content: string,
   rect: PDFRectangle,
-  opacity: number,
+  _opacity: number,
 ): PDFStream {
+  // Opacity is stored on the annotation dict as /CA and applied by the
+  // renderer (and by Acrobat). Baking it into the appearance stream as well
+  // would double-dim translucent highlights.
   const bytes = new Uint8Array(content.length);
   for (let i = 0; i < content.length; i++) {
     bytes[i] = content.charCodeAt(i) & 0xff;
@@ -417,11 +441,8 @@ function buildAppearanceStream(
     new PDFNumber(rect.width),
     new PDFNumber(rect.height),
   ]));
-  dict.set('Matrix', new PDFArray([
-    new PDFNumber(1), new PDFNumber(0),
-    new PDFNumber(0), new PDFNumber(1),
-    new PDFNumber(0), new PDFNumber(0),
-  ]));
+  // Do NOT set an identity Matrix — viewers (and our renderer) map BBox → Rect.
+  // An identity Matrix previously caused highlights to render at the page origin.
   dict.set('Length', new PDFNumber(bytes.length));
 
   return new PDFStream(dict, bytes, bytes);
@@ -477,6 +498,167 @@ export function removeAnnotationFromPage(
   }
 
   objects.delete(annotRef.toKey());
+}
+
+/** Point-in-axis-aligned rect test (PDF user space). */
+function pointInRect(
+  x: number, y: number,
+  rx: number, ry: number, rw: number, rh: number,
+  pad = 0,
+): boolean {
+  return x >= rx - pad && x <= rx + rw + pad && y >= ry - pad && y <= ry + rh + pad;
+}
+
+/** Distance from point to segment. */
+function distToSegment(
+  px: number, py: number,
+  x1: number, y1: number, x2: number, y2: number,
+): number {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const len2 = dx * dx + dy * dy;
+  if (len2 < 1e-8) return Math.hypot(px - x1, py - y1);
+  let t = ((px - x1) * dx + (py - y1) * dy) / len2;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+}
+
+/**
+ * Erase Highlight / Ink annotations whose geometry is near (pdfX, pdfY).
+ * Returns how many annotations were removed.
+ */
+export function eraseAnnotationsAtPoint(
+  pageDict: PDFDict,
+  objects: Map<string, PDFObject>,
+  pdfX: number,
+  pdfY: number,
+  radius: number,
+): number {
+  const annots = pageDict.get('Annots');
+  let arr: PDFArray | null = null;
+  if (annots instanceof PDFArray) arr = annots;
+  else if (annots instanceof PDFRef) {
+    const resolved = objects.get(annots.toKey());
+    if (resolved instanceof PDFArray) arr = resolved;
+  }
+  if (!arr) return 0;
+
+  const toRemove: PDFRef[] = [];
+
+  for (const item of arr.items) {
+    if (!(item instanceof PDFRef)) continue;
+    const dict = objects.get(item.toKey());
+    if (!(dict instanceof PDFDict)) continue;
+
+    const subtype = dict.get('Subtype');
+    const name = subtype instanceof PDFName ? subtype.name : '';
+    if (name !== 'Highlight' && name !== 'Ink' && name !== 'Underline' && name !== 'StrikeOut' && name !== 'Squiggly') {
+      continue;
+    }
+
+    const rectObj = dict.get('Rect');
+    if (!(rectObj instanceof PDFArray) || rectObj.items.length < 4) continue;
+    const x0 = (rectObj.items[0] as PDFNumber).value;
+    const y0 = (rectObj.items[1] as PDFNumber).value;
+    const x1 = (rectObj.items[2] as PDFNumber).value;
+    const y1 = (rectObj.items[3] as PDFNumber).value;
+    const rx = Math.min(x0, x1);
+    const ry = Math.min(y0, y1);
+    const rw = Math.abs(x1 - x0);
+    const rh = Math.abs(y1 - y0);
+
+    let hit = false;
+
+    if (name === 'Ink') {
+      const inkList = dict.get('InkList');
+      if (inkList instanceof PDFArray) {
+        for (const pathObj of inkList.items) {
+          if (!(pathObj instanceof PDFArray)) continue;
+          const pts: number[] = [];
+          for (const n of pathObj.items) {
+            if (n instanceof PDFNumber) pts.push(n.value);
+          }
+          for (let i = 0; i + 3 < pts.length; i += 2) {
+            if (distToSegment(pdfX, pdfY, pts[i], pts[i + 1], pts[i + 2], pts[i + 3]) <= radius) {
+              hit = true;
+              break;
+            }
+          }
+          if (hit) break;
+        }
+      }
+      if (!hit) hit = pointInRect(pdfX, pdfY, rx, ry, rw, rh, radius);
+    } else {
+      // Highlight / markup: prefer QuadPoints, fall back to Rect
+      const qp = dict.get('QuadPoints');
+      if (qp instanceof PDFArray && qp.items.length >= 8) {
+        for (let i = 0; i + 7 < qp.items.length; i += 8) {
+          const xs = [
+            (qp.items[i] as PDFNumber).value,
+            (qp.items[i + 2] as PDFNumber).value,
+            (qp.items[i + 4] as PDFNumber).value,
+            (qp.items[i + 6] as PDFNumber).value,
+          ];
+          const ys = [
+            (qp.items[i + 1] as PDFNumber).value,
+            (qp.items[i + 3] as PDFNumber).value,
+            (qp.items[i + 5] as PDFNumber).value,
+            (qp.items[i + 7] as PDFNumber).value,
+          ];
+          const qMinX = Math.min(...xs);
+          const qMaxX = Math.max(...xs);
+          const qMinY = Math.min(...ys);
+          const qMaxY = Math.max(...ys);
+          if (pointInRect(pdfX, pdfY, qMinX, qMinY, qMaxX - qMinX, qMaxY - qMinY, radius * 0.5)) {
+            hit = true;
+            break;
+          }
+        }
+      } else {
+        hit = pointInRect(pdfX, pdfY, rx, ry, rw, rh, radius);
+      }
+    }
+
+    if (hit) toRemove.push(item);
+  }
+
+  for (const ref of toRemove) {
+    removeAnnotationFromPage(pageDict, ref, objects);
+  }
+  return toRemove.length;
+}
+
+/**
+ * Remove all Highlight / Ink / markup annotations from a page.
+ * Used by the toolbar Clear action.
+ */
+export function clearMarkupAnnotationsOnPage(
+  pageDict: PDFDict,
+  objects: Map<string, PDFObject>,
+): number {
+  const annots = pageDict.get('Annots');
+  let arr: PDFArray | null = null;
+  if (annots instanceof PDFArray) arr = annots;
+  else if (annots instanceof PDFRef) {
+    const resolved = objects.get(annots.toKey());
+    if (resolved instanceof PDFArray) arr = resolved;
+  }
+  if (!arr) return 0;
+
+  const markup = new Set(['Highlight', 'Ink', 'Underline', 'StrikeOut', 'Squiggly']);
+  const toRemove: PDFRef[] = [];
+  for (const item of arr.items) {
+    if (!(item instanceof PDFRef)) continue;
+    const dict = objects.get(item.toKey());
+    if (!(dict instanceof PDFDict)) continue;
+    const subtype = dict.get('Subtype');
+    const name = subtype instanceof PDFName ? subtype.name : '';
+    if (markup.has(name)) toRemove.push(item);
+  }
+  for (const ref of toRemove) {
+    removeAnnotationFromPage(pageDict, ref, objects);
+  }
+  return toRemove.length;
 }
 
 // ─── Utility helpers ────────────────────────────────────────────────────────

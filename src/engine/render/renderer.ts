@@ -241,20 +241,52 @@ export async function renderPageToCanvas(
           }
           
           ctx.save();
-          
-          // Form XObjects (like Appearance streams) have a Matrix mapping from their BBox to the target coord system
-          const streamMatrix = nStream.dict.get('Matrix');
-          if (streamMatrix instanceof PDFArray && streamMatrix.items.length === 6) {
-             const m = streamMatrix.items.map((e: any) => (e as PDFNumber).value);
-             // transform takes (a, b, c, d, e, f)
-             ctx.transform(m[0], m[1], m[2], m[3], m[4], m[5]);
-          } else {
-            // If no matrix is provided, it's often positioned via the Rect, so we translate to Rect.x, Rect.y
-            const rectObj = annotDict.get('Rect');
-            if (rectObj instanceof PDFArray && rectObj.items.length === 4) {
-               const x = (rectObj.items[0] as PDFNumber).value;
-               const y = (rectObj.items[1] as PDFNumber).value;
-               ctx.translate(x, y);
+
+          // Honor annotation /CA so translucent highlights aren't solid bars
+          const caObj = annotDict.get('CA');
+          const annotOpacity = caObj instanceof PDFNumber ? caObj.value : 1;
+          if (annotOpacity < 0.999) {
+            ctx.globalAlpha = annotOpacity;
+          }
+          if (subtypeName === 'Highlight') {
+            ctx.globalCompositeOperation = 'multiply';
+          }
+
+          // PDF 12.5.5: map the appearance Form BBox into the annotation Rect.
+          // An identity /Matrix alone must NOT skip this — otherwise highlights
+          // paint at the page origin (bottom of the page).
+          const rectObj = annotDict.get('Rect');
+          const bboxObj = nStream.dict.get('BBox');
+          let mappedToRect = false;
+          if (
+            rectObj instanceof PDFArray && rectObj.items.length >= 4 &&
+            bboxObj instanceof PDFArray && bboxObj.items.length >= 4
+          ) {
+            const rx0 = (rectObj.items[0] as PDFNumber).value;
+            const ry0 = (rectObj.items[1] as PDFNumber).value;
+            const rx1 = (rectObj.items[2] as PDFNumber).value;
+            const ry1 = (rectObj.items[3] as PDFNumber).value;
+            const bx0 = (bboxObj.items[0] as PDFNumber).value;
+            const by0 = (bboxObj.items[1] as PDFNumber).value;
+            const bx1 = (bboxObj.items[2] as PDFNumber).value;
+            const by1 = (bboxObj.items[3] as PDFNumber).value;
+            const bw = (bx1 - bx0) || 1;
+            const bh = (by1 - by0) || 1;
+            ctx.translate(rx0, ry0);
+            ctx.scale((rx1 - rx0) / bw, (ry1 - ry0) / bh);
+            ctx.translate(-bx0, -by0);
+            mappedToRect = true;
+          }
+
+          if (!mappedToRect) {
+            const streamMatrix = nStream.dict.get('Matrix');
+            if (streamMatrix instanceof PDFArray && streamMatrix.items.length === 6) {
+              const m = streamMatrix.items.map((e: any) => (e as PDFNumber).value);
+              ctx.transform(m[0], m[1], m[2], m[3], m[4], m[5]);
+            } else if (rectObj instanceof PDFArray && rectObj.items.length >= 4) {
+              const x = (rectObj.items[0] as PDFNumber).value;
+              const y = (rectObj.items[1] as PDFNumber).value;
+              ctx.translate(x, y);
             }
           }
 
@@ -624,7 +656,7 @@ function drawTextRunAtPositions(
       type Chunk = { start: number; end: number; text: string };
       const chunks: Chunk[] = [];
       let ci = 0;
-      const gapFrac = 0.12;
+      const gapFrac = CHUNK_GAP_FRAC;
 
       while (ci < positions.length) {
         if (positions[ci].glyph.unicode === ' ' || positions[ci].glyph.unicode === '\u00A0') {
@@ -691,9 +723,8 @@ function drawTextRunAtPositions(
             const hScale = Math.abs(tRm.a) / effFontSize;
             const expectedWidth = pdfSpan / (hScale || 1);
             let ratio = expectedWidth / browserWidth;
-            // Extreme ratios (missing FontFace / bad widths) inflate glyphs —
-            // clamp so edit-phase text stays near native size.
-            ratio = Math.max(0.55, Math.min(1.85, ratio));
+            // Clamp extreme ratios from missing FontFace / bad widths.
+            ratio = Math.max(0.4, Math.min(2.5, ratio));
             if (Math.abs(ratio - 1) > 0.005) {
               ctx.scale(ratio, 1);
             }
@@ -743,7 +774,6 @@ function drawTextRun(
     const { family, weight, style } = getCanvasFontProperties(run.fontName, fontData);
     ctx.fillStyle = fillColor;
 
-    // Check for Type3 — must draw glyph-by-glyph
     const isType3 = fontData?.charProcs && fontData.charProcs.size > 0;
 
     if (isType3) {
@@ -760,11 +790,6 @@ function drawTextRun(
         drawGlyph(ctx, glyph, run, family, weight, style, fillColor, glyph.tRm.e, glyph.tRm.f);
       }
     } else {
-      // Group consecutive non-space glyphs into word chunks and render each
-      // as a single fillText call. This lets the browser's text shaper handle
-      // intra-word spacing, eliminating font-substitution gaps within words.
-      // (Do NOT force per-glyph just because clipPaths exist — page-level clips
-      // are common and per-glyph substitute fonts overlap into "double" text.)
       drawWordGrouped(ctx, run, family, weight, style, fillColor);
     }
 
@@ -776,8 +801,12 @@ function drawTextRun(
 const CHUNK_GAP_FRAC = 0.12;
 
 /**
- * Horizontal span for a glyph chunk, clamped so scaled fillText never draws
- * into the following glyph (over-wide last.width was collapsing "|HTML" etc.).
+ * Horizontal span for a glyph chunk in PDF user units.
+ *
+ * Acrobat/PDF.js place each glyph at its PDF origin; we approximate that by
+ * scaling a fillText word so it occupies [first.x, last.x + last.width].
+ * Only clamp when the span would draw into the next glyph's origin — never
+ * leave padding that becomes a visible river before punctuation.
  */
 function chunkPdfSpan(
   getX: (i: number) => number,
@@ -791,13 +820,15 @@ function chunkPdfSpan(
   const firstX = getX(start);
   const last = end - 1;
   const fs = getFs(last);
-  // Use distance to last glyph origin + a capped last advance. Full last.width
-  // from a bad Widths entry is what made "(Open Source)" invade the next run.
-  let span = (getX(last) - firstX) + Math.min(getWidth(last), fs * 0.65);
+  const lastW = getWidth(last);
+  // Cap only pathological Widths entries (would invade neighbors).
+  let span = (getX(last) - firstX) + (lastW > fs * 1.2 ? fs * 0.65 : lastW);
 
   const next = findNextDrawable(end);
   if (next >= 0 && next < len) {
-    const maxSpan = getX(next) - firstX - Math.max(fs * 0.08, 0.4);
+    // Hard stop at the next glyph origin — zero padding so substitute-font
+    // scaling fills the PDF slot completely (PDFBOX-520 / Acrobat parity).
+    const maxSpan = getX(next) - firstX;
     if (maxSpan > 0.5) span = Math.min(span, maxSpan);
   }
 
@@ -860,7 +891,7 @@ function drawWordGrouped(
     const effFontSize = Math.sqrt(tRm.c * tRm.c + tRm.d * tRm.d);
     if (effFontSize < 0.1) continue;
 
-    const pdfSpan = chunkPdfSpan(
+    let pdfSpan = chunkPdfSpan(
       i => glyphs[i].tRm.e,
       i => glyphs[i].width,
       i => glyphs[i].fontSize || run.fontSize || 12,
@@ -885,7 +916,8 @@ function drawWordGrouped(
         const hScale = Math.abs(tRm.a) / effFontSize;
         const expectedWidth = pdfSpan / (hScale || 1);
         let ratio = expectedWidth / browserWidth;
-        ratio = Math.max(0.55, Math.min(1.85, ratio));
+        // Wider clamp so substitute fonts can still fill PDF slots.
+        ratio = Math.max(0.4, Math.min(2.5, ratio));
         if (Math.abs(ratio - 1) > 0.005) {
           ctx.scale(ratio, 1);
         }
@@ -995,8 +1027,8 @@ function getCanvasFontProperties(
   fontName: string,
   fontData?: FontData,
 ): { family: string; weight: string; style: string } {
-  const weight = fontLooksBold(fontData, fontName) ? 'bold' : 'normal';
-  const style = fontLooksItalic(fontData, fontName) ? 'italic' : 'normal';
+  let weight = fontLooksBold(fontData, fontName) ? 'bold' : 'normal';
+  let style = fontLooksItalic(fontData, fontName) ? 'italic' : 'normal';
   let family = 'sans-serif';
 
   if (fontData) {
@@ -1004,9 +1036,10 @@ function getCanvasFontProperties(
     const lower = (stripped || fontData.baseFont || '').toLowerCase();
 
     if (fontData.fontBytes && stripped) {
-      // Always keep CSS weight/style from the PDF font identity. Embedded faces
-      // often fail to load (Type1) or load as a non-bold substitute under the
-      // same family name — dropping CSS bold made certificate headers regular.
+      // Embedded face already carries weight/style. Applying CSS bold/italic
+      // on top synthesizes extra stroke and breaks measureText vs PDF Widths
+      // (classic Acrobat vs canvas mismatch). Only use CSS weight when the
+      // FontFace failed to load and we fall back to a system family.
       let fallback = 'serif';
       if (lower.includes('courier') || lower.includes('mono')) {
         fallback = '"Courier New", Courier, monospace';
@@ -1019,6 +1052,16 @@ function getCanvasFontProperties(
         fallback = '"Times New Roman", Times, serif';
       }
       family = `"${stripped}", "${fontData.baseFont}", ${fallback}`;
+
+      const faceReady =
+        typeof document !== 'undefined' &&
+        (loadedFontFaces.has(stripped) ||
+          loadedFontFaces.has(fontData.baseFont) ||
+          safeFontCheck(stripped));
+      if (faceReady) {
+        weight = 'normal';
+        style = 'normal';
+      }
     } else if (fontData.standardMetrics) {
       family = fontData.standardMetrics.cssFamily;
     } else if (lower.includes('courier') || lower.includes('mono') || lower.includes('cmtt') || lower.includes('lmtt')) {
@@ -1038,6 +1081,14 @@ function getCanvasFontProperties(
   }
 
   return { family, weight, style };
+}
+
+function safeFontCheck(familyName: string): boolean {
+  try {
+    return document.fonts.check(`12px "${familyName}"`);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -1137,6 +1188,9 @@ export async function renderAllPages(
   return results;
 }
 
+/** Successfully registered embedded FontFace family names. */
+const loadedFontFaces = new Set<string>();
+
 async function registerEmbeddedFonts(fonts: Map<string, FontData>): Promise<void> {
   const promises: Promise<void>[] = [];
   const registered = new Set<string>();
@@ -1150,7 +1204,7 @@ async function registerEmbeddedFonts(fonts: Map<string, FontData>): Promise<void
     if (stripped) names.add(stripped);
 
     for (const familyName of names) {
-      if (registered.has(familyName)) continue;
+      if (registered.has(familyName) || loadedFontFaces.has(familyName)) continue;
 
       let alreadyLoaded = false;
       try {
@@ -1167,12 +1221,14 @@ async function registerEmbeddedFonts(fonts: Map<string, FontData>): Promise<void
         const p = fontFace.load().then((loadedFace) => {
           document.fonts.add(loadedFace);
           registered.add(familyName);
+          loadedFontFaces.add(familyName);
         }).catch((e) => {
           console.warn(`[Renderer] Failed to load font face for "${familyName}":`, e);
         });
         promises.push(p);
       } else {
         registered.add(familyName);
+        loadedFontFaces.add(familyName);
       }
     }
   }

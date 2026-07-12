@@ -252,7 +252,7 @@ export function EditableLineBox(props: EditableLineBoxProps) {
                 fontWeight: seg.fontWeight,
                 fontStyle: seg.fontStyle,
                 color: seg.color,
-                textDecoration: seg.underline ? 'underline' : 'none',
+                textDecorationLine: seg.underline ? 'underline' : 'none',
                 textDecorationColor: seg.color,
               }}
             >
@@ -287,7 +287,7 @@ export function EditableLineBox(props: EditableLineBoxProps) {
           // Transparent text when segments paint styles; caret stays visible
           color: hasSegments ? 'transparent' : color,
           caretColor,
-          textDecoration: hasSegments ? 'none' : (underline ? 'underline' : 'none'),
+          textDecorationLine: hasSegments ? 'none' : (underline ? 'underline' : 'none'),
           ...stretchStyle,
         }}
         onPointerDown={(e) => {

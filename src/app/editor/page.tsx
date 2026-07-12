@@ -126,6 +126,14 @@ export default function EditorPage() {
   const [isDrawing, setIsDrawing] = useState(false);
   const [drawnPaths, setDrawnPaths] = useState<DrawnPath[]>([]);
   const currentDrawPath = useRef<{ x: number; y: number }[]>([]);
+  /** True after a freehand highlight/draw stroke so click doesn't also add a PDF annotation. */
+  const skipNextHighlightClickRef = useRef(false);
+  /** True once the pointer moved enough during highlight/draw to count as a drag. */
+  const drawDraggedRef = useRef(false);
+  /** Last eraser sample point — used to interpolate when the pointer jumps. */
+  const lastErasePosRef = useRef<{ x: number; y: number } | null>(null);
+  const [pageLinks, setPageLinks] = useState<import('@/engine').PageLinkInfo[]>([]);
+  const [selectedLink, setSelectedLink] = useState<import('@/engine').PageLinkInfo | null>(null);
 
   const [floatingTexts, setFloatingTexts] = useState<FloatingText[]>([]);
   const [activeFloatingTextId, setActiveFloatingTextId] = useState<string | null>(null);
@@ -493,6 +501,13 @@ export default function EditorPage() {
           }) as PathItem[];
           if (!cancelled) setDisplayItems(visItems as (ImageItem | PathItem)[]);
           if (!cancelled) setStrokePaths(thinStrokes);
+          if (!cancelled && doc) {
+            try {
+              setPageLinks(engine.listPageLinks(doc!, currentPage));
+            } catch {
+              setPageLinks([]);
+            }
+          }
           if (!cancelled) {
             spatialIndexRef.current = buildDisplayListIndex(
               visItems as DisplayItem[],
@@ -738,11 +753,41 @@ export default function EditorPage() {
       ctx.restore();
     }
 
+    // ── Link annotation overlays (Acrobat-style blue boxes) ──
+    if ((activeTool === 'link' || activeTool === 'select') && pageLinks.length > 0 && !editingLine) {
+      ctx.save();
+      ctx.scale(dpr, dpr);
+      for (const link of pageLinks) {
+        const topLeft = pdfToCanvas(
+          link.rect.x, link.rect.y + link.rect.height,
+          scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
+        );
+        const bottomRight = pdfToCanvas(
+          link.rect.x + link.rect.width, link.rect.y,
+          scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
+        );
+        const bx = Math.min(topLeft.cssX, bottomRight.cssX);
+        const by = Math.min(topLeft.cssY, bottomRight.cssY);
+        const bw = Math.abs(bottomRight.cssX - topLeft.cssX);
+        const bh = Math.abs(bottomRight.cssY - topLeft.cssY);
+        const selected = selectedLink?.ref.toKey() === link.ref.toKey();
+        ctx.strokeStyle = selected ? '#2563eb' : 'rgba(37, 99, 235, 0.85)';
+        ctx.lineWidth = selected ? 2 : 1;
+        ctx.setLineDash(selected ? [] : [4, 3]);
+        ctx.strokeRect(bx, by, bw, bh);
+        ctx.setLineDash([]);
+        if (activeTool === 'link') {
+          ctx.fillStyle = 'rgba(37, 99, 235, 0.08)';
+          ctx.fillRect(bx, by, bw, bh);
+        }
+      }
+      ctx.restore();
+    }
+
     // ── Freehand drawing paths ──
     if (drawnPaths.length > 0) {
       ctx.save();
       ctx.scale(dpr, dpr);
-      ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       for (const path of drawnPaths) {
         if (path.points.length < 2) continue;
@@ -750,10 +795,12 @@ export default function EditorPage() {
         ctx.beginPath();
         if (path.type === 'highlight') {
           ctx.globalCompositeOperation = 'multiply';
-          ctx.globalAlpha = 0.4;
+          ctx.globalAlpha = 0.35;
+          ctx.lineCap = 'butt';
         } else {
           ctx.globalCompositeOperation = 'source-over';
           ctx.globalAlpha = 1.0;
+          ctx.lineCap = 'round';
         }
 
         ctx.strokeStyle = path.color;
@@ -767,7 +814,7 @@ export default function EditorPage() {
       }
       ctx.restore();
     }
-  }, [editingLine, editText, caretPos, renderResult, doc, currentPage, scale, drawnPaths, activeTool, displayItems, selectedDisplayItem, formFields, selectedFormField, editOffsetCss, editManualSize]);
+  }, [editingLine, editText, caretPos, renderResult, doc, currentPage, scale, drawnPaths, activeTool, displayItems, selectedDisplayItem, formFields, selectedFormField, editOffsetCss, editManualSize, pageLinks, selectedLink]);
 
   // Re-draw overlay whenever edit state changes
   useEffect(() => { drawOverlay(); }, [drawOverlay]);
@@ -1173,6 +1220,15 @@ export default function EditorPage() {
         blurTimeoutRef.current = null;
       }
 
+      // Ctrl/Cmd+click opens an existing link (Acrobat-like)
+      if ((e.ctrlKey || e.metaKey) && engineRef.current) {
+        const linkHit = engineRef.current.hitTestPageLink(doc, currentPage, pdfX, pdfY);
+        if (linkHit?.url) {
+          window.open(linkHit.url, '_blank', 'noopener,noreferrer');
+          return;
+        }
+      }
+
       // Prefer real flow lines (sourceInstructionIndices) — never edit synthetic Bloom lines
       const startEditOnLine = (line: TextLine, newCaret: number) => {
         const flowLine = findMatchingFlowLine(line, renderResult.textLines) ?? line;
@@ -1265,6 +1321,11 @@ export default function EditorPage() {
       setActiveTool('text');
 
     } else if (activeTool === 'highlight') {
+      // Freehand drag already created a stroke — don't also add a full-line PDF bar
+      if (skipNextHighlightClickRef.current) {
+        skipNextHighlightClickRef.current = false;
+        return;
+      }
       const hit = hitTestTextLine(pdfX, pdfY, renderResult.textLines);
       if (hit && hit.runs[0] && engineRef.current && doc) {
         setSelectedLine(hit);
@@ -1285,8 +1346,47 @@ export default function EditorPage() {
           console.warn('[Editor] Highlight annotation failed:', err);
         }
       }
+    } else if (activeTool === 'link') {
+      if (!engineRef.current) return;
+      // Click existing link → edit or remove
+      const existing = engineRef.current.hitTestPageLink(doc, currentPage, pdfX, pdfY);
+      if (existing) {
+        setSelectedLink(existing);
+        const next = window.prompt('Edit link URL (leave empty to remove):', existing.url);
+        if (next === null) return;
+        if (!next.trim()) {
+          engineRef.current.removePageLink(doc, currentPage, existing.ref);
+        } else {
+          engineRef.current.updatePageLinkUrl(doc, currentPage, existing, next);
+        }
+        setSelectedLink(null);
+        setIsDirty(true);
+        setRenderKey(k => k + 1);
+        return;
+      }
+
+      const hit = hitTestTextLine(pdfX, pdfY, renderResult.textLines);
+      if (!hit) return;
+      const url = window.prompt('Enter link URL (e.g. https://example.com):', 'https://');
+      if (!url || !url.trim() || url.trim() === 'https://') return;
+      try {
+        const ref = engineRef.current.addLinkFromLineSelection(
+          doc,
+          currentPage,
+          hit,
+          0,
+          hit.text.length,
+          url,
+        );
+        if (ref) {
+          setIsDirty(true);
+          setRenderKey(k => k + 1);
+        }
+      } catch (err) {
+        console.warn('[Editor] Link annotation failed:', err);
+      }
     }
-  }, [renderResult, doc, currentPage, scale, activeTool, editingLine, handleEditSubmit, beginEditSession, displayItems, textFontSize, textColor]);
+  }, [renderResult, doc, currentPage, scale, activeTool, editingLine, handleEditSubmit, beginEditSession, displayItems, textFontSize, textColor, highlightColor]);
 
   // Double-click in select mode → enter text edit
   const handleCanvasDoubleClick = useCallback((e: React.MouseEvent) => {
@@ -1328,8 +1428,10 @@ export default function EditorPage() {
     }
   }, [renderResult, doc, currentPage, scale, activeTool, editingLine, handleEditSubmit, beginEditSession]);
 
-  const applyEraser = useCallback((x: number, y: number) => {
+  const applyEraser = useCallback((x: number, y: number, opts?: { deferAnnotRender?: boolean }) => {
     const eraserRadius = eraserSize / 2;
+
+    // 1) Erase ephemeral overlay strokes
     setDrawnPaths(prev => {
       let newPaths: DrawnPath[] = [];
       let modified = false;
@@ -1359,7 +1461,52 @@ export default function EditorPage() {
       }
       return modified ? newPaths : prev;
     });
-  }, [eraserSize]);
+
+    // 2) Erase committed PDF Highlight / Ink annotations under the cursor
+    if (doc && engineRef.current && renderResult) {
+      const page = doc.pages[currentPage];
+      const { mediaBox } = page;
+      const { pdfX, pdfY } = canvasToPdf(
+        x, y, scale,
+        renderResult.pageWidth, renderResult.pageHeight,
+        mediaBox.x, mediaBox.y,
+      );
+      const pdfRadius = eraserRadius / scale;
+      const removed = engineRef.current.eraseAnnotationsAtPoint(
+        page.dict,
+        doc.objects,
+        pdfX,
+        pdfY,
+        Math.max(pdfRadius, 4),
+      );
+      if (removed > 0 && !opts?.deferAnnotRender) {
+        setIsDirty(true);
+        setRenderKey(k => k + 1);
+      }
+      return removed;
+    }
+    return 0;
+  }, [eraserSize, doc, currentPage, scale, renderResult]);
+
+  /** Sample eraser along a segment so fast strokes don't skip marks. */
+  const applyEraserStroke = useCallback((from: { x: number; y: number } | null, to: { x: number; y: number }) => {
+    const eraserRadius = eraserSize / 2;
+    const step = Math.max(2, eraserRadius * 0.35);
+    let removed = 0;
+    if (!from) {
+      removed += applyEraser(to.x, to.y, { deferAnnotRender: true }) || 0;
+      return removed;
+    }
+    const dist = Math.hypot(to.x - from.x, to.y - from.y);
+    const steps = Math.max(1, Math.ceil(dist / step));
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps;
+      const x = from.x + (to.x - from.x) * t;
+      const y = from.y + (to.y - from.y) * t;
+      removed += applyEraser(x, y, { deferAnnotRender: true }) || 0;
+    }
+    return removed;
+  }, [applyEraser, eraserSize]);
 
   // ── Commit drawings, texts, and images to PDF ──
   const commitDrawingsToPdf = useCallback(async (pathsToCommit?: DrawnPath[], textsToCommit?: FloatingText[], imagesToCommit?: FloatingImage[]) => {
@@ -1454,6 +1601,8 @@ export default function EditorPage() {
     setFloatingImages([]);
     setActiveFloatingTextId(null);
     setActiveFloatingImageId(null);
+    setIsDirty(true);
+    setRenderKey(k => k + 1);
   }, [doc, currentPage, drawnPaths, floatingTexts, floatingImages, scale, renderResult]);
 
   const handleDrawStart = useCallback((e: React.MouseEvent) => {
@@ -1466,13 +1615,20 @@ export default function EditorPage() {
     const y = e.clientY - rect.top;
 
     setIsDrawing(true);
+    drawDraggedRef.current = false;
 
     if (activeTool === 'erase') {
-      applyEraser(x, y);
+      lastErasePosRef.current = { x, y };
+      const removed = applyEraserStroke(null, { x, y });
+      if (removed > 0) {
+        setIsDirty(true);
+        setRenderKey(k => k + 1);
+      }
     } else {
+      lastErasePosRef.current = null;
       currentDrawPath.current = [{ x, y }];
     }
-  }, [activeTool, applyEraser]);
+  }, [activeTool, applyEraserStroke]);
 
   const handleDrawMove = useCallback((e: React.MouseEvent) => {
     if (!isDrawing) return;
@@ -1484,9 +1640,23 @@ export default function EditorPage() {
     const y = e.clientY - rect.top;
 
     if (activeTool === 'erase') {
-      applyEraser(x, y);
+      const removed = applyEraserStroke(lastErasePosRef.current, { x, y });
+      lastErasePosRef.current = { x, y };
+      if (removed > 0) {
+        setIsDirty(true);
+        setRenderKey(k => k + 1);
+      }
       return;
     }
+
+    const path = currentDrawPath.current;
+    if (path.length > 0) {
+      const dx = x - path[0].x;
+      const dy = y - path[0].y;
+      if (Math.hypot(dx, dy) > 5) drawDraggedRef.current = true;
+    }
+    // Ignore tiny jitter so a click doesn't become a freehand highlight stroke
+    if (!drawDraggedRef.current) return;
 
     currentDrawPath.current.push({ x, y });
 
@@ -1494,39 +1664,47 @@ export default function EditorPage() {
     const ctx = overlay.getContext('2d');
     if (ctx) {
       const dpr = window.devicePixelRatio || 1;
-      const path = currentDrawPath.current;
-      if (path.length >= 2) {
+      const pts = currentDrawPath.current;
+      if (pts.length >= 2) {
         ctx.save();
         ctx.scale(dpr, dpr);
         if (activeTool === 'highlight') {
           ctx.strokeStyle = highlightColor;
           ctx.lineWidth = highlightSize;
           ctx.globalCompositeOperation = 'multiply';
-          ctx.globalAlpha = 0.4;
+          ctx.globalAlpha = 0.35;
+          ctx.lineCap = 'butt';
+          ctx.lineJoin = 'round';
         } else {
           ctx.strokeStyle = drawColor;
           ctx.lineWidth = drawSize;
           ctx.globalCompositeOperation = 'source-over';
           ctx.globalAlpha = 1.0;
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
         }
-        ctx.lineCap = 'round';
         ctx.beginPath();
-        const prev = path[path.length - 2];
+        const prev = pts[pts.length - 2];
         ctx.moveTo(prev.x, prev.y);
         ctx.lineTo(x, y);
         ctx.stroke();
         ctx.restore();
       }
     }
-  }, [isDrawing, activeTool, drawColor, drawSize, highlightColor, highlightSize, applyEraser]);
+  }, [isDrawing, activeTool, drawColor, drawSize, highlightColor, highlightSize, applyEraserStroke]);
 
   const handleDrawEnd = useCallback(() => {
     if (!isDrawing) return;
     setIsDrawing(false);
+    lastErasePosRef.current = null;
 
     if (activeTool === 'erase') return;
 
-    if (currentDrawPath.current.length > 1) {
+    if (drawDraggedRef.current && currentDrawPath.current.length > 1) {
+      // Drag produced a freehand stroke — suppress the trailing click annotation
+      if (activeTool === 'highlight') {
+        skipNextHighlightClickRef.current = true;
+      }
       const newPath: DrawnPath = {
         id: Math.random().toString(36).substr(2, 9),
         type: activeTool as PathType,
@@ -1538,7 +1716,8 @@ export default function EditorPage() {
       setDrawnPaths(prev => [...prev, newPath]);
     }
     currentDrawPath.current = [];
-  }, [isDrawing, activeTool, drawColor, drawSize, highlightColor, highlightSize, commitDrawingsToPdf]);
+    drawDraggedRef.current = false;
+  }, [isDrawing, activeTool, drawColor, drawSize, highlightColor, highlightSize]);
 
   const handleFloatingTextPointerDown = useCallback((e: React.PointerEvent, id: string) => {
     e.stopPropagation();
@@ -2187,8 +2366,12 @@ export default function EditorPage() {
         setActiveTool('addtext');
       } else if (e.key === 'h' || e.key === 'H') {
         if (!e.metaKey && !e.ctrlKey) setActiveTool('highlight');
+      } else if (e.key === 'l' || e.key === 'L') {
+        if (!e.metaKey && !e.ctrlKey) setActiveTool('link');
       } else if (e.key === 'd') {
         setActiveTool('draw');
+      } else if (e.key === 'e' || e.key === 'E') {
+        if (!e.metaKey && !e.ctrlKey) setActiveTool('erase');
       }
     }
     window.addEventListener('keydown', onKey);
@@ -2252,7 +2435,17 @@ export default function EditorPage() {
         onZoomOut={zoomOut}
         onUndo={handleUndo}
         onRedo={handleRedo}
-        onClearPaths={() => setDrawnPaths([])}
+        onClearPaths={() => {
+          setDrawnPaths([]);
+          if (doc && engineRef.current) {
+            const page = doc.pages[currentPage];
+            const n = engineRef.current.clearMarkupAnnotationsOnPage(page.dict, doc.objects);
+            if (n > 0) {
+              setIsDirty(true);
+              setRenderKey(k => k + 1);
+            }
+          }
+        }}
         onDownload={handleDownload}
         saveMode={saveMode}
         onSaveModeChange={setSaveMode}
@@ -2302,6 +2495,39 @@ export default function EditorPage() {
           setHighlightSize={setHighlightSize}
           eraserSize={eraserSize}
           setEraserSize={setEraserSize}
+          pageLinkCount={pageLinks.length}
+          onAddLink={() => {
+            if (!doc || !engineRef.current) return;
+            const line = editAnchorLineRef.current ?? selectedLine;
+            if (!line) {
+              window.alert('Select or click a text line first, then add a link.');
+              return;
+            }
+            const sel = editSelRef.current;
+            let start = 0;
+            let end = line.text.length;
+            if (editingLine && sel.end > sel.start) {
+              start = sel.start;
+              end = sel.end;
+            } else if (editingLine) {
+              const range = resolveEditStyleRange(line, sel.start, sel.end);
+              start = range.start;
+              end = range.end;
+            }
+            const url = window.prompt('Enter link URL (e.g. https://example.com):', 'https://');
+            if (!url || !url.trim() || url.trim() === 'https://') return;
+            try {
+              const ref = engineRef.current.addLinkFromLineSelection(
+                doc, currentPage, line, start, end, url,
+              );
+              if (ref) {
+                setIsDirty(true);
+                setRenderKey(k => k + 1);
+              }
+            } catch (err) {
+              console.warn('[Editor] Add link failed:', err);
+            }
+          }}
           selectedDisplayItem={selectedDisplayItem}
           setSelectedDisplayItem={setSelectedDisplayItem}
           onDeleteSelectedDisplayItem={handleDeleteSelectedDisplayItem}

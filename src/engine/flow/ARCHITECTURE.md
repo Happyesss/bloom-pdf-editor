@@ -83,16 +83,17 @@ On line edit inside a paragraph:
 
 **Math:** line height = max(height, fontSize × 1.2); vertical shift Δy = −(wrapLines − 1) × lineHeight
 
-### Flow-based justified drawing
+### Flow-based draw (punctuation packing only)
 
-The renderer uses flow positions instead of raw TJ spacing for justified lines:
+The renderer keeps **native PDF glyph positions** (Acrobat / PDF.js / PDFBox parity).
+Redistributing inter-word gaps diverges from the file and creates uneven rivers.
 
-1. `buildFlowDrawIndex()` maps runs → lines and precomputes draw maps
-2. `computeFlowDrawPositions()` splits line text into words (spanning bold/regular runs)
-3. Even inter-word gap = `(targetWidth − Σ wordWidths) / (numWords − 1)`
-4. Renderer draws justified lines once via `drawJustifiedTextLine()`, skipping duplicate runs
+1. `buildFlowDrawIndex()` only marks lines with bold→punctuation artifacts
+2. `packPunctAtNativeWordOrigins()` compresses medium gaps before `,.:;!?)`
+3. Word spacing / TJ justification is left exactly as the PDF encoded it
+4. Canvas draws word chunks with horizontal scale so substitute fonts fill each PDF width slot
 
-Non-justified lines still use raw glyph `tRm` positions from the PDF.
+Non-packed lines use raw glyph `tRm` positions from the PDF.
 
 ### OpenType shaping (basic)
 

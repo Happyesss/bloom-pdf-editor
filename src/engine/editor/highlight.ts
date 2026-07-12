@@ -92,6 +92,23 @@ function addMarkupAnnotation(
 ): PDFRef {
   const page = doc.pages[pageIndex];
   const bounds = quadPointsToRect(quadPoints);
+
+  // Reject absurd geometry (e.g. padded line.height / empty-glyph fallbacks
+  // that previously painted a full-width bar at the page bottom).
+  const pageH = page.mediaBox.height || 792;
+  const pageW = page.mediaBox.width || 612;
+  if (
+    !Number.isFinite(bounds.x) ||
+    !Number.isFinite(bounds.y) ||
+    bounds.width > pageW * 1.2 ||
+    bounds.height > pageH * 0.25 ||
+    bounds.height < 0.5
+  ) {
+    throw new Error(
+      `Invalid highlight bounds: ${bounds.width.toFixed(1)}×${bounds.height.toFixed(1)} at (${bounds.x.toFixed(1)}, ${bounds.y.toFixed(1)})`,
+    );
+  }
+
   const rect: PDFRectangle = {
     x: bounds.x,
     y: bounds.y,

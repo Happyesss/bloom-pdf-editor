@@ -289,7 +289,7 @@ describe('selection-quads: lineSelectionToQuadPoints', () => {
     const [x1, y1, x2] = quad;
     expect(x1).toBe(0); // left edge of first glyph
     expect(x2).toBeCloseTo(5 * 6, 5); // right edge of 5th glyph
-    expect(y1).toBeCloseTo(700 + line.height, 5); // top
+    expect(y1).toBeCloseTo(700 + 12 * 0.85, 5); // top from glyph ascent
   });
 
   it('returns an empty array for an empty range', () => {

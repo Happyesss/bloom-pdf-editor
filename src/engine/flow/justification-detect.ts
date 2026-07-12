@@ -137,8 +137,9 @@ export function detectJustifiedBodyText(
   if (glyphGaps.length >= 2) {
     const median = [...glyphGaps].sort((a, b) => a - b)[Math.floor(glyphGaps.length / 2)];
     const max = Math.max(...glyphGaps);
-    // Uneven word spaces → treated as justified (needs evening)
-    if (max > median * 1.6 || max > fontSize * 0.55) return true;
+    // Uneven word spaces → treated as justified (needs evening).
+    // Raised thresholds: only flag lines with genuinely extreme gap disparity.
+    if (max > median * 2.2 && max > fontSize * 0.65) return true;
   }
 
   // Fallback: inter-run gaps (legacy)
@@ -190,15 +191,22 @@ export function shouldUseFlowDraw(line: TextLine): boolean {
   const variance = gaps.reduce((s, g) => s + (g - mean) ** 2, 0) / gaps.length;
   const cv = Math.sqrt(variance) / mean;
 
+  // If the max gap is small (under 0.4 × fontSize), the variation is just
+  // normal kerning / font-metric noise — not a visible whitespace river.
+  if (max < line.fontSize * 0.4) return false;
+
   // Prefer bullet body lines — that's where TJ rivers show up
   const startsWithBullet = /^[\u2022\u2023\u25E6\u2043\u2219\u00B7\u25CF\u25CB•∙]/.test(line.text.trim());
 
-  // Activate when gaps are noticeably uneven
-  const uneven = cv >= 0.35 || max > median * 1.7 || (min > 0 && max / min >= 2.2);
-  if (!uneven && !(line.isJustified && cv >= 0.25)) return false;
+  // Activate when gaps are noticeably uneven — raised thresholds to avoid
+  // re-spacing lines that already look correct at native positions.
+  const uneven = cv >= 0.50 || max > median * 2.0 || (min > 0 && max / min >= 2.8);
+  if (!uneven && !(line.isJustified && cv >= 0.35)) return false;
 
   // Non-bullet lines need stronger evidence (avoid project/skills headings)
-  if (!startsWithBullet && !line.isJustified && cv < 0.5) return false;
+  if (!startsWithBullet && !line.isJustified && cv < 0.6) return false;
+  // Even bullet lines need real unevenness, not just slight variance
+  if (startsWithBullet && cv < 0.40) return false;
 
   return true;
 }

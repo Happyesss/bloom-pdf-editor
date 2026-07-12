@@ -381,10 +381,12 @@ function glyphNameToUnicode(name: string): string {
 function isObscureSymbol(ch: string): boolean {
   if (!ch || ch.length === 0) return true;
   const cp = ch.codePointAt(0) ?? 0;
-  // § ¶ † ‡ • ※ ¤ and other marks that rarely appear mid-word in form labels
+  // § ¶ † ‡ ※ ¤ and other marks that rarely appear mid-word in form labels.
+  // NOTE: U+2022 (•) bullet is NOT obscure — it's a legitimate list marker.
+  // Treating it as obscure caused bullets to be converted to apostrophes.
   return (
     cp === 0x00A7 || cp === 0x00B6 || cp === 0x00A4 ||
-    cp === 0x2020 || cp === 0x2021 || cp === 0x2022 ||
+    cp === 0x2020 || cp === 0x2021 ||
     cp === 0x203B || cp === 0x00A6 || cp === 0x00AC
   );
 }
@@ -933,7 +935,106 @@ export function interpretPage(
   // Apostrophe often arrives as its own Tj ("FATHER" + "§" + "S NAME")
   repairApostrophesAcrossRuns(rawTextRuns);
 
+  // Merge adjacent text runs on the same baseline to eliminate gaps
+  // caused by font-substitution width mismatches between runs.
+  mergeAdjacentTextRuns(displayList, rawTextRuns);
+
   return { displayList, textRuns: rawTextRuns, fonts };
+}
+
+/**
+ * Merge consecutive text runs that share the same baseline and have a small gap.
+ *
+ * When a bold run like "sprint boards" is followed by a regular run ", burndown"
+ * and they're on the same line, the browser's substitute font for the bold text
+ * may be narrower than the PDF's embedded font, creating a visible gap before
+ * the comma. Merging them into one run lets the renderer draw them as a single
+ * chunk with unified scaling, eliminating the gap.
+ */
+function mergeAdjacentTextRuns(displayList: DisplayItem[], rawTextRuns: TextRun[]): void {
+  let i = 0;
+  while (i < displayList.length - 1) {
+    const a = displayList[i];
+    const b = displayList[i + 1];
+
+    if (a.type !== 'text' || b.type !== 'text') {
+      i++;
+      continue;
+    }
+
+    const runA = a as TextRun;
+    const runB = b as TextRun;
+
+    // Skip empty runs
+    if (runA.glyphs.length === 0 || runB.glyphs.length === 0) {
+      i++;
+      continue;
+    }
+
+    // Must be on the same baseline (within 0.5pt)
+    const baselineA = runA.glyphs[runA.glyphs.length - 1].tRm.f;
+    const baselineB = runB.glyphs[0].tRm.f;
+    if (Math.abs(baselineA - baselineB) > 0.5) {
+      i++;
+      continue;
+    }
+
+    // Must have a small gap between them (< 0.3 × fontSize)
+    const lastGlyphA = runA.glyphs[runA.glyphs.length - 1];
+    const firstGlyphB = runB.glyphs[0];
+    const fs = runA.fontSize || 12;
+    const gapX = firstGlyphB.tRm.e - (lastGlyphA.tRm.e + lastGlyphA.width);
+
+    // Only merge when gap is small (positive) — don't merge overlapping or distant runs
+    if (gapX < -fs * 0.05 || gapX > fs * 0.3) {
+      i++;
+      continue;
+    }
+
+    // Must share the same font (merging bold+regular and drawing as one face
+    // breaks measureText scaling and recreates gaps before punctuation).
+    if (runA.fontName !== runB.fontName) {
+      i++;
+      continue;
+    }
+
+    // Must share the same font size (within 10%)
+    const fsB = runB.fontSize || 12;
+    if (Math.abs(fs - fsB) / Math.max(fs, fsB) > 0.1) {
+      i++;
+      continue;
+    }
+
+    // Merge B into A
+    const mergedGlyphs = [...runA.glyphs, ...runB.glyphs];
+    const mergedText = runA.text + runB.text;
+    const minX = Math.min(runA.x, runB.x);
+    const minY = Math.min(runA.y, runB.y);
+    const maxX = Math.max(runA.x + runA.width, runB.x + runB.width);
+    const maxY = Math.max(runA.y + runA.height, runB.y + runB.height);
+
+    const merged: TextRun = {
+      ...runA,
+      text: mergedText,
+      glyphs: mergedGlyphs,
+      x: minX,
+      y: minY,
+      width: maxX - minX,
+      height: maxY - minY,
+    };
+
+    // Replace A with merged, remove B
+    displayList[i] = merged;
+    displayList.splice(i + 1, 1);
+
+    // Update rawTextRuns
+    const idxA = rawTextRuns.indexOf(runA);
+    const idxB = rawTextRuns.indexOf(runB);
+    if (idxA >= 0) rawTextRuns[idxA] = merged;
+    if (idxB >= 0) rawTextRuns.splice(idxB, 1);
+
+    // Don't advance i — check if the merged run can merge with the next one too
+  }
 }
 
 // ─── Clip path helpers ──────────────────────────────────────────────────────
@@ -1414,6 +1515,16 @@ function parseFontDict(
       }
     }
 
+    // MissingWidth from FontDescriptor (PDF spec default 0)
+    const fdRef = dict.get('FontDescriptor');
+    if (fdRef) {
+      const fd = resolveRef(fdRef, objects);
+      if (fd instanceof PDFDict) {
+        const missing = fd.getNumber('MissingWidth');
+        if (missing != null) defaultWidth = missing;
+      }
+    }
+
     // If no explicit widths, check standard 14 font metrics
     if (widths.size === 0) {
       const stdMetrics = getStandardFont(baseFont);
@@ -1422,10 +1533,11 @@ function parseFontDict(
           widths.set(i, stdMetrics.widths[i]);
         }
         defaultWidth = stdMetrics.defaultWidth;
-      } else {
-        defaultWidth = 600; // Reasonable fallback
+      } else if (defaultWidth === 1000) {
+        defaultWidth = 600; // Reasonable fallback when no MissingWidth
       }
-    } else {
+    } else if (defaultWidth === 1000) {
+      // Widths present but no MissingWidth — use mid-range fallback for holes
       defaultWidth = 600;
     }
   }

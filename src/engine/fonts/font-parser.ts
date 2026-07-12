@@ -164,6 +164,15 @@ export function loadFont(
     loadCompositeWidths(dict, objects, fontData);
   } else {
     loadSimpleWidths(dict, objects, fontData);
+    // MissingWidth: fallback for char codes absent from /Widths (PDF 9.7.4.3)
+    const fdEarly = dict.get('FontDescriptor');
+    if (fdEarly) {
+      const fd = resolveRef(fdEarly, objects);
+      if (fd instanceof PDFDict) {
+        const missing = fd.getNumber('MissingWidth');
+        if (missing != null) fontData.defaultWidth = missing;
+      }
+    }
   }
 
   // 5. Parse font descriptor (for embedded font data)

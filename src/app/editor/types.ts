@@ -6,10 +6,11 @@ import {
   PenTool, 
   Eraser,
   Stamp,
+  Link2,
   LucideIcon
 } from 'lucide-react';
 
-export type EditorTool = 'select' | 'text' | 'addtext' | 'highlight' | 'draw' | 'erase' | 'watermark' | 'redact' | 'sign';
+export type EditorTool = 'select' | 'text' | 'addtext' | 'highlight' | 'draw' | 'erase' | 'watermark' | 'redact' | 'sign' | 'link';
 
 export interface ToolDef {
   id: EditorTool;
@@ -22,6 +23,7 @@ export const TOOLS: ToolDef[] = [
   { id: 'select',    label: 'Select',    icon: MousePointer2,  shortcut: 'V' },
   { id: 'text',      label: 'Edit Text', icon: Type,  shortcut: 'T' },
   { id: 'highlight', label: 'Highlight', icon: Highlighter, shortcut: 'H' },
+  { id: 'link',      label: 'Link',      icon: Link2,  shortcut: 'L' },
   { id: 'draw',      label: 'Draw',      icon: PenTool,  shortcut: 'D' },
   { id: 'erase',     label: 'Erase',     icon: Eraser,  shortcut: 'E' },
   { id: 'watermark', label: 'Watermark', icon: Stamp,   shortcut: 'W' },

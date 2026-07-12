@@ -1,19 +1,21 @@
 /**
- * Flow-based draw layout — evening unjustified TJ word rivers and packing
- * bold→punctuation artifacts.
+ * Flow-based draw layout — pack bold→punctuation artifacts only.
+ *
+ * Acrobat / PDF.js / PDFBox all draw glyphs at the PDF's native positions.
+ * Redistributing inter-word gaps ("justification evening") diverges from the
+ * file and creates the uneven rivers users see vs Acrobat. We only compress
+ * medium gaps immediately before `,.:;!?)` that come from bold/regular run
+ * splits + substitute-font width mismatch — never rewrite word spacing.
  *
  * Rules:
  *   - Tab/column gaps are never clamped (contact separators, date columns)
  *   - Dashes are never treated as trailing punctuation
- *   - Body lines with uneven word gaps get even inter-word spacing
  *   - Only medium gaps immediately before `,.:;!?)` are packed away
  */
 
 import type { FontData } from '../fonts/font-parser';
 import type { GlyphPosition, TextRun } from '../content/interpreter';
 import type { TextLine } from './types';
-import { measureText } from './shaping';
-import { shouldUseFlowDraw } from './justification-detect';
 
 export interface FlowGlyphDraw {
   glyph: GlyphPosition;
@@ -28,8 +30,8 @@ interface IndexedGlyph {
   charIndex: number;
 }
 
-const KERN_FRAC = 0.12;
-const PUNCT_PACK_MAX_FRAC = 1.5;
+const KERN_FRAC = 0.25;
+const PUNCT_PACK_MAX_FRAC = 1.0;
 const BULLET_CHARS = /^[\u2022\u2023\u25E6\u2043\u2219\u00B7\u25CF\u25CB•∙]$/;
 const TRAILING_PUNCT = /^[,.:;!?)]+$/;
 const TRAILING_PUNCT_CHAR = /^[,.:;!?)]$/;
@@ -131,39 +133,6 @@ function packWordGlyphs(
   return currentX;
 }
 
-function packedWordWidth(wg: IndexedGlyph[], line: TextLine): number {
-  if (wg.length === 0) return 0;
-  let w = 0;
-  for (let i = 0; i < wg.length; i++) {
-    if (i > 0) {
-      const prev = wg[i - 1].glyph;
-      const cur = wg[i].glyph;
-      const gap = cur.tRm.e - (prev.tRm.e + prev.width);
-      const fs = cur.fontSize || line.fontSize;
-      if (!shouldSuppressGap(cur, gap, fs)) w += Math.max(0, gap);
-    }
-    w += wg[i].glyph.width;
-  }
-  return w;
-}
-
-function wordWidth(
-  wg: IndexedGlyph[],
-  wordText: string,
-  line: TextLine,
-  fonts?: Map<string, FontData>,
-): number {
-  const packed = packedWordWidth(wg, line);
-  if (packed > 0) return packed;
-
-  if (fonts && wg.length > 0) {
-    const run = wg[0].run;
-    const fontData = fonts.get(run.fontName);
-    if (fontData) return measureText(wordText, fontData, run.fontSize || line.fontSize);
-  }
-  return wg.reduce((s, g) => s + g.glyph.width, 0);
-}
-
 export function lineHasAnomalousIntraWordGaps(line: TextLine): boolean {
   const allGlyphs = collectLineGlyphs(line);
   if (allGlyphs.length < 2) return false;
@@ -203,107 +172,20 @@ function packPunctAtNativeWordOrigins(
   return result;
 }
 
-/**
- * Even out inter-word gaps across a body line.
- * Preserves bullet indent; packs trailing punctuation inside words.
- */
-function justifyLinePositions(
-  line: TextLine,
-  allGlyphs: IndexedGlyph[],
-  words: Array<{ start: number; end: number }>,
-  fonts?: Map<string, FontData>,
-): FlowGlyphDraw[] {
-  const wordGlyphsList = words.map(w => glyphsForRange(allGlyphs, w.start, w.end));
-  const wordTexts = words.map(w => line.text.substring(w.start, w.end));
-  const widths = wordGlyphsList.map((wg, wi) => wordWidth(wg, wordTexts[wi], line, fonts));
-  const baseline = line.baseline;
-  const result: FlowGlyphDraw[] = [];
-
-  // Keep leading bullet at its native x and preserve native gap after it
-  let startIdx = 0;
-  let x = allGlyphs[0]?.glyph.tRm.e ?? line.leftMargin;
-
-  if (
-    wordGlyphsList.length > 0 &&
-    wordGlyphsList[0].length > 0 &&
-    BULLET_CHARS.test(wordGlyphsList[0][0].glyph.unicode)
-  ) {
-    // Keep bullet + its native indent to the first word
-    packWordGlyphs(wordGlyphsList[0], wordGlyphsList[0][0].glyph.tRm.e, baseline, result);
-    if (wordGlyphsList.length > 1 && wordGlyphsList[1].length > 0) {
-      x = wordGlyphsList[1][0].glyph.tRm.e;
-    }
-    startIdx = 1;
-  } else if (wordGlyphsList.length > 0 && wordGlyphsList[0].length > 0) {
-    x = wordGlyphsList[0][0].glyph.tRm.e;
-  }
-
-  const remaining = wordGlyphsList.length - startIdx;
-  if (remaining <= 0) return result;
-
-  // Target right edge: use the native right edge of the line content
-  let nativeRight = line.rightEdge;
-  for (let i = startIdx; i < wordGlyphsList.length; i++) {
-    const wg = wordGlyphsList[i];
-    if (wg.length === 0) continue;
-    const last = wg[wg.length - 1].glyph;
-    nativeRight = Math.max(nativeRight, last.tRm.e + last.width);
-  }
-
-  const totalWordW = widths.slice(startIdx).reduce((s, w) => s + w, 0);
-  const numGaps = remaining - 1;
-  const span = nativeRight - x;
-  const normalSpace = Math.max(line.fontSize * 0.25, 2);
-
-  // Even to the *median* of native gaps — do NOT expand leftover space into
-  // rivers (that happened when packed words got narrower than native).
-  const nativeGaps: number[] = [];
-  for (let i = startIdx; i < wordGlyphsList.length - 1; i++) {
-    const a = wordGlyphsList[i];
-    const b = wordGlyphsList[i + 1];
-    if (a.length === 0 || b.length === 0) continue;
-    const gap =
-      b[0].glyph.tRm.e -
-      (a[a.length - 1].glyph.tRm.e + a[a.length - 1].glyph.width);
-    if (gap > 0) nativeGaps.push(gap);
-  }
-  let evenGap = normalSpace;
-  if (nativeGaps.length > 0) {
-    const sorted = [...nativeGaps].sort((a, b) => a - b);
-    const median = sorted[Math.floor(sorted.length / 2)];
-    evenGap = Math.min(Math.max(median, normalSpace * 0.85), normalSpace * 1.35);
-  } else if (numGaps > 0 && span > totalWordW) {
-    const g = (span - totalWordW) / numGaps;
-    evenGap = Math.min(Math.max(g, normalSpace * 0.85), normalSpace * 1.35);
-  }
-
-  for (let wi = startIdx; wi < wordGlyphsList.length; wi++) {
-    const wg = wordGlyphsList[wi];
-    if (wg.length > 0) {
-      x = packWordGlyphs(wg, x, baseline, result);
-    }
-    if (wi < wordGlyphsList.length - 1) {
-      x += evenGap;
-    }
-  }
-
-  return result;
-}
-
 export function computeFlowDrawPositions(
   line: TextLine,
   fonts?: Map<string, FontData>,
 ): FlowGlyphDraw[] {
+  void fonts;
   // Never rewrite project/title meta lines — native positions keep
   // spaces after ")" / "|" / link icons intact.
   if (isStructuredTitleLine(line)) {
     return naturalPositions(line);
   }
 
-  const packPunct = lineHasAnomalousIntraWordGaps(line);
-  const justify = shouldUseFlowDraw(line);
-
-  if (!packPunct && !justify) {
+  // Faithful rendering: keep PDF glyph x positions. Only pack bold→punct
+  // artifacts; never redistribute inter-word gaps (that fought Acrobat).
+  if (!lineHasAnomalousIntraWordGaps(line)) {
     return naturalPositions(line);
   }
 
@@ -315,20 +197,12 @@ export function computeFlowDrawPositions(
   const words = splitWords(line.text);
   if (words.length === 0) return naturalPositions(line);
 
-  if (justify && words.length > 1) {
-    return justifyLinePositions(line, allGlyphs, words, fonts);
-  }
-
-  if (packPunct) {
-    return packPunctAtNativeWordOrigins(line, allGlyphs, words);
-  }
-
-  return naturalPositions(line);
+  return packPunctAtNativeWordOrigins(line, allGlyphs, words);
 }
 
 export function shouldPackLine(line: TextLine): boolean {
   if (isStructuredTitleLine(line)) return false;
-  return shouldUseFlowDraw(line) || lineHasAnomalousIntraWordGaps(line);
+  return lineHasAnomalousIntraWordGaps(line);
 }
 
 /** Mirror of justification-detect structured-title guard (local to avoid cycles). */

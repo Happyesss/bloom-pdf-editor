@@ -1,7 +1,7 @@
 import React, { MutableRefObject } from 'react';
 import {
   Type, TextCursorInput, Image, PenTool, Highlighter, Eraser, MousePointer2,
-  X, Trash2, Bold, Italic, Underline, AlignLeft, AlignCenter, AlignRight, Minus, Plus, Stamp
+  X, Trash2, Bold, Italic, Underline, AlignLeft, AlignCenter, AlignRight, Minus, Plus, Stamp, Link2
 } from 'lucide-react';
 import type { EditorTool } from '../types';
 import type { TextRun, ImageItem, PathItem, AcroFormWidget } from '@/engine';
@@ -43,6 +43,10 @@ interface PropertiesSidebarProps {
 
   eraserSize: number;
   setEraserSize: (v: number) => void;
+
+  /** Add a URI link to the current text selection / line (Acrobat-like). */
+  onAddLink?: () => void;
+  pageLinkCount?: number;
 
   selectedDisplayItem: ImageItem | PathItem | null;
   setSelectedDisplayItem: (item: ImageItem | PathItem | null) => void;
@@ -111,6 +115,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
     drawColor, setDrawColor, drawSize, setDrawSize,
     highlightColor, setHighlightColor, highlightSize, setHighlightSize,
     eraserSize, setEraserSize,
+    onAddLink, pageLinkCount = 0,
     selectedDisplayItem, setSelectedDisplayItem, onDeleteSelectedDisplayItem, onReplaceSelectedImage, onClearImageReplaceMode, displayItems,
     formFields = [], selectedFormField, formFieldDraft = '',
     onFormFieldSelect, onFormFieldChange, onFlattenForms,
@@ -135,7 +140,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
     watermarkBlendMode = 'Normal', setWatermarkBlendMode
   } = props;
 
-  if (!['text', 'addtext', 'draw', 'highlight', 'erase', 'select', 'watermark'].includes(activeTool)) return null;
+  if (!['text', 'addtext', 'draw', 'highlight', 'erase', 'select', 'watermark', 'link'].includes(activeTool)) return null;
 
   return (
     <div className="w-64 bg-zinc-900/95 backdrop-blur-md border-r border-zinc-800/80 flex flex-col shrink-0 z-10 overflow-y-auto shadow-[4px_0_24px_rgba(0,0,0,0.2)]">
@@ -298,6 +303,24 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             </div>
           </div>
 
+          {/* Link (Acrobat-like) */}
+          {onAddLink && (
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase">Link</label>
+              <button
+                type="button"
+                onClick={onAddLink}
+                className="w-full flex items-center justify-center gap-2 py-2 rounded-lg bg-blue-600/15 text-blue-400 border border-blue-500/30 hover:bg-blue-600/25 text-xs font-semibold transition-colors"
+              >
+                <Link2 size={14} />
+                Add link to selection
+              </button>
+              <p className="text-[10px] text-zinc-500 leading-relaxed">
+                Select text in the line, then add a URL. Or use the Link tool and click a line.
+              </p>
+            </div>
+          )}
+
           {/* Opacity */}
           <div className="space-y-1.5">
             <label className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase">Opacity</label>
@@ -456,6 +479,37 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
               <span className="text-[11px] text-zinc-400 w-8 text-right font-mono">{highlightSize}px</span>
             </div>
           </div>
+          <p className="text-[10px] text-zinc-500 leading-relaxed">
+            Click a line to highlight it. Drag to freehand highlight.
+          </p>
+        </div>
+      )}
+
+      {/* LINK TOOL PROPERTIES */}
+      {activeTool === 'link' && (
+        <div className="p-4 space-y-4 animate-in fade-in slide-in-from-left-4 duration-300">
+          <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-zinc-400 uppercase">
+            <Link2 size={14} />
+            Link
+          </div>
+          <div className="bg-zinc-800/60 rounded-lg p-3 text-[11px] text-zinc-400 border border-zinc-700/50 space-y-2 leading-relaxed">
+            <p><span className="text-zinc-200 font-medium">Create:</span> click a text line, then enter a URL.</p>
+            <p><span className="text-zinc-200 font-medium">Edit / remove:</span> click an existing blue link box.</p>
+            <p><span className="text-zinc-200 font-medium">Open:</span> Ctrl/Cmd+click a link in Select or Edit Text mode.</p>
+          </div>
+          <div className="text-[11px] text-zinc-500">
+            Links on this page: <span className="text-zinc-200 font-mono">{pageLinkCount}</span>
+          </div>
+          {onAddLink && (
+            <button
+              type="button"
+              onClick={onAddLink}
+              className="w-full flex items-center justify-center gap-2 py-2 rounded-lg bg-blue-600/15 text-blue-400 border border-blue-500/30 hover:bg-blue-600/25 text-xs font-semibold transition-colors"
+            >
+              <Link2 size={14} />
+              Link current selection
+            </button>
+          )}
         </div>
       )}
 

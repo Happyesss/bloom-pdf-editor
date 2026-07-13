@@ -47,7 +47,8 @@ export function detectColumnSplitIndices(runs: TextRun[], fontSize: number): num
 
   const avgCharW = runs.reduce((s, r) => s + averageCharWidth(r), 0) / Math.max(1, runs.length);
   // Word spaces are typically < ~2.5× font size; column gutters are larger.
-  const columnMin = Math.max(fontSize * 1.75, avgCharW * 3.5);
+  // Resume tables often use moderate gutters — keep threshold practical.
+  const columnMin = Math.max(fontSize * 1.35, avgCharW * 2.8);
 
   const splits: number[] = [];
   for (let i = 0; i < runs.length - 1; i++) {

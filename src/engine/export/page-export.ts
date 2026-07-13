@@ -35,19 +35,13 @@ function headingLevel(fontSize: number): number {
 
 /**
  * Construct a semantic page from extracted lines (sorted by reading order).
+ * Tables (when provided) become native table blocks — Acrobat/iLovePDF style.
  */
 export function buildSemanticPage(input: ExportPageInput): SemanticPage {
-  const sorted = [...input.lines].sort((a, b) => {
-    const dy = b.y - a.y;
-    if (Math.abs(dy) > Math.min(a.height, b.height) * 0.5) return dy;
-    return a.x - b.x;
-  });
-
   const blocks: SemanticBlock[] = [];
-  let prevY: number | null = null;
 
-  for (const line of sorted) {
-    const kind = inferBlockKind(line, prevY);
+  for (const line of input.lines) {
+    const kind = inferBlockKind(line, null);
     const spans: SemanticSpan[] = [{
       text: line.text,
       bold: line.bold,
@@ -55,7 +49,7 @@ export function buildSemanticPage(input: ExportPageInput): SemanticPage {
       fontSize: line.fontSize,
     }];
 
-    const block: SemanticBlock = {
+    blocks.push({
       id: `blk_${++blockIdCounter}`,
       kind,
       level: kind === 'heading' ? headingLevel(line.fontSize) : undefined,
@@ -66,9 +60,68 @@ export function buildSemanticPage(input: ExportPageInput): SemanticPage {
       width: line.width,
       height: line.height,
       listMarker: kind === 'list-item' ? line.text.match(/^([\u2022\u25CF\-\*]|\d+\.)/)?.[1] : undefined,
+    });
+  }
+
+  for (const table of input.tables ?? []) {
+    const cells = table.cells.map(c => ({
+      row: c.row,
+      col: c.col,
+      text: c.text,
+      spans: [{
+        text: c.text,
+        bold: c.bold,
+        italic: c.italic,
+        fontSize: c.fontSize,
+      }] as SemanticSpan[],
+    }));
+
+    blocks.push({
+      id: `blk_${++blockIdCounter}`,
+      kind: 'table',
+      spans: [],
+      text: table.cells.map(c => c.text).join(' '),
+      x: table.x,
+      y: table.y,
+      width: table.width,
+      height: table.height,
+      table: {
+        rows: table.rows,
+        cols: table.cols,
+        cells,
+        columnWidths: table.columnWidths,
+      },
+    });
+  }
+
+  // Reading order: top→bottom (PDF y-up), then left→right
+  blocks.sort((a, b) => {
+    const dy = b.y - a.y;
+    if (Math.abs(dy) > Math.min(Math.max(a.height, 8), Math.max(b.height, 8)) * 0.5) return dy;
+    return a.x - b.x;
+  });
+
+  // Refine heading/paragraph kinds with previous-Y context after sort
+  let prevY: number | null = null;
+  for (const block of blocks) {
+    if (block.kind === 'table') {
+      prevY = block.y;
+      continue;
+    }
+    const lineLike = {
+      text: block.text,
+      x: block.x,
+      y: block.y,
+      width: block.width,
+      height: block.height,
+      fontSize: block.spans[0]?.fontSize ?? 12,
+      bold: block.spans[0]?.bold,
+      italic: block.spans[0]?.italic,
     };
-    blocks.push(block);
-    prevY = line.y;
+    const kind = inferBlockKind(lineLike, prevY);
+    block.kind = kind;
+    block.level = kind === 'heading' ? headingLevel(lineLike.fontSize) : undefined;
+    prevY = block.y;
   }
 
   return {
@@ -105,6 +158,29 @@ function spanToHtml(span: SemanticSpan, opts: ExportOptions): string {
 }
 
 function blockToHtml(block: SemanticBlock, opts: ExportOptions): string {
+  if (block.kind === 'table' && block.table) {
+    const { rows, cols, cells } = block.table;
+    const grid: (typeof cells[0] | null)[][] = Array.from({ length: rows }, () =>
+      Array.from({ length: cols }, () => null),
+    );
+    for (const cell of cells) {
+      if (cell.row >= 0 && cell.row < rows && cell.col >= 0 && cell.col < cols) {
+        grid[cell.row][cell.col] = cell;
+      }
+    }
+    const rowHtml = grid.map((row, ri) => {
+      const tds = row.map(cell => {
+        const inner = cell
+          ? cell.spans.map(s => spanToHtml(s, opts)).join('')
+          : '';
+        const tag = ri === 0 ? 'th' : 'td';
+        return `<${tag}>${inner}</${tag}>`;
+      }).join('');
+      return `<tr>${tds}</tr>`;
+    }).join('');
+    return `<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:0.75rem 0">${rowHtml}</table>`;
+  }
+
   const inner = block.spans.map(s => spanToHtml(s, opts)).join('');
   switch (block.kind) {
     case 'heading': {
@@ -178,6 +254,23 @@ export function exportPageToHTML(
 // ─── Markdown export ─────────────────────────────────────────────────────────
 
 function blockToMarkdown(block: SemanticBlock, opts: ExportOptions): string {
+  if (block.kind === 'table' && block.table) {
+    const { rows, cols, cells } = block.table;
+    const grid: string[][] = Array.from({ length: rows }, () =>
+      Array.from({ length: cols }, () => ''),
+    );
+    for (const cell of cells) {
+      if (cell.row >= 0 && cell.row < rows && cell.col >= 0 && cell.col < cols) {
+        grid[cell.row][cell.col] = cell.text.replace(/\|/g, '\\|').trim();
+      }
+    }
+    if (rows === 0 || cols === 0) return block.text.trim();
+    const header = `| ${grid[0].join(' | ')} |`;
+    const sep = `| ${grid[0].map(() => '---').join(' | ')} |`;
+    const body = grid.slice(1).map(r => `| ${r.join(' | ')} |`).join('\n');
+    return body ? `${header}\n${sep}\n${body}` : `${header}\n${sep}`;
+  }
+
   const text = block.text.trim();
   switch (block.kind) {
     case 'heading': {

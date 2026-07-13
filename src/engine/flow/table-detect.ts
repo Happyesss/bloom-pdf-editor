@@ -56,13 +56,27 @@ export function detectTablesOnPage(
     colBuckets.set(key, arr);
   }
 
-  // Columns that appear on several rows
+  // Columns that appear on several rows (or at least twice across the page)
   const columnKeys = [...colBuckets.entries()]
     .filter(([, ls]) => ls.length >= 2)
     .map(([k]) => k)
     .sort((a, b) => a - b);
 
-  if (columnKeys.length < 2) return [];
+  // Resume tables often have 3–4 columns; also accept keys that appear once if
+  // we already have ≥2 strong columns and a nearby singleton (header-only col).
+  if (columnKeys.length < 2) {
+    const weakKeys = [...colBuckets.entries()]
+      .filter(([, ls]) => ls.length >= 1)
+      .map(([k]) => k)
+      .sort((a, b) => a - b);
+    if (weakKeys.length >= 3) {
+      // fall through with weak keys when many distinct x-positions exist
+      columnKeys.length = 0;
+      columnKeys.push(...weakKeys);
+    } else {
+      return [];
+    }
+  }
 
   // Use vertical path rules to refine column edges when present
   const vRules = extractVerticalRules(paths, medFs);
@@ -83,8 +97,8 @@ export function detectTablesOnPage(
         bestCol = c;
       }
     }
-    // Must be reasonably close to a column
-    if (bestDist > medFs * 3) continue;
+    // Must be reasonably close to a column (wider tolerance for ragged cells)
+    if (bestDist > medFs * 5.5) continue;
     tagged.push({ line, col: bestCol, qy: quantize(line.baseline, yStep) });
   }
 

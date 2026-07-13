@@ -36,8 +36,26 @@ export interface SemanticBlock {
   height: number;
   /** List marker when kind === 'list-item'. */
   listMarker?: string;
-  /** Nested blocks (e.g. table cells — future). */
+  /** Nested blocks (e.g. row/cell hierarchy — optional). */
   children?: SemanticBlock[];
+  /** Native table grid when kind === 'table' (Acrobat/iLovePDF-style). */
+  table?: SemanticTableData;
+}
+
+/** One cell in a reconstructed table. */
+export interface SemanticTableCell {
+  row: number;
+  col: number;
+  spans: SemanticSpan[];
+  text: string;
+}
+
+export interface SemanticTableData {
+  rows: number;
+  cols: number;
+  cells: SemanticTableCell[];
+  /** Column widths in PDF points (optional). */
+  columnWidths?: number[];
 }
 
 /** Full semantic representation of one page. */
@@ -84,10 +102,35 @@ export interface ExportLineInput {
   italic?: boolean;
 }
 
+/** Table cell for export (from detectTablesOnPage). */
+export interface ExportTableCellInput {
+  row: number;
+  col: number;
+  text: string;
+  fontSize: number;
+  bold?: boolean;
+  italic?: boolean;
+}
+
+export interface ExportTableInput {
+  rows: number;
+  cols: number;
+  /** Top-left of table in PDF coords (y-up). */
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  cells: ExportTableCellInput[];
+  /** Column widths in PDF points. */
+  columnWidths?: number[];
+}
+
 export interface ExportPageInput {
   pageIndex: number;
   width: number;
   height: number;
   lines: ExportLineInput[];
+  /** Detected tables — those cell lines should be omitted from `lines`. */
+  tables?: ExportTableInput[];
   title?: string;
 }

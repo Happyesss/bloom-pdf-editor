@@ -395,7 +395,17 @@ export {
   exportPageToHTML,
   exportPageToMarkdown,
 } from './export';
-export type { SemanticPage, SemanticBlock, ExportOptions } from './export';
+export type {
+  SemanticPage,
+  SemanticBlock,
+  SemanticTableData,
+  SemanticTableCell,
+  ExportOptions,
+  ExportPageInput,
+  ExportLineInput,
+  ExportTableInput,
+  ExportTableCellInput,
+} from './export';
 
 // ── Optimize (Phase 9) ──
 export { garbageCollect, deduplicateStreams, computeReachability } from './optimize';

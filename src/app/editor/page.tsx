@@ -29,6 +29,7 @@ import { WatermarkPreview } from './components/WatermarkPreview';
 import { ThumbnailsSidebar } from './components/ThumbnailsSidebar';
 import { FindReplacePanel } from './components/FindReplacePanel';
 import { StatusBar } from './components/StatusBar';
+import { ExportPanel } from './components/ExportPanel';
 import { useTextStyleActions, type TextStyleUI } from './hooks/useTextStyleActions';
 
 /** True if the run is underlined or a thin stroke path sits under it (certificate labels). */
@@ -234,6 +235,7 @@ export default function EditorPage() {
   const [saveMode, setSaveMode] = useState<'quick' | 'optimized'>('optimized');
   const [isDirty, setIsDirty] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [showExportPanel, setShowExportPanel] = useState(false);
 
   // ── Refs (declared early for hooks that need them) ──
   const canvasContainerRef = useRef<HTMLDivElement>(null);
@@ -1936,10 +1938,12 @@ export default function EditorPage() {
       const pdfDx = dx / scale;
       const pdfDy = -dy / scale;
 
+      const { startPdfX, startPdfY } = dragInfo.current;
+
       setFloatingTexts(prev => prev.map(p => p.id === id ? {
         ...p,
-        pdfX: dragInfo.current!.startPdfX + pdfDx,
-        pdfY: dragInfo.current!.startPdfY + pdfDy,
+        pdfX: startPdfX + pdfDx,
+        pdfY: startPdfY + pdfDy,
       } : p));
     };
 
@@ -1975,10 +1979,12 @@ export default function EditorPage() {
       const pdfDx = dx / scale;
       const pdfDy = -dy / scale;
 
+      const { startPdfX, startPdfY } = dragInfo.current;
+
       setFloatingImages(prev => prev.map(p => p.id === id ? {
         ...p,
-        pdfX: dragInfo.current!.startPdfX + pdfDx,
-        pdfY: dragInfo.current!.startPdfY + pdfDy,
+        pdfX: startPdfX + pdfDx,
+        pdfY: startPdfY + pdfDy,
       } : p));
     };
 
@@ -2527,6 +2533,32 @@ export default function EditorPage() {
     }
   }, [doc, fileName, saveMode, commitDrawingsToPdf]);
 
+  // ── Compressed Download (target size) ──
+  const handleCompressedDownload = useCallback(async (targetBytes: number, quality: number) => {
+    // For now, use the optimized save — in the future this can iteratively
+    // recompress images to approach the target size.
+    if (!doc || !engineRef.current) return;
+    try {
+      setIsSaving(true);
+      await commitDrawingsToPdf();
+      const engine = engineRef.current;
+      const bytes = await engine.saveOptimized(doc);
+      const blob = new Blob([bytes as unknown as BlobPart], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName || 'compressed.pdf';
+      a.click();
+      URL.revokeObjectURL(url);
+      setIsDirty(false);
+    } catch (e) {
+      console.error('[Editor] Compressed download failed:', e);
+      setError(`Download failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setIsSaving(false);
+    }
+  }, [doc, fileName, commitDrawingsToPdf]);
+
   const handleClose = useCallback(async () => {
     await clearPdfFromStorage();
     router.push('/');
@@ -2858,6 +2890,9 @@ export default function EditorPage() {
         onSaveModeChange={setSaveMode}
         isSearchOpen={isSearchOpen}
         onToggleSearch={() => setIsSearchOpen(!isSearchOpen)}
+        onExport={() => setShowExportPanel(true)}
+        doc={doc}
+        onCompressedDownload={handleCompressedDownload}
       />
 
       <div className="flex-1 flex overflow-hidden">
@@ -3651,6 +3686,17 @@ export default function EditorPage() {
           </div>
         </div>
       )}
+
+      {/* ── Export Panel ── */}
+      <ExportPanel
+        isOpen={showExportPanel}
+        onClose={() => setShowExportPanel(false)}
+        doc={doc}
+        engine={engineRef.current}
+        fileName={fileName}
+        totalPages={totalPages}
+        currentPage={currentPage}
+      />
     </div>
   );
 }

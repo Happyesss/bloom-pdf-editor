@@ -16,9 +16,13 @@ export type {
   SemanticBlockKind,
   SemanticBlock,
   SemanticPage,
+  SemanticTableCell,
+  SemanticTableData,
   ExportOptions,
   ExportLineInput,
   ExportPageInput,
+  ExportTableInput,
+  ExportTableCellInput,
 } from './types';
 
 export { DEFAULT_EXPORT_OPTIONS } from './types';

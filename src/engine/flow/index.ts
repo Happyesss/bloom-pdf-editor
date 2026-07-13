@@ -33,7 +33,14 @@ export {
   distributeGlue,
   opticalMarginAdjust,
 } from './justification';
-export { detectTabSplitIndex, detectJustifiedBodyText, shouldUseFlowDraw, measureWordGaps } from './justification-detect';
+export { detectTabSplitIndex, detectJustifiedBodyText, shouldUseFlowDraw, measureWordGaps, detectColumnSplitIndices } from './justification-detect';
+export {
+  detectTablesOnPage,
+  hitTestTableCell,
+  getTableRowLines,
+  findCellForLine,
+} from './table-detect';
+export type { DetectedTable, TableCell } from './table-detect';
 export {
   computeBaseline,
   getRunBounds,
@@ -68,8 +75,11 @@ export {
   mapSelectionToSegments,
   resolveStyledFontName,
   duplicateLineBelow,
+  duplicateTableRowBelow,
+  insertTableColumnRight,
 } from './style-edit';
 export type { TextStylePatch, StyleEditResult } from './style-edit';
+
 export {
   resolveBidiLevels,
   reorderForDisplay,

@@ -7,7 +7,7 @@ import { X, Loader2, ChevronLeft, Image, Type } from 'lucide-react';
 
 // We import types only — the engine modules are loaded dynamically
 // because they require browser APIs (canvas, DecompressionStream)
-import type { PDFDocumentData, RenderResult, TextRun, TextLine, ImageItem, PathItem, DisplayItem, TextWatermark, ImageWatermark, Watermark, DetectedWatermark, AcroFormWidget, BloomPage } from '@/engine';
+import type { PDFDocumentData, RenderResult, TextRun, TextLine, ImageItem, PathItem, DisplayItem, TextWatermark, ImageWatermark, Watermark, DetectedWatermark, AcroFormWidget, BloomPage, DetectedTable } from '@/engine';
 
 import type { EditorTool, ToolDef, PathType, DrawnPath, FloatingText, FloatingImage } from './types';
 import { TOOLS } from './types';
@@ -209,6 +209,9 @@ export default function EditorPage() {
   const [formFields, setFormFields] = useState<AcroFormWidget[]>([]);
   const [selectedFormField, setSelectedFormField] = useState<AcroFormWidget | null>(null);
   const [formFieldDraft, setFormFieldDraft] = useState('');
+  /** Auto-detected PDF tables (grid of text cells). */
+  const [detectedTables, setDetectedTables] = useState<DetectedTable[]>([]);
+  const [activeTableId, setActiveTableId] = useState<string | null>(null);
 
   // Undo/redo via TransactionStack
   const txStackRef = useRef(new TransactionStack());
@@ -543,6 +546,19 @@ export default function EditorPage() {
           }) as PathItem[];
           if (!cancelled) setDisplayItems(visItems as (ImageItem | PathItem)[]);
           if (!cancelled) setStrokePaths(thinStrokes);
+          if (!cancelled) {
+            try {
+              const lines = result.documentFlow?.lines ?? result.textLines ?? [];
+              const allPaths = interpreted.displayList.filter(
+                (di: DisplayItem) => di.type === 'path',
+              ) as PathItem[];
+              const tables = engine.detectTablesOnPage(lines, [...thinStrokes, ...allPaths]);
+              setDetectedTables(tables);
+            } catch (tblErr) {
+              console.warn('[Editor] Table detect failed:', tblErr);
+              setDetectedTables([]);
+            }
+          }
           if (!cancelled && doc) {
             try {
               setPageLinks(engine.listPageLinks(doc!, currentPage));
@@ -758,6 +774,8 @@ export default function EditorPage() {
       ctx.restore();
     }
 
+    // ── Table cell overlays (auto-detected grids) disabled for cleaner UI ──
+
     // ── AcroForm field overlays (Select + Text tools) ──
     if ((activeTool === 'select' || activeTool === 'text') && formFields.length > 0 && renderResult && !editingLine) {
       ctx.save();
@@ -854,7 +872,7 @@ export default function EditorPage() {
       }
       ctx.restore();
     }
-  }, [editingLine, editText, caretPos, renderResult, doc, currentPage, scale, drawnPaths, activeTool, displayItems, selectedDisplayItem, formFields, selectedFormField, editOffsetCss, editManualSize, pageLinks, selectedLink]);
+  }, [editingLine, editText, caretPos, renderResult, doc, currentPage, scale, drawnPaths, activeTool, displayItems, selectedDisplayItem, formFields, selectedFormField, editOffsetCss, editManualSize, pageLinks, selectedLink, detectedTables, activeTableId]);
 
   // Re-draw overlay whenever edit state changes
   useEffect(() => { drawOverlay(); }, [drawOverlay]);
@@ -920,6 +938,17 @@ export default function EditorPage() {
     setActiveTool('text');
     setSelectedLine(line);
     setEditingLine(line);
+    // Highlight parent table when editing a cell
+    {
+      let tableId: string | null = null;
+      for (const table of detectedTables) {
+        if (table.cells.some(c => c.line.id === line.id || c.line.text === line.text && Math.abs(c.line.baseline - line.baseline) < 2)) {
+          tableId = table.id;
+          break;
+        }
+      }
+      setActiveTableId(tableId);
+    }
     setEditText(line.text);
     editTextRef.current = line.text;
     const caret = caretAt ?? line.text.length;
@@ -955,7 +984,7 @@ export default function EditorPage() {
         contentBytes: new Uint8Array(contentBytes),
       };
     }
-  }, [doc, currentPage, setEditingLine, renderResult, strokePaths]);
+  }, [doc, currentPage, setEditingLine, renderResult, strokePaths, detectedTables]);
 
   // ── Text edit submit — surgical in-place line edit (preserve positions) ──
   const handleEditSubmit = useCallback(async (closeEdit: boolean = true) => {
@@ -1284,6 +1313,82 @@ export default function EditorPage() {
       setIsSaving(false);
     }
   }, [doc, currentPage, selectedLine, editingLine, handleEditSubmit, syncTxState]);
+
+  // Resolve table cell for the current selection (for sidebar actions)
+  const selectedTableCell = (() => {
+    const line = selectedLine ?? editingLine;
+    if (!line) return null;
+    for (const table of detectedTables) {
+      for (const cell of table.cells) {
+        if (
+          Math.abs(cell.line.baseline - line.baseline) < 3 &&
+          Math.abs(cell.line.x - line.x) < 8
+        ) {
+          return { table, cell };
+        }
+      }
+    }
+    return null;
+  })();
+
+  const handleAddTableRow = useCallback(async () => {
+    if (!doc || !engineRef.current || !selectedTableCell) return;
+    try {
+      if (editingLine) await handleEditSubmit(false);
+      setIsSaving(true);
+      const { table, cell } = selectedTableCell;
+      const rowLines = engineRef.current.getTableRowLines(table, cell.row);
+      const page = doc.pages[currentPage];
+      const bytes = engineRef.current.getPageContentBytes(page, doc.objects);
+      const next = engineRef.current.duplicateTableRowBelow(bytes, rowLines);
+      await engineRef.current.updatePageContent(page.contentRefs, next, doc.objects);
+      txStackRef.current.push({
+        pageIndex: currentPage,
+        contentBytes: new Uint8Array(engineRef.current.getPageContentBytes(page, doc.objects)),
+        label: 'table-add-row',
+        timestamp: Date.now(),
+      });
+      syncTxState();
+      setIsDirty(true);
+      setRenderKey(k => k + 1);
+    } catch (e) {
+      console.error('[Editor] Add table row failed:', e);
+      setError(`Add row failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setIsSaving(false);
+    }
+  }, [doc, currentPage, selectedTableCell, editingLine, handleEditSubmit, syncTxState]);
+
+  const handleAddTableColumn = useCallback(async () => {
+    if (!doc || !engineRef.current || !selectedTableCell) return;
+    try {
+      if (editingLine) await handleEditSubmit(false);
+      setIsSaving(true);
+      const { table } = selectedTableCell;
+      const rows: TextLine[][] = [];
+      for (let r = 0; r < table.rows; r++) {
+        rows.push(engineRef.current.getTableRowLines(table, r));
+      }
+      const page = doc.pages[currentPage];
+      const bytes = engineRef.current.getPageContentBytes(page, doc.objects);
+      const next = engineRef.current.insertTableColumnRight(bytes, rows);
+      await engineRef.current.updatePageContent(page.contentRefs, next, doc.objects);
+      txStackRef.current.push({
+        pageIndex: currentPage,
+        contentBytes: new Uint8Array(engineRef.current.getPageContentBytes(page, doc.objects)),
+        label: 'table-add-column',
+        timestamp: Date.now(),
+      });
+      syncTxState();
+      setIsDirty(true);
+      setRenderKey(k => k + 1);
+    } catch (e) {
+      console.error('[Editor] Add table column failed:', e);
+      setError(`Add column failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setIsSaving(false);
+    }
+  }, [doc, currentPage, selectedTableCell, editingLine, handleEditSubmit, syncTxState]);
 
   // ── Global keyboard shortcuts for undo/redo ──
   useEffect(() => {
@@ -2905,6 +3010,14 @@ export default function EditorPage() {
           onFormFieldChange={handleFormFieldChange}
           onFlattenForms={handleFlattenForms}
           onDuplicateLineBelow={handleDuplicateLineBelow}
+          tableInfo={selectedTableCell ? {
+            rows: selectedTableCell.table.rows,
+            cols: selectedTableCell.table.cols,
+            row: selectedTableCell.cell.row,
+            col: selectedTableCell.cell.col,
+          } : null}
+          onAddTableRow={handleAddTableRow}
+          onAddTableColumn={handleAddTableColumn}
           watermarkType={watermarkType}
           setWatermarkType={setWatermarkType}
           watermarkShapeType={watermarkShapeType}

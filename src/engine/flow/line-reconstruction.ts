@@ -12,7 +12,7 @@
 import type { TextRun } from '../content/interpreter';
 import type { StyledSegment, TextLine } from './types';
 import { computeBaseline, getRunBounds } from './metrics';
-import { detectTabSplitIndex, detectJustifiedBodyText } from './justification-detect';
+import { detectTabSplitIndex, detectJustifiedBodyText, detectColumnSplitIndices } from './justification-detect';
 
 let lineIdCounter = 0;
 
@@ -99,12 +99,30 @@ function finalizeLine(runs: TextRun[]): TextLine {
 function processCluster(runs: TextRun[]): TextLine[] {
   if (runs.length === 0) return [];
   const sorted = [...runs].sort((a, b) => getRunBounds(a).left - getRunBounds(b).left);
-  
+
   let maxFontSize = 12;
   for (let i = 0; i < sorted.length; i++) {
     maxFontSize = Math.max(maxFontSize, sorted[i].fontSize || sorted[i].glyphs[0]?.fontSize || 12);
   }
 
+  // Split multi-column table rows into separate editable cells
+  const colSplits = detectColumnSplitIndices(sorted, maxFontSize);
+  if (colSplits.length > 0) {
+    const groups: TextRun[][] = [];
+    let start = 0;
+    for (const split of colSplits) {
+      if (split >= start && split < sorted.length - 1) {
+        groups.push(sorted.slice(start, split + 1));
+        start = split + 1;
+      }
+    }
+    if (start < sorted.length) groups.push(sorted.slice(start));
+    if (groups.length > 1) {
+      return groups.flatMap(g => processCluster(g));
+    }
+  }
+
+  // Legacy single tab (title | date) when column detector found nothing
   const splitIdx = detectTabSplitIndex(sorted, maxFontSize);
   if (splitIdx >= 0 && splitIdx < sorted.length - 1) {
     const leftPart = sorted.slice(0, splitIdx + 1);

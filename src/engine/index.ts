@@ -128,6 +128,13 @@ export {
   mapSelectionToSegments,
   resolveStyledFontName,
   duplicateLineBelow,
+  duplicateTableRowBelow,
+  insertTableColumnRight,
+  detectTablesOnPage,
+  hitTestTableCell,
+  getTableRowLines,
+  findCellForLine,
+  detectColumnSplitIndices,
   resolveBidiLevels,
   reorderForDisplay,
   visualToLogical,
@@ -153,6 +160,8 @@ export type {
   TextStylePatch,
   StyleEditResult,
   KnuthPlassOptions,
+  DetectedTable,
+  TableCell,
 } from './flow';
 
 // ── Bloom Engine (Word-like document model) ──

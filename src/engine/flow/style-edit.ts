@@ -621,9 +621,10 @@ function applyAlignmentShift(
 export function duplicateLineBelow(
   contentBytes: Uint8Array,
   line: TextLine,
+  dyOverride?: number,
 ): Uint8Array {
   const instructions = parseContentStream(contentBytes);
-  const dy = -(Math.max(
+  const dy = dyOverride ?? -(Math.max(
     line.runs[0] ? visualFontSize(line.runs[0]) : line.fontSize,
     line.fontSize,
   ) * 1.35);
@@ -668,6 +669,61 @@ export function duplicateLineBelow(
 
   instructions.push(...clones);
   return compileInstructions(instructions);
+}
+
+/** Duplicate every line in a table row one row-height below (Add Row). */
+export function duplicateTableRowBelow(
+  contentBytes: Uint8Array,
+  rowLines: TextLine[],
+): Uint8Array {
+  if (rowLines.length === 0) return contentBytes;
+  const heights = rowLines.map(l =>
+    Math.max(l.fontSize, l.runs[0] ? visualFontSize(l.runs[0]) : l.fontSize) * 1.35,
+  );
+  const dy = -Math.max(...heights, 14);
+  let bytes = contentBytes;
+  for (const line of rowLines) {
+    bytes = duplicateLineBelow(bytes, line, dy);
+  }
+  return bytes;
+}
+
+/**
+ * Add a blank column to the right of a table by inserting empty (or " ") text
+ * at each row, aligned after the rightmost cell.
+ */
+export function insertTableColumnRight(
+  contentBytes: Uint8Array,
+  rowLines: TextLine[][],
+): Uint8Array {
+  let bytes = contentBytes;
+  for (const row of rowLines) {
+    if (row.length === 0) continue;
+    const rightmost = [...row].sort((a, b) => b.rightEdge - a.rightEdge)[0];
+    const run = rightmost.runs[0];
+    if (!run) continue;
+    const fs = visualFontSize(run);
+    const gap = Math.max(fs * 2.5, 20);
+    const x = rightmost.rightEdge + gap;
+    const y = run.y;
+    const color = run.fillColor ?? [0, 0, 0];
+    const instructions = parseContentStream(bytes);
+    instructions.push(
+      op('q'),
+      op('BT'),
+      op('rg', [new PDFNumber(color[0]), new PDFNumber(color[1]), new PDFNumber(color[2])]),
+      op('Tf', [new PDFName(run.fontName.replace(/^\//, '')), new PDFNumber(run.fontSize || fs)]),
+      op('Tm', [
+        new PDFNumber(1), new PDFNumber(0), new PDFNumber(0), new PDFNumber(1),
+        new PDFNumber(x), new PDFNumber(y),
+      ]),
+      op('Tj', [new PDFString(' ')]),
+      op('ET'),
+      op('Q'),
+    );
+    bytes = compileInstructions(instructions);
+  }
+  return bytes;
 }
 
 function cloneInstruction(inst: CSInstruction): CSInstruction {

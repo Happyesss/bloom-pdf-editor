@@ -18,27 +18,43 @@ const BULLET_CHARS = /^[\u2022\u2023\u25E6\u2043\u2219\u00B7\u25CF\u25CB•∙]$
  * Returns the index of the last run in the left column, or -1 if none.
  */
 export function detectTabSplitIndex(runs: TextRun[], fontSize: number): number {
-  if (runs.length < 2) return -1;
+  const splits = detectColumnSplitIndices(runs, fontSize);
+  // Legacy single-tab: prefer the largest asymmetric gap when only one stands out
+  if (splits.length === 0) return -1;
+  if (splits.length === 1) return splits[0];
 
-  const avgCharW = runs.reduce((s, r) => s + averageCharWidth(r), 0) / runs.length;
   const gaps: Array<{ index: number; size: number }> = [];
-
   for (let i = 0; i < runs.length - 1; i++) {
     gaps.push({ index: i, size: gapBetweenRuns(runs[i], runs[i + 1]) });
   }
-
   gaps.sort((a, b) => b.size - a.size);
   const largest = gaps[0];
-  const tabThreshold = Math.max(fontSize * 4, avgCharW * 6);
-
-  if (largest.size < tabThreshold) return -1;
-
   const second = gaps.length > 1 ? gaps[1].size : 0;
-  if (largest.size > second * 2.5) {
-    return largest.index;
-  }
-
+  if (largest.size > second * 2.5) return largest.index;
+  // Multi-column table: no single "tab" — callers should use detectColumnSplitIndices
   return -1;
+}
+
+/**
+ * Detect ALL column-separator gaps on a baseline (PDF tables / multi-cell rows).
+ * Returns sorted indices of the last run in each left-hand cell (split after these).
+ *
+ * Unlike detectTabSplitIndex (one asymmetric tab), this keeps equal-sized
+ * inter-column gaps — e.g. Course | Year | Institution | Remarks.
+ */
+export function detectColumnSplitIndices(runs: TextRun[], fontSize: number): number[] {
+  if (runs.length < 2) return [];
+
+  const avgCharW = runs.reduce((s, r) => s + averageCharWidth(r), 0) / Math.max(1, runs.length);
+  // Word spaces are typically < ~2.5× font size; column gutters are larger.
+  const columnMin = Math.max(fontSize * 1.75, avgCharW * 3.5);
+
+  const splits: number[] = [];
+  for (let i = 0; i < runs.length - 1; i++) {
+    const gap = gapBetweenRuns(runs[i], runs[i + 1]);
+    if (gap >= columnMin) splits.push(i);
+  }
+  return splits;
 }
 
 /**

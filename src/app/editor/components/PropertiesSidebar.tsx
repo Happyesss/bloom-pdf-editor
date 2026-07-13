@@ -72,6 +72,10 @@ interface PropertiesSidebarProps {
   onFlattenForms?: () => void;
   /** Duplicate the selected/editing text line one row below (table-like). */
   onDuplicateLineBelow?: () => void;
+  /** Active cell inside an auto-detected PDF table. */
+  tableInfo?: { rows: number; cols: number; row: number; col: number } | null;
+  onAddTableRow?: () => void;
+  onAddTableColumn?: () => void;
 
   watermarkText?: string;
   setWatermarkText?: (v: string) => void;
@@ -134,6 +138,9 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
     formFields = [], selectedFormField, formFieldDraft = '',
     onFormFieldSelect, onFormFieldChange, onFlattenForms,
     onDuplicateLineBelow,
+    tableInfo = null,
+    onAddTableRow,
+    onAddTableColumn,
     watermarkType = 'text', setWatermarkType,
     watermarkShapeType = 'circle', setWatermarkShapeType,
     watermarkShapeColor = '#000000', setWatermarkShapeColor,
@@ -438,6 +445,36 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 <Plus size={14} />
                 Duplicate Line Below
               </button>
+            )}
+            {tableInfo && (
+              <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-2.5 space-y-2">
+                <div className="text-[10px] font-bold tracking-widest text-emerald-400 uppercase">
+                  Table {tableInfo.rows}×{tableInfo.cols}
+                </div>
+                <p className="text-[10px] text-zinc-500 leading-relaxed">
+                  Cell r{tableInfo.row + 1}, c{tableInfo.col + 1}. Green boxes mark detected cells — click one cell to edit it.
+                </p>
+                {onAddTableRow && (
+                  <button
+                    type="button"
+                    onClick={onAddTableRow}
+                    className="w-full flex items-center justify-center gap-2 py-2 rounded-md bg-emerald-600/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-600/25 text-xs font-semibold"
+                  >
+                    <Plus size={14} />
+                    Add Row Below
+                  </button>
+                )}
+                {onAddTableColumn && (
+                  <button
+                    type="button"
+                    onClick={onAddTableColumn}
+                    className="w-full flex items-center justify-center gap-2 py-2 rounded-md bg-emerald-600/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-600/25 text-xs font-semibold"
+                  >
+                    <Plus size={14} />
+                    Add Column Right
+                  </button>
+                )}
+              </div>
             )}
             <button
               onClick={() => {

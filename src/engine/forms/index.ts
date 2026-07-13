@@ -14,6 +14,7 @@ export {
   parseAcroFormCatalog,
   detectFormFieldsOnPage,
   listAllFormWidgets,
+  hitTestFormField,
 } from './detect-fields';
 
 export {

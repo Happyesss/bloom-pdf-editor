@@ -4,7 +4,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { resolveStyledFontName } from '../flow/style-edit';
-import { distributeTextToSegments } from '../flow/reflow';
+import { distributeTextToSegments, distributeTextChangeToSegments } from '../flow/reflow';
 import { visualFontSize, fontNameStyleFlags, resolveRunStyleFlags } from '../flow/metrics';
 import type { TextLine } from '../flow/types';
 import type { TextRun, GlyphPosition } from '../content/interpreter';
@@ -109,5 +109,29 @@ describe('distributeTextToSegments style preservation', () => {
     const edits = distributeTextToSegments(line, 'JSS College');
     expect(edits[0].newText).toBe('JSS ');
     expect(edits[1].newText).toBe('College');
+  });
+
+  it('keeps typing inside the active segment without stealing words', () => {
+    const bold = run('Hello', 'FBold', 12, 50);
+    const regular = run(' World', 'FReg', 12, 80);
+    const line: TextLine = {
+      id: 'l2',
+      runs: [bold, regular],
+      text: 'Hello World',
+      segments: [
+        { run: bold, startIndex: 0, endIndex: 5, text: 'Hello' },
+        { run: regular, startIndex: 5, endIndex: 11, text: ' World' },
+      ],
+      baseline: 700,
+      x: 50, y: 688, width: 100, height: 14,
+      leftMargin: 50, rightEdge: 150,
+      fontSize: 12,
+      isJustified: false,
+      tabSplitIndex: -1,
+    };
+
+    const edits = distributeTextChangeToSegments(line, 'Hello World', 'HelloX World', 6);
+    expect(edits[0].newText).toBe('HelloX');
+    expect(edits[1].newText).toBe(' World');
   });
 });

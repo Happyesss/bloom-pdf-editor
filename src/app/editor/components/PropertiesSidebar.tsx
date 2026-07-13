@@ -70,6 +70,8 @@ interface PropertiesSidebarProps {
   onFormFieldSelect?: (field: AcroFormWidget) => void;
   onFormFieldChange?: (value: string) => void;
   onFlattenForms?: () => void;
+  /** Duplicate the selected/editing text line one row below (table-like). */
+  onDuplicateLineBelow?: () => void;
 
   watermarkText?: string;
   setWatermarkText?: (v: string) => void;
@@ -131,6 +133,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
     selectedDisplayItem, setSelectedDisplayItem, onDeleteSelectedDisplayItem, onReplaceSelectedImage, onClearImageReplaceMode, displayItems,
     formFields = [], selectedFormField, formFieldDraft = '',
     onFormFieldSelect, onFormFieldChange, onFlattenForms,
+    onDuplicateLineBelow,
     watermarkType = 'text', setWatermarkType,
     watermarkShapeType = 'circle', setWatermarkShapeType,
     watermarkShapeColor = '#000000', setWatermarkShapeColor,
@@ -426,6 +429,16 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
               <TextCursorInput size={14} />
               Add Text Box
             </button>
+            {onDuplicateLineBelow && selectedRun && (
+              <button
+                onClick={onDuplicateLineBelow}
+                className="w-full flex items-center justify-center gap-2 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-md transition-colors text-xs font-semibold"
+                title="Copy this line one row below (table / form rows)"
+              >
+                <Plus size={14} />
+                Duplicate Line Below
+              </button>
+            )}
             <button
               onClick={() => {
                 replacingImageIdRef.current = null;
@@ -667,8 +680,8 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
         </div>
       )}
 
-      {/* FORM FIELDS — Select tool only (not watermark / draw / etc.) */}
-      {activeTool === 'select' && (
+      {/* FORM FIELDS — Select + Text tools */}
+      {(activeTool === 'select' || activeTool === 'text' || activeTool === 'addtext') && (
       <div className="p-4 space-y-3 border-t border-zinc-800 animate-in fade-in slide-in-from-left-4 duration-300">
           <div className="flex items-center justify-between">
             <span className="text-[10px] font-bold tracking-widest text-zinc-400 uppercase">
@@ -686,10 +699,13 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
 
           {formFields.length === 0 ? (
             <p className="text-[11px] text-zinc-500 leading-relaxed">
-              No AcroForm fields on this page. Open a fillable PDF to edit text, checkbox, and dropdown fields here.
+              No AcroForm fields on this page. Open a fillable PDF to edit text, checkbox, and dropdown fields here. Amber boxes appear on the page when fields are detected.
             </p>
           ) : (
           <>
+          <p className="text-[10px] text-zinc-500 leading-relaxed">
+            Click an amber box on the page or a field below to edit its value.
+          </p>
           <div className="space-y-1 max-h-40 overflow-y-auto">
             {formFields.map((field) => (
               <button

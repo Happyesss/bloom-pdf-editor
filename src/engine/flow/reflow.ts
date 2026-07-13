@@ -3,7 +3,7 @@
  *
  * When the user edits a full line (Word-style), we map the new text back
  * to the original styled runs (bold, regular, etc.) preserving font boundaries
- * where possible using proportional + word-boundary splitting.
+ * where possible using caret-aware + prefix/suffix splitting.
  */
 
 import type { SegmentEdit, StyledSegment, TextLine } from './types';
@@ -11,7 +11,20 @@ import { estimateTextWidth } from './metrics';
 
 /** Split new line text across original styled segments. */
 export function distributeTextToSegments(line: TextLine, newText: string): SegmentEdit[] {
-  if (newText === line.text) {
+  return distributeTextChangeToSegments(line, line.text, newText, newText.length);
+}
+
+/**
+ * Caret-aware redistribute: put insertions/deletions into the segment under the caret
+ * so live typing doesn't jump words into neighboring bold/regular runs.
+ */
+export function distributeTextChangeToSegments(
+  line: TextLine,
+  oldText: string,
+  newText: string,
+  caretAfter: number,
+): SegmentEdit[] {
+  if (newText === line.text && oldText === line.text) {
     return line.segments.map(s => ({ run: s.run, newText: s.text }));
   }
 
@@ -19,12 +32,76 @@ export function distributeTextToSegments(line: TextLine, newText: string): Segme
     return [{ run: line.segments[0].run, newText }];
   }
 
-  // Preserve style boundaries when the user edits inside one segment:
-  // keep a matching prefix/suffix of segment texts, put the middle delta
-  // into the changed segment only.
+  // 1) Exact segment prefix/suffix preservation (best for mixed bold/regular).
   const preserved = preserveSegmentBoundaries(line, newText);
   if (preserved) return preserved;
 
+  // 2) Common-prefix/suffix edit attributed to the segment that owns the caret.
+  const caretAware = distributeByCaret(line, oldText, newText, caretAfter);
+  if (caretAware) return caretAware;
+
+  // 3) Proportional split — NO word-boundary snapping (that steals words into
+  // the wrong style run and looks like "typing elsewhere").
+  return proportionalSplit(line, newText);
+}
+
+function distributeByCaret(
+  line: TextLine,
+  oldText: string,
+  newText: string,
+  caretAfter: number,
+): SegmentEdit[] | null {
+  const segs = line.segments;
+  if (segs.length < 2) return null;
+
+  let prefix = 0;
+  const minLen = Math.min(oldText.length, newText.length);
+  while (prefix < minLen && oldText[prefix] === newText[prefix]) prefix++;
+
+  let suffix = 0;
+  while (
+    suffix < minLen - prefix &&
+    oldText[oldText.length - 1 - suffix] === newText[newText.length - 1 - suffix]
+  ) {
+    suffix++;
+  }
+
+  const midNew = newText.slice(prefix, newText.length - suffix);
+  const oldMidLen = oldText.length - prefix - suffix;
+
+  // Prefer the segment that contained the edit point.
+  const delta = newText.length - oldText.length;
+  const caretBefore = Math.max(0, Math.min(oldText.length, caretAfter - delta));
+  const editAt = Math.min(prefix, caretBefore);
+
+  let activeIdx = -1;
+  for (let i = 0; i < segs.length; i++) {
+    const seg = segs[i];
+    if (editAt >= seg.startIndex && editAt <= seg.endIndex) {
+      activeIdx = i;
+      break;
+    }
+  }
+  if (activeIdx < 0) activeIdx = segs.length - 1;
+
+  const edits: SegmentEdit[] = [];
+  for (let i = 0; i < segs.length; i++) {
+    const seg = segs[i];
+    if (i !== activeIdx) {
+      edits.push({ run: seg.run, newText: seg.text });
+      continue;
+    }
+    const localStart = Math.max(0, prefix - seg.startIndex);
+    const localOldEnd = Math.min(seg.text.length, localStart + oldMidLen);
+    const head = seg.text.slice(0, localStart);
+    const tail = seg.text.slice(localOldEnd);
+    edits.push({ run: seg.run, newText: head + midNew + tail });
+  }
+
+  return edits.map(e => e.newText).join('') === newText ? edits : null;
+}
+
+function proportionalSplit(line: TextLine, newText: string): SegmentEdit[] {
   const oldLen = Math.max(1, line.text.length);
   const edits: SegmentEdit[] = [];
   let pos = 0;
@@ -36,9 +113,8 @@ export function distributeTextToSegments(line: TextLine, newText: string): Segme
     if (i === line.segments.length - 1) {
       len = newText.length - pos;
     } else {
-      const ratio = seg.text.length / oldLen;
+      const ratio = Math.max(0, seg.text.length) / oldLen;
       len = Math.round(ratio * newText.length);
-      len = snapToWordBoundary(newText, pos, len);
       const remaining = newText.length - pos;
       const remainingSegs = line.segments.length - i - 1;
       if (remaining - len < remainingSegs) {
@@ -97,20 +173,6 @@ function preserveSegmentBoundaries(line: TextLine, newText: string): SegmentEdit
     else edits.push({ run: segs[i].run, newText: segs[i].text });
   }
   return edits;
-}
-
-function snapToWordBoundary(text: string, start: number, len: number): number {
-  if (start + len >= text.length) return len;
-  if (text[start + len] === ' ') return len;
-  const nextSpace = text.indexOf(' ', start + len);
-  if (nextSpace !== -1 && nextSpace - start - len < 6) {
-    return nextSpace - start + 1;
-  }
-  const prevSpace = text.lastIndexOf(' ', start + len);
-  if (prevSpace > start && start + len - prevSpace < 6) {
-    return prevSpace - start + 1;
-  }
-  return len;
 }
 
 /** Compute width delta after editing a line (for shifting trailing runs). */

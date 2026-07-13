@@ -16,7 +16,7 @@ import {
   hitTestTextLine, findNearestTextLine, caretIndexFromLineX,
   getLineBounds, getOverlayFontFamily,
 } from './utils';
-import { buildDisplayListIndex, hitTestDisplayList, isSelectableDisplayItem, TransactionStack, deleteObject, visualFontSize, resolveRunStyleFlags, transformObject, applyObjectTransform, distributeTextToSegments, segmentAtIndex } from '@/engine';
+import { buildDisplayListIndex, hitTestDisplayList, isSelectableDisplayItem, TransactionStack, deleteObject, visualFontSize, resolveRunStyleFlags, transformObject, applyObjectTransform, distributeTextChangeToSegments, segmentAtIndex } from '@/engine';
 import type { QuadTree, SelectableItem, EditableObject } from '@/engine';
 import { findMatchingFlowLine } from './flowLineMatch';
 
@@ -101,9 +101,13 @@ export default function EditorPage() {
   const editAnchorLineRef = useRef<TextLine | null>(null);
   /** Pending style patches queued while typing, each with a char range. */
   const pendingStylesRef = useRef<Array<{ patch: Partial<TextStyleUI>; start: number; end: number }>>([]);
+  /** Word-like typing style: applies to newly typed chars when caret is collapsed. */
+  const typingStyleRef = useRef<Partial<Pick<TextStyleUI, 'bold' | 'italic' | 'underline' | 'color'>>>({});
+  const editTextRef = useRef('');
   const [editText, setEditText] = useState('');
   const [caretPos, setCaretPos] = useState(0); // character index for caret
   const editSelRef = useRef({ start: 0, end: 0 });
+  const [editSel, setEditSel] = useState({ start: 0, end: 0 });
   /** Live style overrides for the edit overlay (selection-scoped). */
   const [editStyleOverrides, setEditStyleOverrides] = useState<EditStyleOverride[]>([]);
   /** CSS-pixel offset of the edit box from its natural position. */
@@ -251,11 +255,8 @@ export default function EditorPage() {
   const resolveEditStyleRange = useCallback((line: TextLine, start: number, end: number) => {
     let s = Math.max(0, Math.min(start, line.text.length));
     let e = Math.max(s, Math.min(end, line.text.length));
-    if (e <= s) {
-      const seg = segmentAtIndex(line, s);
-      if (seg) return { start: seg.startIndex, end: seg.endIndex };
-      return { start: 0, end: line.text.length };
-    }
+    // Collapsed caret is handled as typing-style (no existing-text restyle).
+    if (e <= s) return { start: s, end: s };
     return { start: s, end: e };
   }, []);
 
@@ -272,8 +273,21 @@ export default function EditorPage() {
   const queueOrApplyStyle = useCallback((patch: Partial<TextStyleUI>) => {
     if (!selectedLine) return;
     if (editingLineRef.current) {
+      const sel = editSelRef.current;
+      // Collapsed caret → typing style only (Word-like). Do NOT restyle the whole box.
+      if (sel.end <= sel.start) {
+        typingStyleRef.current = {
+          ...typingStyleRef.current,
+          ...(patch.bold != null ? { bold: patch.bold } : {}),
+          ...(patch.italic != null ? { italic: patch.italic } : {}),
+          ...(patch.underline != null ? { underline: patch.underline } : {}),
+          ...(patch.color != null ? { color: patch.color } : {}),
+        };
+        return;
+      }
       const line = editAnchorLineRef.current ?? selectedLine;
-      const range = resolveEditStyleRange(line, editSelRef.current.start, editSelRef.current.end);
+      const range = resolveEditStyleRange(line, sel.start, sel.end);
+      if (range.end <= range.start) return;
       pendingStylesRef.current = [...pendingStylesRef.current, { patch, ...range }];
       setEditStyleOverrides(prev => [
         ...prev,
@@ -293,7 +307,10 @@ export default function EditorPage() {
 
   const handleEditSelection = useCallback((start: number, end: number) => {
     editSelRef.current = { start, end };
-    setCaretPos(start === end ? start : start);
+    setEditSel({ start, end });
+    setCaretPos(start);
+    // A real selection clears typing-style (Word-like)
+    if (end > start) typingStyleRef.current = {};
 
     // Sync sidebar toggles from the run under the caret / selection start
     const line = editAnchorLineRef.current;
@@ -313,11 +330,19 @@ export default function EditorPage() {
         if (ov.underline != null) underline = ov.underline;
       }
     }
+    // Collapsed caret: typing style wins (user just toggled bold off to type normal)
+    if (start === end) {
+      const ts = typingStyleRef.current;
+      if (ts.bold != null) bold = ts.bold;
+      if (ts.italic != null) italic = ts.italic;
+      if (ts.underline != null) underline = ts.underline;
+      if (ts.color) setTextColor(ts.color);
+    }
     setTextBold(bold);
     setTextItalic(italic);
     setTextUnderline(underline);
     setTextFontSize(visualFontSize(run));
-    if (run.fillColor) {
+    if (!(start === end && typingStyleRef.current.color != null) && run.fillColor) {
       const [r, g, b] = run.fillColor;
       const hex = '#' + [r, g, b].map(c => Math.round(c * 255).toString(16).padStart(2, '0')).join('');
       setTextColor(hex);
@@ -733,8 +758,8 @@ export default function EditorPage() {
       ctx.restore();
     }
 
-    // ── AcroForm field overlays (Select tool only) ──
-    if (activeTool === 'select' && formFields.length > 0 && renderResult) {
+    // ── AcroForm field overlays (Select + Text tools) ──
+    if ((activeTool === 'select' || activeTool === 'text') && formFields.length > 0 && renderResult && !editingLine) {
       ctx.save();
       ctx.scale(dpr, dpr);
       for (const field of formFields) {
@@ -887,6 +912,7 @@ export default function EditorPage() {
     };
     editingBlockIdRef.current = line.id;
     pendingStylesRef.current = [];
+    typingStyleRef.current = {};
     setEditStyleOverrides([]);
     setEditOffsetCss({ x: 0, y: 0 });
     setEditManualSize({ w: null, h: null });
@@ -895,9 +921,11 @@ export default function EditorPage() {
     setSelectedLine(line);
     setEditingLine(line);
     setEditText(line.text);
+    editTextRef.current = line.text;
     const caret = caretAt ?? line.text.length;
     setCaretPos(caret);
     editSelRef.current = { start: caret, end: caret };
+    setEditSel({ start: caret, end: caret });
 
     // Sync sidebar styles from the run under the caret (not always runs[0])
     {
@@ -949,6 +977,7 @@ export default function EditorPage() {
       undoSnapshotRef.current = null;
       editingBlockIdRef.current = null;
       pendingStylesRef.current = [];
+      typingStyleRef.current = {};
       setEditStyleOverrides([]);
       setEditOffsetCss({ x: 0, y: 0 });
       setEditManualSize({ w: null, h: null });
@@ -1000,10 +1029,38 @@ export default function EditorPage() {
       await engine.updatePageContent(page.contentRefs, bytes, doc.objects);
 
       if (hasPendingStyles) {
-        const queued = [...pendingStyles];
+        const queued = [...pendingStyles].filter(p => p.end > p.start);
         pendingStylesRef.current = [];
+        // Re-interpret so selection ranges map onto the updated line text/runs
+        let styleLine: TextLine = targetLine;
+        try {
+          const freshBytes = engine.getPageContentBytes(page, doc.objects);
+          const interpreted = engine.interpretPage(freshBytes, page, doc.objects);
+          const flow = engine.buildDocumentFlow(interpreted.textRuns);
+          styleLine =
+            flow.lines.find((l: TextLine) => l.text === editText) ??
+            findMatchingFlowLine(targetLine, flow.lines) ??
+            targetLine;
+        } catch (reErr) {
+          console.warn('[Editor] Re-interpret for styles failed:', reErr);
+        }
         for (const item of queued) {
-          await applyStyle(item.patch, { start: item.start, end: item.end });
+          const style: Record<string, unknown> = {};
+          if (item.patch.fontSize != null) style.fontSize = item.patch.fontSize;
+          if (item.patch.color != null) style.color = hexToRGB(item.patch.color);
+          if (item.patch.bold != null) style.bold = item.patch.bold;
+          if (item.patch.italic != null) style.italic = item.patch.italic;
+          if (item.patch.underline != null) style.underline = item.patch.underline;
+          if (item.patch.align != null) style.align = item.patch.align;
+          if (Object.keys(style).length === 0) continue;
+          await engine.applyStyleToSelectionOnPage(
+            doc,
+            currentPage,
+            styleLine,
+            item.start,
+            item.end,
+            style,
+          );
         }
       }
 
@@ -1020,6 +1077,7 @@ export default function EditorPage() {
       undoSnapshotRef.current = null;
       editingBlockIdRef.current = null;
       pendingStylesRef.current = [];
+      typingStyleRef.current = {};
       setEditStyleOverrides([]);
       setEditOffsetCss({ x: 0, y: 0 });
       setEditManualSize({ w: null, h: null });
@@ -1047,6 +1105,7 @@ export default function EditorPage() {
     undoSnapshotRef.current = null;
     editingBlockIdRef.current = null;
     pendingStylesRef.current = [];
+    typingStyleRef.current = {};
     setEditStyleOverrides([]);
     setEditOffsetCss({ x: 0, y: 0 });
     setEditManualSize({ w: null, h: null });
@@ -1198,6 +1257,34 @@ export default function EditorPage() {
     }
   }, [doc, currentPage, formFields, syncTxState]);
 
+  const handleDuplicateLineBelow = useCallback(async () => {
+    const line = editAnchorLineRef.current ?? selectedLine ?? editingLine;
+    if (!doc || !engineRef.current || !line) return;
+    try {
+      if (editingLine) await handleEditSubmit(false);
+      setIsSaving(true);
+      const engine = engineRef.current;
+      const page = doc.pages[currentPage];
+      const bytes = engine.getPageContentBytes(page, doc.objects);
+      const next = engine.duplicateLineBelow(bytes, line);
+      await engine.updatePageContent(page.contentRefs, next, doc.objects);
+      txStackRef.current.push({
+        pageIndex: currentPage,
+        contentBytes: new Uint8Array(engine.getPageContentBytes(page, doc.objects)),
+        label: 'duplicate-line',
+        timestamp: Date.now(),
+      });
+      syncTxState();
+      setIsDirty(true);
+      setRenderKey(k => k + 1);
+    } catch (e) {
+      console.error('[Editor] Duplicate line failed:', e);
+      setError(`Duplicate line failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setIsSaving(false);
+    }
+  }, [doc, currentPage, selectedLine, editingLine, handleEditSubmit, syncTxState]);
+
   // ── Global keyboard shortcuts for undo/redo ──
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -1235,6 +1322,16 @@ export default function EditorPage() {
         blurTimeoutRef.current = null;
       }
 
+      // Click a form field box → select it for editing
+      if (formFields.length > 0 && engineRef.current) {
+        const formHit = engineRef.current.hitTestFormField(formFields, pdfX, pdfY);
+        if (formHit) {
+          if (editingLine) void handleEditSubmit(false);
+          handleFormFieldSelect(formHit);
+          return;
+        }
+      }
+
       // Ctrl/Cmd+click opens an existing link (Acrobat-like)
       if ((e.ctrlKey || e.metaKey) && engineRef.current) {
         const linkHit = engineRef.current.hitTestPageLink(doc, currentPage, pdfX, pdfY);
@@ -1265,6 +1362,8 @@ export default function EditorPage() {
         const caret = Math.min(newCaret, flowLine.text.length);
         if (editingLine?.id === flowLine.id) {
           setCaretPos(caret);
+          editSelRef.current = { start: caret, end: caret };
+          setEditSel({ start: caret, end: caret });
           caretVisibleRef.current = true;
           setTimeout(() => {
             if (hiddenInputRef.current) {
@@ -1377,7 +1476,7 @@ export default function EditorPage() {
         }
       }
     }
-  }, [renderResult, doc, currentPage, scale, activeTool, editingLine, handleEditSubmit, beginEditSession, displayItems, textFontSize, textColor, textFontFamily, highlightColor]);
+  }, [renderResult, doc, currentPage, scale, activeTool, editingLine, handleEditSubmit, beginEditSession, displayItems, textFontSize, textColor, textFontFamily, highlightColor, formFields, handleFormFieldSelect]);
 
   // Double-click in select mode → enter text edit
   const handleCanvasDoubleClick = useCallback((e: React.MouseEvent) => {
@@ -1934,10 +2033,62 @@ export default function EditorPage() {
   // ── Hidden / line input — preview only; PDF commits on submit ──
   const handleHiddenInput = useCallback((e: React.FormEvent<HTMLTextAreaElement | HTMLInputElement>) => {
     if (!editingLine) return;
-    const newVal = (e.target as HTMLTextAreaElement | HTMLInputElement).value;
+    const el = e.target as HTMLTextAreaElement | HTMLInputElement;
+    const newVal = el.value;
+    const oldVal = editTextRef.current;
+    const sel = el.selectionStart ?? newVal.length;
+    const delta = newVal.length - oldVal.length;
+
+    // Remap existing style overrides around the edit point
+    const remap = (start: number, end: number): { start: number; end: number } | null => {
+      const editAt = Math.min(sel - Math.max(0, delta), oldVal.length);
+      if (end <= editAt) return { start, end };
+      if (start >= editAt) return { start: start + delta, end: end + delta };
+      // Edit inside range — expand/shrink end
+      return { start, end: Math.max(start, end + delta) };
+    };
+
+    if (delta !== 0 || newVal !== oldVal) {
+      setEditStyleOverrides(prev => prev.map(ov => {
+        const next = remap(ov.start, ov.end);
+        return next ? { ...ov, ...next } : ov;
+      }).filter(ov => ov.end > ov.start));
+      pendingStylesRef.current = pendingStylesRef.current.map(p => {
+        const next = remap(p.start, p.end);
+        return next ? { ...p, ...next } : p;
+      }).filter(p => p.end > p.start);
+    }
+
+    // Apply typing style to newly inserted characters
+    const ts = typingStyleRef.current;
+    if (delta > 0 && (ts.bold != null || ts.italic != null || ts.underline != null || ts.color != null)) {
+      const insertStart = sel - delta;
+      const insertEnd = sel;
+      const patch: Partial<TextStyleUI> = {};
+      if (ts.bold != null) patch.bold = ts.bold;
+      if (ts.italic != null) patch.italic = ts.italic;
+      if (ts.underline != null) patch.underline = ts.underline;
+      if (ts.color != null) patch.color = ts.color;
+      pendingStylesRef.current = [...pendingStylesRef.current, { patch, start: insertStart, end: insertEnd }];
+      setEditStyleOverrides(prev => [
+        ...prev,
+        {
+          start: insertStart,
+          end: insertEnd,
+          bold: ts.bold,
+          italic: ts.italic,
+          underline: ts.underline,
+          color: ts.color,
+        },
+      ]);
+    }
+
+    editTextRef.current = newVal;
     setEditText(newVal);
-    const sel = (e.target as HTMLTextAreaElement | HTMLInputElement).selectionStart ?? newVal.length;
     setCaretPos(sel);
+    const selEnd = el.selectionEnd ?? sel;
+    editSelRef.current = { start: sel, end: selEnd };
+    setEditSel({ start: sel, end: selEnd });
     caretVisibleRef.current = true;
   }, [editingLine]);
 
@@ -1956,17 +2107,25 @@ export default function EditorPage() {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleEditSubmit();
+    } else if (e.key === 'Enter' && e.shiftKey) {
+      e.preventDefault();
+      void handleDuplicateLineBelow();
     } else if (e.key === 'Escape') {
       e.preventDefault();
       handleEditCancel();
-    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End') {
       setTimeout(() => {
-        const sel = hiddenInputRef.current?.selectionStart ?? caretPos;
-        setCaretPos(sel);
+        const el = hiddenInputRef.current;
+        if (!el) return;
+        const start = el.selectionStart ?? caretPos;
+        const end = el.selectionEnd ?? start;
+        setCaretPos(start);
+        editSelRef.current = { start, end };
+        setEditSel({ start, end });
         caretVisibleRef.current = true;
       }, 0);
     }
-  }, [editingLine, caretPos, handleEditSubmit, handleEditCancel, handleUndo, handleRedo]);
+  }, [editingLine, caretPos, handleEditSubmit, handleEditCancel, handleUndo, handleRedo, handleDuplicateLineBelow]);
 
   const handleHiddenBlur = useCallback(() => {
     if (!editingLine) return;
@@ -2745,6 +2904,7 @@ export default function EditorPage() {
           onFormFieldSelect={handleFormFieldSelect}
           onFormFieldChange={handleFormFieldChange}
           onFlattenForms={handleFlattenForms}
+          onDuplicateLineBelow={handleDuplicateLineBelow}
           watermarkType={watermarkType}
           setWatermarkType={setWatermarkType}
           watermarkShapeType={watermarkShapeType}
@@ -3172,7 +3332,12 @@ export default function EditorPage() {
                 : `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)})`;
 
               const pathItems = strokePaths;
-              const edits = distributeTextToSegments(anchor, editText);
+              const edits = distributeTextChangeToSegments(
+                anchor,
+                initialRunTextRef.current || anchor.text,
+                editText,
+                caretPos,
+              );
 
               type Piece = {
                 start: number;
@@ -3273,6 +3438,8 @@ export default function EditorPage() {
                   color={colorCss}
                   segments={overlaySegments}
                   text={editText}
+                  caretStart={editSel.start}
+                  caretEnd={editSel.end}
                   textRef={hiddenInputRef}
                   onTextInput={handleHiddenInput}
                   onKeyDown={handleHiddenKeyDown}

@@ -13,13 +13,19 @@ import {
   PDFNumber,
   PDFDict,
   PDFRef,
+  PDFString,
   type PDFDocumentData,
   type PDFObject,
   type PDFPageInfo,
 } from '../types';
 import type { TextRun } from '../content/interpreter';
 import { getPageContentBytes, resolveRef } from '../parser/parser';
-import { compileInstructions, type EditResult } from '../editor/text-editor';
+import {
+  compileInstructions,
+  encodeTextForFont,
+  loadFontForName,
+  type EditResult,
+} from '../editor/text-editor';
 import { updatePageContent } from '../editor/stream-compiler';
 import { parseContentStream, type CSInstruction } from '../content/operator-lexer';
 import type { TextLine, StyledSegment } from './types';
@@ -217,8 +223,7 @@ export function applyStyleToSelection(
   const end = Math.max(start, Math.min(selectionEnd, line.text.length));
   // Collapsed ranges are a no-op here — callers must expand to a segment/line first.
   const hits = end > start ? mapSelectionToSegments(line, start, end) : [];
-  const targets = hits.map(h => h.segment.run);
-  if (targets.length === 0) {
+  if (hits.length === 0) {
     return {
       newContentBytes: contentBytes,
       needsFontAugmentation: false,
@@ -229,16 +234,26 @@ export function applyStyleToSelection(
     };
   }
 
+  // Merge overlapping local ranges per run so partial bold/italic can split once.
+  const byRun = new Map<TextRun, { localStart: number; localEnd: number }>();
+  for (const h of hits) {
+    const prev = byRun.get(h.segment.run);
+    if (!prev) {
+      byRun.set(h.segment.run, { localStart: h.localStart, localEnd: h.localEnd });
+    } else {
+      prev.localStart = Math.min(prev.localStart, h.localStart);
+      prev.localEnd = Math.max(prev.localEnd, h.localEnd);
+    }
+  }
+
   let bytes = contentBytes;
   let addedUnderline = false;
   let removedUnderline = false;
 
-  // Deduplicate runs (multiple hits can share a run)
-  const seen = new Set<TextRun>();
-  for (const run of targets) {
-    if (seen.has(run)) continue;
-    seen.add(run);
-    const patched = patchRunStyle(bytes, run, style, page, objects);
+  for (const [run, range] of byRun) {
+    const patched = patchRunStyle(
+      bytes, run, style, page, objects, range.localStart, range.localEnd,
+    );
     bytes = patched.bytes;
     addedUnderline = addedUnderline || patched.addedUnderline;
     removedUnderline = removedUnderline || patched.removedUnderline;
@@ -309,6 +324,8 @@ function patchRunStyle(
   style: TextStylePatch,
   page: PDFPageInfo,
   objects: Map<string, PDFObject>,
+  localStart = 0,
+  localEnd = run.text.length,
 ): { bytes: Uint8Array; addedUnderline: boolean; removedUnderline: boolean } {
   const instructions = parseContentStream(contentBytes);
   const indices = run.sourceInstructionIndices ?? [];
@@ -323,8 +340,12 @@ function patchRunStyle(
   let addedUnderline = false;
   let removedUnderline = false;
 
-  // Color: patch or insert rg just after BT
-  if (style.color) {
+  const clampStart = Math.max(0, Math.min(localStart, run.text.length));
+  const clampEnd = Math.max(clampStart, Math.min(localEnd, run.text.length));
+  const isPartial = clampStart > 0 || clampEnd < run.text.length;
+
+  // Color: patch or insert rg just after BT (whole-run; partial color uses split path)
+  if (style.color && !isPartial) {
     const [r, g, b] = style.color;
     let found = false;
     for (let i = range.bt + 1; i < textIndex; i++) {
@@ -359,39 +380,19 @@ function patchRunStyle(
       }
     }
 
-    // Re-find range after possible splices above
-    const range2 = findBtEtRange(instructions, textIndex) ?? range;
-
-    for (let i = textIndex; i >= range2.bt; i--) {
-      if (instructions[i].operator === 'Tf' && instructions[i].operands.length >= 2) {
-        if (style.fontSize != null) {
-          const tfSize = instructions[i].operands[1];
-          const curTf = tfSize instanceof PDFNumber ? tfSize.value : run.fontSize;
-          const visual = visualFontSize(run);
-          // Resumes often use `1 Tf` + scaled Tm. Changing Tf to the visual
-          // size would double-scale — scale Tm instead when Tf is a unit size.
-          if (curTf > 0 && curTf <= 1.5 && Math.abs(visual - curTf) > 1) {
-            const scale = style.fontSize / visual;
-            for (let j = textIndex; j >= range2.bt; j--) {
-              if (instructions[j].operator === 'Tm' && instructions[j].operands.length >= 6) {
-                for (const idx of [0, 1, 2, 3]) {
-                  const n = instructions[j].operands[idx];
-                  if (n instanceof PDFNumber) {
-                    instructions[j].operands[idx] = new PDFNumber(n.value * scale);
-                  }
-                }
-                break;
-              }
-            }
-          } else {
-            instructions[i].operands[1] = new PDFNumber(style.fontSize);
-          }
-        }
-        if (fontKey) {
-          instructions[i].operands[0] = new PDFName(fontKey);
-        }
-        break;
+    // Partial bold/italic: split the Tj into before/mid/after with different Tf
+    if (isPartial && fontKey && (style.bold != null || style.italic != null)) {
+      const splitOk = splitRunTextStyle(
+        instructions, run, textIndex, clampStart, clampEnd, fontKey, page, objects,
+      );
+      if (splitOk) {
+        // Still allow underline patches below
+      } else {
+        // Fall through to whole-run patch if split failed
+        applyWholeRunFontPatch(instructions, run, textIndex, range, style, fontKey);
       }
+    } else {
+      applyWholeRunFontPatch(instructions, run, textIndex, range, style, fontKey);
     }
   }
 
@@ -399,13 +400,15 @@ function patchRunStyle(
   if (style.underline === true) {
     const color = style.color ?? run.fillColor ?? [0, 0, 0];
     const y = run.y - visualFontSize(run) * 0.12;
-    const w = Math.max(run.width, visualFontSize(run) * 0.5 * Math.max(1, run.text.length));
+    const startX = run.x + widthUpToChar(run, clampStart);
+    const endX = run.x + widthUpToChar(run, clampEnd);
+    const w = Math.max(endX - startX, visualFontSize(run) * 0.5);
     const ul: CSInstruction[] = [
       op('q'),
       op('RG', [new PDFNumber(color[0]), new PDFNumber(color[1]), new PDFNumber(color[2])]),
       op('w', [new PDFNumber(Math.max(0.4, visualFontSize(run) * 0.05))]),
-      op('m', [new PDFNumber(run.x), new PDFNumber(y)]),
-      op('l', [new PDFNumber(run.x + w), new PDFNumber(y)]),
+      op('m', [new PDFNumber(startX), new PDFNumber(y)]),
+      op('l', [new PDFNumber(startX + w), new PDFNumber(y)]),
       op('S'),
       op('Q'),
     ];
@@ -418,6 +421,121 @@ function patchRunStyle(
   }
 
   return { bytes: compileInstructions(instructions), addedUnderline, removedUnderline };
+}
+
+function applyWholeRunFontPatch(
+  instructions: CSInstruction[],
+  run: TextRun,
+  textIndex: number,
+  range: { bt: number; et: number },
+  style: TextStylePatch,
+  fontKey: string | null,
+): void {
+  const range2 = findBtEtRange(instructions, textIndex) ?? range;
+
+  for (let i = textIndex; i >= range2.bt; i--) {
+    if (instructions[i].operator === 'Tf' && instructions[i].operands.length >= 2) {
+      if (style.fontSize != null) {
+        const tfSize = instructions[i].operands[1];
+        const curTf = tfSize instanceof PDFNumber ? tfSize.value : run.fontSize;
+        const visual = visualFontSize(run);
+        if (curTf > 0 && curTf <= 1.5 && Math.abs(visual - curTf) > 1) {
+          const scale = style.fontSize / visual;
+          for (let j = textIndex; j >= range2.bt; j--) {
+            if (instructions[j].operator === 'Tm' && instructions[j].operands.length >= 6) {
+              for (const idx of [0, 1, 2, 3]) {
+                const n = instructions[j].operands[idx];
+                if (n instanceof PDFNumber) {
+                  instructions[j].operands[idx] = new PDFNumber(n.value * scale);
+                }
+              }
+              break;
+            }
+          }
+        } else {
+          instructions[i].operands[1] = new PDFNumber(style.fontSize);
+        }
+      }
+      if (fontKey) {
+        instructions[i].operands[0] = new PDFName(fontKey);
+      }
+      break;
+    }
+  }
+}
+
+function widthUpToChar(run: TextRun, charCount: number): number {
+  if (charCount <= 0) return 0;
+  if (!run.glyphs.length) {
+    return (run.width / Math.max(1, run.text.length)) * charCount;
+  }
+  let w = 0;
+  let chars = 0;
+  for (const g of run.glyphs) {
+    if (chars >= charCount) break;
+    w += g.width;
+    chars += (g.unicode || '').length || 1;
+  }
+  return w;
+}
+
+/**
+ * Split a single Tj/TJ at [localStart, localEnd) and apply a different font to the middle.
+ * Keeps surrounding glyphs on the original face — Word-like partial bold/unbold.
+ */
+function splitRunTextStyle(
+  instructions: CSInstruction[],
+  run: TextRun,
+  textIndex: number,
+  localStart: number,
+  localEnd: number,
+  newFontKey: string,
+  page: PDFPageInfo,
+  objects: Map<string, PDFObject>,
+): boolean {
+  if (textIndex < 0 || textIndex >= instructions.length) return false;
+  const inst = instructions[textIndex];
+  if (inst.operator !== 'Tj' && inst.operator !== 'TJ' && inst.operator !== "'" && inst.operator !== '"') {
+    return false;
+  }
+
+  const before = run.text.slice(0, localStart);
+  const mid = run.text.slice(localStart, localEnd);
+  const after = run.text.slice(localEnd);
+  if (!mid) return false;
+
+  const fontData = loadFontForName(run.fontName, page, objects);
+  const encBefore = before ? encodeTextForFont(before, fontData) : null;
+  const encMid = encodeTextForFont(mid, fontData);
+  const encAfter = after ? encodeTextForFont(after, fontData) : null;
+
+  // Find current Tf size to reuse
+  let tfSize: PDFObject = new PDFNumber(run.fontSize);
+  for (let i = textIndex; i >= 0; i--) {
+    if (instructions[i].operator === 'BT') break;
+    if (instructions[i].operator === 'Tf' && instructions[i].operands.length >= 2) {
+      tfSize = instructions[i].operands[1];
+      break;
+    }
+  }
+
+  const replacement: CSInstruction[] = [];
+  // Tj advances the text matrix, so consecutive Tj ops stay on one baseline
+  // without Td — inserting Td would double-advance and shift glyphs.
+  if (before) {
+    replacement.push(op('Tj', [encBefore!.pdfString]));
+  }
+  replacement.push(op('Tf', [new PDFName(newFontKey), tfSize]));
+  replacement.push(op('Tj', [encMid.pdfString]));
+  // Always restore the original face so later ops in the same BT stay correct.
+  replacement.push(op('Tf', [new PDFName(run.fontName.replace(/^\//, '')), tfSize]));
+  if (after) {
+    replacement.push(op('Tj', [encAfter!.pdfString]));
+  }
+
+  // If the original used TJ with spacing, falling back to Tj is acceptable for the selection.
+  instructions.splice(textIndex, 1, ...replacement);
+  return true;
 }
 
 /** Remove a short horizontal stroke under the run (editor-added underline). */
@@ -495,3 +613,83 @@ function applyAlignmentShift(
   }
   return contentBytes;
 }
+
+/**
+ * Duplicate a text line below itself (same glyphs, shifted down by line height).
+ * Useful for table-like rows and form-style label lines.
+ */
+export function duplicateLineBelow(
+  contentBytes: Uint8Array,
+  line: TextLine,
+): Uint8Array {
+  const instructions = parseContentStream(contentBytes);
+  const dy = -(Math.max(
+    line.runs[0] ? visualFontSize(line.runs[0]) : line.fontSize,
+    line.fontSize,
+  ) * 1.35);
+  const clones: CSInstruction[] = [];
+  const seenRanges = new Set<string>();
+
+  for (const run of line.runs) {
+    const indices = run.sourceInstructionIndices ?? [];
+    if (indices.length === 0) continue;
+    const textIndex = Math.min(...indices);
+    const range = findBtEtRange(instructions, textIndex);
+    if (!range) continue;
+    const key = `${range.bt}:${range.et}`;
+    if (seenRanges.has(key)) continue;
+    seenRanges.add(key);
+
+    const slice = instructions.slice(range.bt, range.et + 1).map(cloneInstruction);
+    shiftInstructionsY(slice, dy);
+    clones.push(...slice);
+  }
+
+  if (clones.length === 0) {
+    // Fallback: inject a fresh text run under the line
+    const run = line.runs[0];
+    if (!run) return contentBytes;
+    const color = run.fillColor ?? [0, 0, 0];
+    const fs = visualFontSize(run);
+    clones.push(
+      op('q'),
+      op('BT'),
+      op('rg', [new PDFNumber(color[0]), new PDFNumber(color[1]), new PDFNumber(color[2])]),
+      op('Tf', [new PDFName(run.fontName.replace(/^\//, '')), new PDFNumber(run.fontSize || fs)]),
+      op('Tm', [
+        new PDFNumber(1), new PDFNumber(0), new PDFNumber(0), new PDFNumber(1),
+        new PDFNumber(run.x), new PDFNumber(run.y + dy),
+      ]),
+      op('Tj', [new PDFString(line.text)]),
+      op('ET'),
+      op('Q'),
+    );
+  }
+
+  instructions.push(...clones);
+  return compileInstructions(instructions);
+}
+
+function cloneInstruction(inst: CSInstruction): CSInstruction {
+  return {
+    operator: inst.operator,
+    operands: inst.operands.map(o => o),
+    offset: 0,
+  };
+}
+
+function shiftInstructionsY(instructions: CSInstruction[], dy: number): void {
+  for (const inst of instructions) {
+    if (inst.operator === 'Tm' && inst.operands.length >= 6) {
+      const f = inst.operands[5];
+      if (f instanceof PDFNumber) inst.operands[5] = new PDFNumber(f.value + dy);
+    } else if ((inst.operator === 'Td' || inst.operator === 'TD') && inst.operands.length >= 2) {
+      const y = inst.operands[1];
+      if (y instanceof PDFNumber) inst.operands[1] = new PDFNumber(y.value + dy);
+    } else if ((inst.operator === 'm' || inst.operator === 'l') && inst.operands.length >= 2) {
+      const y = inst.operands[1];
+      if (y instanceof PDFNumber) inst.operands[1] = new PDFNumber(y.value + dy);
+    }
+  }
+}
+

@@ -25,7 +25,7 @@ export { reconstructLines } from './line-reconstruction';
 export { reconstructParagraphs } from './paragraph';
 export { applyLineTextEdit, buildLayoutPlan } from './flow-editor';
 export { hitTestTextLine, findNearestTextLine, caretIndexFromLineX, lineXFromCaretIndex } from './hit-test';
-export { distributeTextToSegments, segmentAtIndex, computeLineWidthDelta } from './reflow';
+export { distributeTextToSegments, distributeTextChangeToSegments, segmentAtIndex, computeLineWidthDelta } from './reflow';
 export {
   analyzeJustification,
   distributeJustifiedSpace,
@@ -67,6 +67,7 @@ export {
   applyStyleToSelectionOnPage,
   mapSelectionToSegments,
   resolveStyledFontName,
+  duplicateLineBelow,
 } from './style-edit';
 export type { TextStylePatch, StyleEditResult } from './style-edit';
 export {

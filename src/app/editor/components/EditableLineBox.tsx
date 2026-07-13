@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useLayoutEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 /** One styled fragment inside the line editor (mirrors PDF runs). */
 export interface OverlaySegmentStyle {
@@ -29,6 +29,9 @@ export interface EditableLineBoxProps {
   /** Per-run styles so mixed bold/underline render like the PDF. */
   segments?: OverlaySegmentStyle[];
   text: string;
+  /** Controlled caret / selection (Acrobat/Sejda: click places caret in the string). */
+  caretStart: number;
+  caretEnd: number;
   textRef: React.RefObject<HTMLTextAreaElement | null>;
   onTextInput: (e: React.FormEvent<HTMLTextAreaElement>) => void;
   onKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
@@ -49,24 +52,35 @@ export interface EditableLineBoxProps {
 type DragMode = 'move' | 'resize-e' | 'resize-s' | 'resize-se' | null;
 
 /**
- * Framed line editor: stays at PDF size/position, drag to move, handles to resize.
- * Renders per-segment styles under a transparent textarea so mixed bold/underline
- * match the canvas; applies horizontal stretch like the PDF renderer.
+ * Sejda/Acrobat-style line editor:
+ * - Visible text uses real per-run styles
+ * - Clicks map to character index via measured glyph spans (not textarea metrics)
+ * - Hidden textarea only handles keyboard / IME
+ * - Custom caret drawn at the measured X so it matches what you clicked
  */
 export function EditableLineBox(props: EditableLineBoxProps) {
   const {
     left, top, naturalWidth, naturalHeight,
     fontSizeCss, fontFamily, fontWeight, fontStyle, underline, color,
-    segments, text, textRef, onTextInput, onKeyDown, onSelect, onBlur,
+    segments, text, caretStart, caretEnd,
+    textRef, onTextInput, onKeyDown, onSelect, onBlur,
     onOffsetChange, onSizeChange,
     offsetCssX, offsetCssY, manualWidth, manualHeight,
   } = props;
 
   const [autoWidth, setAutoWidth] = useState(naturalWidth);
   const [scaleX, setScaleX] = useState(1);
+  const [caretPx, setCaretPx] = useState(0);
+  const [selLeftPx, setSelLeftPx] = useState(0);
+  const [selWidthPx, setSelWidthPx] = useState(0);
+  const [caretBlink, setCaretBlink] = useState(true);
+
   const measureRef = useRef<HTMLSpanElement>(null);
+  const visibleRef = useRef<HTMLDivElement>(null);
+  const charEndsRef = useRef<number[]>([]);
   const dragMode = useRef<DragMode>(null);
   const dragStart = useRef({ x: 0, y: 0, ox: 0, oy: 0, w: 0, h: 0 });
+  const selectDrag = useRef<{ anchor: number } | null>(null);
   const frozenScaleX = useRef<number | null>(null);
   const sessionKeyRef = useRef(`${left},${top},${naturalWidth},${naturalHeight}`);
 
@@ -74,6 +88,78 @@ export function EditableLineBox(props: EditableLineBoxProps) {
   const caretColor = hasSegments
     ? (segments.find(s => s.text.length > 0)?.color || color)
     : color;
+
+  const focusInput = useCallback(() => {
+    const el = textRef.current;
+    if (!el) return;
+    el.focus({ preventScroll: true });
+  }, [textRef]);
+
+  const applyCaret = useCallback((start: number, end: number) => {
+    const s = Math.max(0, Math.min(start, text.length));
+    const e = Math.max(s, Math.min(end, text.length));
+    const el = textRef.current;
+    if (el) {
+      el.focus({ preventScroll: true });
+      el.setSelectionRange(s, e);
+    }
+    onSelect?.(s, e);
+    setCaretBlink(true);
+  }, [text.length, textRef, onSelect]);
+
+  /** Build cumulative unscaled CSS widths for each UTF-16 index. */
+  const rebuildCharEnds = useCallback(() => {
+    const host = measureRef.current;
+    if (!host) {
+      charEndsRef.current = [];
+      return;
+    }
+    const ends: number[] = [];
+    const hostLeft = host.getBoundingClientRect().left;
+    const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT);
+    let node = walker.nextNode();
+    let globalOffset = 0;
+    while (node) {
+      const value = node.textContent || '';
+      for (let i = 0; i < value.length; i++) {
+        const range = document.createRange();
+        range.setStart(node, i);
+        range.setEnd(node, i + 1);
+        const rect = range.getBoundingClientRect();
+        ends[globalOffset + i] = Math.max(0, rect.right - hostLeft);
+      }
+      globalOffset += value.length;
+      node = walker.nextNode();
+    }
+    while (ends.length < text.length) {
+      const last = ends.length > 0 ? ends[ends.length - 1] : 0;
+      ends.push(last + fontSizeCss * 0.5);
+    }
+    charEndsRef.current = ends.slice(0, Math.max(text.length, 0));
+  }, [text, fontSizeCss]);
+
+  const xToIndex = useCallback((localX: number) => {
+    const ends = charEndsRef.current;
+    if (ends.length === 0 || text.length === 0) return 0;
+    // Box X is visually scaled; ends are unscaled → convert click into measure space.
+    const sx = scaleX !== 1 && scaleX > 0 ? scaleX : 1;
+    const unscaledX = localX / sx;
+    let prev = 0;
+    for (let i = 0; i < ends.length; i++) {
+      const mid = (prev + ends[i]) / 2;
+      if (unscaledX < mid) return i;
+      prev = ends[i];
+    }
+    return text.length;
+  }, [scaleX, text.length]);
+
+  const indexToX = useCallback((index: number) => {
+    const ends = charEndsRef.current;
+    const i = Math.max(0, Math.min(index, text.length));
+    const unscaled = i <= 0 ? 0 : (ends[i - 1] ?? ends[ends.length - 1] ?? 0);
+    const sx = scaleX !== 1 && scaleX > 0 ? scaleX : 1;
+    return unscaled * sx;
+  }, [scaleX, text.length]);
 
   // Match PDF glyph width like the canvas renderer (ctx.scale(ratio, 1)).
   useLayoutEffect(() => {
@@ -85,6 +171,7 @@ export function EditableLineBox(props: EditableLineBoxProps) {
 
     const el = measureRef.current;
     if (!el) return;
+    rebuildCharEnds();
     const measured = el.offsetWidth;
     if (measured < 0.5 || naturalWidth < 0.5) {
       setAutoWidth(Math.max(naturalWidth, 40));
@@ -101,14 +188,44 @@ export function EditableLineBox(props: EditableLineBoxProps) {
     const contentCss = measured * sx;
     const grown = Math.ceil(Math.max(naturalWidth, contentCss));
     setAutoWidth(Math.max(grown, 40));
-  }, [text, fontSizeCss, fontFamily, fontWeight, fontStyle, segments, naturalWidth, naturalHeight, left, top]);
+
+    // Recompute ends after scale settles
+    requestAnimationFrame(() => rebuildCharEnds());
+  }, [text, fontSizeCss, fontFamily, fontWeight, fontStyle, segments, naturalWidth, naturalHeight, left, top, rebuildCharEnds]);
+
+  // Sync custom caret / selection highlight to controlled indices
+  useLayoutEffect(() => {
+    rebuildCharEnds();
+    const a = Math.max(0, Math.min(caretStart, text.length));
+    const b = Math.max(a, Math.min(caretEnd, text.length));
+    setCaretPx(indexToX(b));
+    setSelLeftPx(indexToX(Math.min(a, b)));
+    setSelWidthPx(Math.abs(indexToX(b) - indexToX(a)));
+  }, [caretStart, caretEnd, text, indexToX, rebuildCharEnds, scaleX]);
+
+  // Blink caret
+  useEffect(() => {
+    const id = setInterval(() => setCaretBlink(v => !v), 530);
+    return () => clearInterval(id);
+  }, [caretStart, caretEnd, text]);
+
+  // Keep hidden textarea selection in sync (for IME / copy)
+  useLayoutEffect(() => {
+    const el = textRef.current;
+    if (!el) return;
+    const a = Math.max(0, Math.min(caretStart, text.length));
+    const b = Math.max(a, Math.min(caretEnd, text.length));
+    if (el.selectionStart !== a || el.selectionEnd !== b) {
+      try {
+        el.setSelectionRange(a, b);
+      } catch {
+        /* ignore */
+      }
+    }
+  }, [caretStart, caretEnd, text, textRef]);
 
   const width = manualWidth ?? Math.max(autoWidth, naturalWidth);
   const height = manualHeight ?? naturalHeight;
-
-  const reportSelection = useCallback((el: HTMLTextAreaElement) => {
-    onSelect?.(el.selectionStart ?? 0, el.selectionEnd ?? 0);
-  }, [onSelect]);
 
   const onPointerMove = useCallback((e: PointerEvent) => {
     const mode = dragMode.current;
@@ -152,10 +269,69 @@ export function EditableLineBox(props: EditableLineBoxProps) {
     window.addEventListener('pointerup', endDrag);
   }, [offsetCssX, offsetCssY, width, height, onPointerMove, endDrag]);
 
+  const hitLocalX = (e: React.PointerEvent) => {
+    const box = e.currentTarget.getBoundingClientRect();
+    return e.clientX - box.left;
+  };
+
+  const onHitPointerDown = (e: React.PointerEvent) => {
+    if (e.altKey || e.metaKey) {
+      startDrag('move', e);
+      return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    rebuildCharEnds();
+    const idx = xToIndex(hitLocalX(e));
+    selectDrag.current = { anchor: idx };
+    applyCaret(idx, idx);
+
+    const onMove = (ev: PointerEvent) => {
+      if (!selectDrag.current) return;
+      const box = (e.currentTarget as HTMLElement).getBoundingClientRect();
+      const localX = ev.clientX - box.left;
+      const cur = xToIndex(localX);
+      const a = selectDrag.current.anchor;
+      applyCaret(Math.min(a, cur), Math.max(a, cur));
+    };
+    const onUp = () => {
+      selectDrag.current = null;
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  };
+
   const stretchStyle: React.CSSProperties = {
     transform: scaleX !== 1 ? `scaleX(${scaleX})` : undefined,
     transformOrigin: 'left center',
     width: scaleX !== 1 && scaleX > 0 ? `${100 / scaleX}%` : '100%',
+  };
+
+  const renderSegmentSpans = (forMeasure: boolean) => {
+    if (hasSegments) {
+      return segments!.map((seg, i) => (
+        <span
+          key={i}
+          style={{
+            fontFamily: seg.fontFamily,
+            fontWeight: seg.fontWeight,
+            fontStyle: seg.fontStyle,
+            color: forMeasure ? 'transparent' : seg.color,
+            textDecorationLine: !forMeasure && seg.underline ? 'underline' : 'none',
+            textDecorationColor: seg.color,
+          }}
+        >
+          {seg.text}
+        </span>
+      ));
+    }
+    return (
+      <span style={{ fontFamily, fontWeight, fontStyle, color: forMeasure ? 'transparent' : color }}>
+        {text || ' '}
+      </span>
+    );
   };
 
   return (
@@ -170,34 +346,21 @@ export function EditableLineBox(props: EditableLineBoxProps) {
       onClick={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
     >
-      {/* Hidden measure row — mirrors visible segment metrics for scaleX */}
+      {/* Hidden measure row — unscaled fonts matching visible segments */}
       <span
         ref={measureRef}
         aria-hidden
-        className="absolute opacity-0 pointer-events-none whitespace-pre"
+        className="absolute pointer-events-none whitespace-pre"
         style={{
           fontSize: fontSizeCss,
           lineHeight: 1,
-          left: -9999,
+          left: 0,
           top: 0,
+          opacity: 0,
+          zIndex: -1,
         }}
       >
-        {hasSegments
-          ? segments!.map((seg, i) => (
-              <span
-                key={i}
-                style={{
-                  fontFamily: seg.fontFamily,
-                  fontWeight: seg.fontWeight,
-                  fontStyle: seg.fontStyle,
-                }}
-              >
-                {seg.text || ''}
-              </span>
-            ))
-          : (
-              <span style={{ fontFamily, fontWeight, fontStyle }}>{text || ' '}</span>
-            )}
+        {renderSegmentSpans(true)}
       </span>
 
       {/* Selection chrome */}
@@ -233,67 +396,89 @@ export function EditableLineBox(props: EditableLineBoxProps) {
         Drag
       </div>
 
-      {/* Visible mixed-style text (textarea is transparent for caret/IME only) */}
-      {hasSegments && (
+      {/* Selection highlight */}
+      {selWidthPx > 0.5 && (
         <div
           aria-hidden
-          className="absolute inset-0 m-0 p-0 overflow-hidden whitespace-nowrap pointer-events-none"
+          className="absolute top-0 bottom-0 pointer-events-none z-[5]"
           style={{
-            fontSize: fontSizeCss,
-            lineHeight: `${fontSizeCss}px`,
-            ...stretchStyle,
+            left: selLeftPx,
+            width: selWidthPx,
+            background: 'rgba(59,130,246,0.28)',
           }}
-        >
-          {segments!.map((seg, i) => (
-            <span
-              key={i}
-              style={{
-                fontFamily: seg.fontFamily,
-                fontWeight: seg.fontWeight,
-                fontStyle: seg.fontStyle,
-                color: seg.color,
-                textDecorationLine: seg.underline ? 'underline' : 'none',
-                textDecorationColor: seg.color,
-              }}
-            >
-              {seg.text}
-            </span>
-          ))}
-        </div>
+        />
       )}
 
+      {/* Visible mixed-style text */}
+      <div
+        ref={visibleRef}
+        aria-hidden
+        className="absolute inset-0 m-0 p-0 overflow-hidden whitespace-nowrap pointer-events-none z-[6]"
+        style={{
+          fontSize: fontSizeCss,
+          lineHeight: `${fontSizeCss}px`,
+          ...stretchStyle,
+        }}
+      >
+        {renderSegmentSpans(false)}
+      </div>
+
+      {/* Custom caret — positioned from measured glyph widths */}
+      {caretEnd === caretStart && caretBlink && (
+        <div
+          aria-hidden
+          className="absolute pointer-events-none z-[8]"
+          style={{
+            left: caretPx,
+            top: 1,
+            width: 1.5,
+            height: Math.max(fontSizeCss - 2, 10),
+            background: caretColor,
+          }}
+        />
+      )}
+
+      {/* Hit layer — Sejda/Acrobat click-to-caret */}
+      <div
+        className="absolute inset-0 z-10 cursor-text"
+        onPointerDown={onHitPointerDown}
+        onDoubleClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          rebuildCharEnds();
+          const idx = xToIndex(hitLocalX(e as unknown as React.PointerEvent));
+          // Select word under caret
+          let a = idx;
+          let b = idx;
+          while (a > 0 && /\S/.test(text[a - 1]!)) a--;
+          while (b < text.length && /\S/.test(text[b]!)) b++;
+          applyCaret(a, b);
+        }}
+      />
+
+      {/* Hidden textarea: keyboard + IME only (no mouse hit-testing) */}
       <textarea
         ref={textRef as React.RefObject<HTMLTextAreaElement>}
         value={text}
-        onInput={(e) => {
-          onTextInput(e);
-          reportSelection(e.currentTarget);
-        }}
+        onInput={onTextInput}
         onKeyDown={onKeyDown}
-        onKeyUp={(e) => reportSelection(e.currentTarget)}
-        onSelect={(e) => reportSelection(e.currentTarget)}
-        onMouseUp={(e) => reportSelection(e.currentTarget)}
         onBlur={onBlur}
         rows={1}
         aria-label="Edit line"
         spellCheck={false}
-        className="absolute inset-0 m-0 border-none outline-none bg-transparent p-0 overflow-hidden resize-none whitespace-nowrap z-10"
+        className="absolute inset-0 m-0 border-none outline-none bg-transparent p-0 overflow-hidden resize-none whitespace-nowrap opacity-0"
         style={{
           fontSize: fontSizeCss,
           lineHeight: `${fontSizeCss}px`,
           fontFamily,
-          fontWeight,
-          fontStyle,
-          // Transparent text when segments paint styles; caret stays visible
-          color: hasSegments ? 'transparent' : color,
-          caretColor,
-          textDecorationLine: hasSegments ? 'none' : (underline ? 'underline' : 'none'),
-          ...stretchStyle,
+          fontWeight: 'normal',
+          fontStyle: 'normal',
+          caretColor: 'transparent',
+          color: 'transparent',
+          pointerEvents: 'none',
+          zIndex: 0,
         }}
-        onPointerDown={(e) => {
-          if (e.altKey || e.metaKey) startDrag('move', e);
-          else e.stopPropagation();
-        }}
+        onFocus={focusInput}
       />
 
       {/* Resize handles */}

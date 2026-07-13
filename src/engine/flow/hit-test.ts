@@ -59,7 +59,7 @@ export function findNearestTextLine(
 
 /**
  * Map PDF x coordinate to character index within a line.
- * Uses glyph midpoint boundaries across all runs.
+ * Uses glyph midpoint boundaries; advances by unicode length (not glyph count).
  */
 export function caretIndexFromLineX(pdfX: number, line: TextLine): number {
   if (line.runs.length === 0) return 0;
@@ -74,13 +74,16 @@ export function caretIndexFromLineX(pdfX: number, line: TextLine): number {
       const glyph = run.glyphs[g];
       const mid = glyph.tRm.e + glyph.width / 2;
       const dist = Math.abs(pdfX - mid);
-      const idx = charOffset + g;
+      const glyphChars = Math.max(1, (glyph.unicode || '').length);
       if (dist < bestDist) {
         bestDist = dist;
-        bestIndex = pdfX < mid ? idx : idx + 1;
+        bestIndex = pdfX < mid ? charOffset : charOffset + glyphChars;
       }
+      charOffset += glyphChars;
     }
-    charOffset += run.text.length;
+    // If glyphs under-count vs run.text (merged/missing), clamp using run text length
+    const runEnd = line.runs.slice(0, r).reduce((n, rr) => n + rr.text.length, 0) + run.text.length;
+    if (charOffset < runEnd) charOffset = runEnd;
   }
 
   if (pdfX > line.rightEdge) return line.text.length;

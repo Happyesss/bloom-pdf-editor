@@ -280,3 +280,20 @@ export function listAllFormWidgets(doc: PDFDocumentData): AcroFormWidget[] {
   if (!catalog) return [];
   return collectAllWidgets(catalog.fields);
 }
+
+/** Hit-test a form widget by PDF page coordinates. */
+export function hitTestFormField(
+  fields: AcroFormWidget[],
+  pdfX: number,
+  pdfY: number,
+): AcroFormWidget | null {
+  for (let i = fields.length - 1; i >= 0; i--) {
+    const f = fields[i];
+    const r = f.rect;
+    if (!r) continue;
+    if (pdfX >= r.x && pdfX <= r.x + r.width && pdfY >= r.y && pdfY <= r.y + r.height) {
+      return f;
+    }
+  }
+  return null;
+}

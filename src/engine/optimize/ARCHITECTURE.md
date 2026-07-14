@@ -80,10 +80,10 @@ unreachable ← nodes \ reachable
 |---------|--------------------------|-------------|
 | Remove unused objects | Yes | `garbageCollect()` |
 | Duplicate image merge | Yes | `deduplicateStreams()` |
-| Font subsetting | Yes | Not yet (Phase 2 fonts) |
+| Font subsetting | Yes | `subsetFonts()` |
 | Linearization | Yes | Not yet |
-| Object streams | Yes | Not yet |
-| Recompress Flate | Yes | Not yet |
+| Object streams | Yes | `serializeDocumentCompact()` |
+| Recompress Flate | Yes | `recompressStreams()` |
 | JPEG re-quantize | Yes | Not yet |
 
 ## Edge Cases

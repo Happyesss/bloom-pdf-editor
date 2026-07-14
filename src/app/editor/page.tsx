@@ -244,6 +244,7 @@ export default function EditorPage() {
   const hiddenInputRef = useRef<HTMLTextAreaElement>(null);
   const blurTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const engineRef = useRef<typeof import('@/engine') | null>(null);
+  const [engineModule, setEngineModule] = useState<typeof import('@/engine') | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pdfCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -419,6 +420,7 @@ export default function EditorPage() {
 
         const engine = await import('@/engine');
         engineRef.current = engine;
+        setEngineModule(engine);
 
         const pdfBytes = new Uint8Array(stored.bytes);
         const parsed = await engine.parsePDF(pdfBytes);
@@ -2533,27 +2535,63 @@ export default function EditorPage() {
     }
   }, [doc, fileName, saveMode, commitDrawingsToPdf]);
 
-  // ── Compressed Download (target size) ──
-  const handleCompressedDownload = useCallback(async (targetBytes: number, quality: number) => {
-    // For now, use the optimized save — in the future this can iteratively
-    // recompress images to approach the target size.
+  // ── Compressed Download ──
+  const handleCompressedDownload = useCallback(async (opts: {
+    quality: number;
+    dpi: number;
+    targetBytes?: number;
+  }) => {
     if (!doc || !engineRef.current) return;
     try {
       setIsSaving(true);
+      setError(null);
       await commitDrawingsToPdf();
       const engine = engineRef.current;
-      const bytes = await engine.saveOptimized(doc);
-      const blob = new Blob([bytes as unknown as BlobPart], { type: 'application/pdf' });
+      const originalLen = doc.rawBytes?.length ?? 0;
+
+      const result = await engine.compressDocumentImages(doc, {
+        quality: opts.quality,
+        dpi: opts.dpi,
+        targetBytes: opts.targetBytes,
+      });
+
+      // Hard safety: never hand the user a bigger file than they started with
+      let outBytes = result.bytes;
+      let outLen = result.compressedBytes;
+      let note = result.message;
+      if (originalLen > 0 && outLen > originalLen) {
+        outBytes = doc.rawBytes!;
+        outLen = originalLen;
+        note = `Compression produced a larger file (${(result.compressedBytes / 1024).toFixed(1)} KB). Kept original ${(originalLen / 1024).toFixed(1)} KB instead.`;
+      }
+
+      console.log('[Compress]', note, {
+        method: result.method,
+        originalBytes: originalLen,
+        compressedBytes: outLen,
+      });
+
+      const blob = new Blob([outBytes as BlobPart], { type: 'application/pdf' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = fileName || 'compressed.pdf';
+      const base = (fileName || 'document.pdf').replace(/\.pdf$/i, '');
+      a.download =
+        outLen < originalLen * 0.98 ? `${base}_compressed.pdf` : `${base}.pdf`;
+      document.body.appendChild(a);
       a.click();
+      document.body.removeChild(a);
       URL.revokeObjectURL(url);
+
+      if (result.targetMissed || result.method === 'unchanged' || outLen >= originalLen) {
+        setError(note);
+      } else {
+        setError(null);
+      }
       setIsDirty(false);
     } catch (e) {
       console.error('[Editor] Compressed download failed:', e);
-      setError(`Download failed: ${e instanceof Error ? e.message : String(e)}`);
+      setError(`Compression failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setIsSaving(false);
     }
@@ -3692,7 +3730,7 @@ export default function EditorPage() {
         isOpen={showExportPanel}
         onClose={() => setShowExportPanel(false)}
         doc={doc}
-        engine={engineRef.current}
+        engine={engineModule}
         fileName={fileName}
         totalPages={totalPages}
         currentPage={currentPage}

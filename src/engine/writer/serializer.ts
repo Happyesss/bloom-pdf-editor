@@ -30,6 +30,7 @@ import {
 } from '../types';
 import { serializeIndirectObject } from '../editor/stream-compiler';
 import { concatBytes } from '../editor/stream-compiler';
+import { packIntoObjectStreams, buildXRefStream } from '../optimize/object-streams';
 
 // ─── Full document serialization ────────────────────────────────────────────
 
@@ -96,6 +97,107 @@ export async function serializeDocument(doc: PDFDocumentData): Promise<Uint8Arra
     `startxref\n${xrefOffset}\n%%EOF\n`,
   );
   chunks.push(trailerBytes);
+
+  return concatBytes(...chunks);
+}
+
+// ─── Compact serialization (ObjStm + XRef stream) ──────────────────────────
+
+/**
+ * Serialize a PDF document using Object Streams and a cross-reference stream
+ * for maximum compression. Requires PDF 1.5+.
+ *
+ * Falls back to standard serialization on failure.
+ */
+export async function serializeDocumentCompact(doc: PDFDocumentData): Promise<Uint8Array> {
+  try {
+    return await _serializeCompact(doc);
+  } catch (err) {
+    console.warn('[Serializer] Compact serialization failed, falling back to standard:', err);
+    return serializeDocument(doc);
+  }
+}
+
+async function _serializeCompact(doc: PDFDocumentData): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+
+  // Bump version to 1.5 if needed (ObjStm requires 1.5+)
+  const version = parseFloat(doc.version) >= 1.5 ? doc.version : '1.5';
+  const header = stringToBytes(`%PDF-${version}\n%\xe2\xe3\xcf\xd3\n`);
+  chunks.push(header);
+  let currentOffset = header.length;
+
+  // Find the max existing object number
+  let nextObjNum = 1;
+  for (const key of doc.objects.keys()) {
+    const objNum = parseInt(key.split('_')[0], 10);
+    if (objNum >= nextObjNum) nextObjNum = objNum + 1;
+  }
+
+  const catalogRef = doc.xref.trailerDict.getRef('Root');
+  const encryptRef = doc.xref.trailerDict.getRef('Encrypt');
+
+  // Pack objects into ObjStm containers
+  const pack = await packIntoObjectStreams(
+    doc.objects,
+    nextObjNum,
+    catalogRef,
+    encryptRef,
+  );
+
+  // Track offsets for standalone objects
+  const standaloneOffsets = new Map<number, { offset: number; genNum: number }>();
+
+  // Write standalone objects
+  for (const [, entry] of pack.standaloneObjects) {
+    standaloneOffsets.set(entry.objNum, { offset: currentOffset, genNum: entry.genNum });
+    const objBytes = serializeIndirectObject(entry.objNum, entry.genNum, entry.obj);
+    chunks.push(objBytes);
+    currentOffset += objBytes.length;
+  }
+
+  // Write ObjStm containers
+  for (const objStm of pack.objStreams) {
+    standaloneOffsets.set(objStm.objNum, { offset: currentOffset, genNum: 0 });
+    const objBytes = serializeIndirectObject(objStm.objNum, 0, objStm.stream);
+    chunks.push(objBytes);
+    currentOffset += objBytes.length;
+  }
+
+  // Find max object number across all objects (standalone + ObjStm)
+  let maxObjNum = 0;
+  for (const [objNum] of standaloneOffsets) {
+    if (objNum > maxObjNum) maxObjNum = objNum;
+  }
+  for (const [objNum] of pack.packMap) {
+    if (objNum > maxObjNum) maxObjNum = objNum;
+  }
+
+  // XRef stream gets the next object number
+  const xrefObjNum = maxObjNum + 1;
+
+  // Build and write xref stream
+  const xrefStreamOffset = currentOffset;
+  const infoRef = doc.xref.trailerDict.get('Info');
+
+  const xrefResult = await buildXRefStream(
+    standaloneOffsets,
+    pack.packMap,
+    xrefObjNum + 1, // Size includes the xref stream itself
+    xrefObjNum,
+    {
+      root: catalogRef,
+      info: infoRef,
+      size: xrefObjNum + 1,
+    },
+  );
+
+  chunks.push(xrefResult.bytes);
+  currentOffset += xrefResult.bytes.length;
+
+  // Write startxref and %%EOF
+  const footer = stringToBytes(`startxref\n${xrefStreamOffset}\n%%EOF\n`);
+  chunks.push(footer);
 
   return concatBytes(...chunks);
 }

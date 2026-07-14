@@ -26,3 +26,5 @@ export type {
 } from './types';
 
 export { DEFAULT_EXPORT_OPTIONS } from './types';
+
+export { structureToHTML, structureToMarkdown } from './structure-serialize';

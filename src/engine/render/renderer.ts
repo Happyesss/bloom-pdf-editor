@@ -54,6 +54,11 @@ export interface RenderOptions {
   renderPaths?: boolean;
   /** Whether to render images (default: true) */
   renderImages?: boolean;
+  /**
+   * Override devicePixelRatio used for canvas backing store.
+   * Pass `1` for export/compression so Retina screens don't inflate file size.
+   */
+  devicePixelRatio?: number;
 }
 
 // ─── Render result ──────────────────────────────────────────────────────────
@@ -114,7 +119,9 @@ export async function renderPageToCanvas(
 
   // Create canvas
   const canvas = document.createElement('canvas');
-  const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+  const dpr =
+    options.devicePixelRatio ??
+    (typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1);
   const logicalWidth = Math.ceil(pageWidth * scale);
   const logicalHeight = Math.ceil(pageHeight * scale);
 

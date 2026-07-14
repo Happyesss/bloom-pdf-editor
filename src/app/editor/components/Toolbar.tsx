@@ -31,7 +31,7 @@ interface ToolbarProps {
   /** PDF document for size estimation */
   doc?: PDFDocumentData | null;
   /** Compressed download handler */
-  onCompressedDownload?: (targetBytes: number, quality: number) => void;
+  onCompressedDownload?: (opts: import('./DownloadDropdown').CompressedDownloadOptions) => void;
 }
 
 export function Toolbar({

@@ -43,7 +43,7 @@ export const EXPORT_FORMATS: ExportFormatInfo[] = [
   {
     id: 'html',
     label: 'HTML',
-    description: 'Web-ready HTML with inline styles and formatting',
+    description: 'Exact-layout HTML with text, images, headings & tables',
     extension: '.html',
     icon: '🌐',
     mimeType: 'text/html',
@@ -54,7 +54,7 @@ export const EXPORT_FORMATS: ExportFormatInfo[] = [
   {
     id: 'markdown',
     label: 'Markdown',
-    description: 'Clean Markdown for docs and wikis',
+    description: 'Structured Markdown — headings, lists, tables, images',
     extension: '.md',
     icon: '📝',
     mimeType: 'text/markdown',
@@ -281,7 +281,6 @@ function buildExportInput(
   const pageWidth = mediaBox.width;
   const pageHeight = mediaBox.height;
 
-  // Proper chain: getPageContentBytes → interpretPage → buildDocumentFlow
   const contentBytes = engine.getPageContentBytes(page, doc.objects);
   const interpreted = engine.interpretPage(contentBytes, page, doc.objects);
   const flow = engine.buildDocumentFlow(interpreted.textRuns);
@@ -292,7 +291,7 @@ function buildExportInput(
     y: line.y,
     width: line.width,
     height: line.height,
-    fontSize: line.runs[0]?.fontSize ?? 12,
+    fontSize: line.fontSize || line.runs[0]?.fontSize || 12,
     bold: line.runs[0]?.fontName?.toLowerCase().includes('bold') ?? false,
     italic: line.runs[0]?.fontName?.toLowerCase().includes('italic') ?? false,
   }));
@@ -315,53 +314,110 @@ function escapeXml(str: string): string {
     .replace(/'/g, '&apos;');
 }
 
+/** Absolute-positioned HTML for one page (visual fidelity). */
+function linesToPositionedHtml(
+  input: ExportPageInput,
+  pageLabel: string,
+): string {
+  const items = input.lines
+    .filter(l => l.text.trim().length > 0)
+    .map(line => {
+      // PDF y-up → CSS y-down
+      const top = input.height - line.y - line.height;
+      const fontWeight = line.bold ? 'bold' : 'normal';
+      const fontStyle = line.italic ? 'italic' : 'normal';
+      const size = Math.max(6, line.fontSize || 12);
+      return `<div class="pdf-line" style="left:${line.x.toFixed(1)}px;top:${top.toFixed(1)}px;width:${Math.max(line.width, 4).toFixed(1)}px;font-size:${size.toFixed(1)}px;font-weight:${fontWeight};font-style:${fontStyle};line-height:1.15;">${escapeXml(line.text)}</div>`;
+    })
+    .join('\n');
+
+  return `<section class="pdf-page" data-page="${pageLabel}" style="position:relative;width:${input.width}px;height:${input.height}px;margin:0 auto 2rem;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.12);overflow:hidden;">
+${items}
+</section>`;
+}
+
+async function renderPageDataUrl(
+  doc: PDFDocumentData,
+  pageIndex: number,
+  engine: typeof import('@/engine'),
+  dpi: number = 120,
+): Promise<string | null> {
+  try {
+    const scale = dpi / 72;
+    const result = await engine.renderPage(doc, pageIndex, { scale });
+    return result.canvas.toDataURL('image/jpeg', 0.85);
+  } catch {
+    return null;
+  }
+}
+
 export async function exportToHTML(
   doc: PDFDocumentData,
   engine: typeof import('@/engine'),
   options: ExportOptions,
   onProgress?: (current: number, total: number) => void,
 ): Promise<ExportResult> {
-  const pages = options.pages ?? Array.from({ length: doc.pages.length }, (_, i) => i);
-  const parts: string[] = [];
-
-  for (let i = 0; i < pages.length; i++) {
-    const input = buildExportInput(doc, pages[i], engine);
-    const semanticPage = engine.buildSemanticPage(input);
-    const html = engine.exportPageToHTML(semanticPage, {
-      documentWrapper: pages.length === 1,
+  try {
+    const { assembledPages } = await engine.exportToStructure(doc, {
       title: options.title,
+      pages: options.pages ?? undefined,
+      onProgress,
     });
-    parts.push(html);
-    onProgress?.(i + 1, pages.length);
-  }
 
-  let finalHtml: string;
-  if (pages.length === 1) {
-    finalHtml = parts[0];
-  } else {
-    const body = parts.join('\n<hr class="page-break" />\n');
-    finalHtml = `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>${escapeXml(options.title)}</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-body { font-family: system-ui, -apple-system, sans-serif; max-width: 800px; margin: 2rem auto; line-height: 1.6; color: #1d1d1f; }
-hr.page-break { border: none; border-top: 2px solid #e5e5e5; margin: 3rem 0; }
-</style>
-</head>
-<body>
-${body}
-</body>
-</html>`;
-  }
+    const extracted = {
+      title: options.title,
+      pages: assembledPages,
+    };
 
-  return {
-    blob: new Blob([finalHtml], { type: 'text/html' }),
-    filename: `${options.title}.html`,
-    mimeType: 'text/html',
-  };
+    // Exact layout (absolute CSS) — same idea as iLovePDF "Exact Layout"
+    let html = engine.structureToHTML(extracted, 'exact');
+
+    // If structure produced almost no content, fall back to raster pages
+    const textish = assembledPages.reduce((n, p) => {
+      return n + p.blocks.filter(b => b.type !== 'image').length;
+    }, 0);
+
+    if (textish === 0 && assembledPages.every(p => p.blocks.length === 0)) {
+      const sections: string[] = [];
+      const pages = options.pages ?? Array.from({ length: doc.pages.length }, (_, i) => i);
+      for (let i = 0; i < pages.length; i++) {
+        const dataUrl = await renderPageDataUrl(doc, pages[i], engine, Math.min(options.dpi || 120, 150));
+        const label = String(pages[i] + 1);
+        if (dataUrl) {
+          const page = doc.pages[pages[i]];
+          sections.push(`<section class="pdf-page" data-page="${label}" style="margin:0 auto 2rem;text-align:center;">
+<img src="${dataUrl}" alt="Page ${label}" width="${page.mediaBox.width}" style="max-width:100%;height:auto;" />
+</section>`);
+        }
+        onProgress?.(i + 1, pages.length);
+      }
+      html = `<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>${escapeXml(options.title)}</title></head>
+<body style="margin:0;padding:1.5rem;background:#f4f4f5;">${sections.join('\n')}</body></html>`;
+    }
+
+    return {
+      blob: new Blob([html], { type: 'text/html;charset=utf-8' }),
+      filename: `${options.title}.html`,
+      mimeType: 'text/html',
+    };
+  } catch (err) {
+    console.error('[Export HTML] Structure export failed, using plain fallback:', err);
+    // Last-resort: plain text wrapped in HTML
+    const pages = options.pages ?? Array.from({ length: doc.pages.length }, (_, i) => i);
+    const parts: string[] = [];
+    for (let i = 0; i < pages.length; i++) {
+      const plain = engine.extractPagePlainText(doc, pages[i]);
+      parts.push(`<section><h2>Page ${pages[i] + 1}</h2><pre style="white-space:pre-wrap;">${escapeXml(plain)}</pre></section>`);
+      onProgress?.(i + 1, pages.length);
+    }
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeXml(options.title)}</title></head><body>${parts.join('\n')}</body></html>`;
+    return {
+      blob: new Blob([html], { type: 'text/html;charset=utf-8' }),
+      filename: `${options.title}.html`,
+      mimeType: 'text/html',
+    };
+  }
 }
 
 export async function exportToMarkdown(
@@ -370,22 +426,54 @@ export async function exportToMarkdown(
   options: ExportOptions,
   onProgress?: (current: number, total: number) => void,
 ): Promise<ExportResult> {
-  const pages = options.pages ?? Array.from({ length: doc.pages.length }, (_, i) => i);
-  const parts: string[] = [];
+  try {
+    const { assembledPages } = await engine.exportToStructure(doc, {
+      title: options.title,
+      pages: options.pages ?? undefined,
+      onProgress,
+    });
 
-  for (let i = 0; i < pages.length; i++) {
-    const input = buildExportInput(doc, pages[i], engine);
-    const semanticPage = engine.buildSemanticPage(input);
-    const md = engine.exportPageToMarkdown(semanticPage);
-    parts.push(md);
-    onProgress?.(i + 1, pages.length);
+    const extracted = {
+      title: options.title,
+      pages: assembledPages,
+    };
+
+    let md = engine.structureToMarkdown(extracted);
+
+    // Empty structure → plain text fallback
+    if (!md.trim() || md.trim().length < 5) {
+      const pages = options.pages ?? Array.from({ length: doc.pages.length }, (_, i) => i);
+      const parts: string[] = options.title ? [`# ${options.title}`, ''] : [];
+      for (let i = 0; i < pages.length; i++) {
+        const plain = engine.extractPagePlainText(doc, pages[i]).trim();
+        if (pages.length > 1) parts.push(`## Page ${pages[i] + 1}`, '');
+        parts.push(plain || `*(Page ${pages[i] + 1}: no extractable text)*`, '');
+        onProgress?.(i + 1, pages.length);
+      }
+      md = parts.join('\n').trimEnd() + '\n';
+    }
+
+    return {
+      blob: new Blob([md], { type: 'text/markdown;charset=utf-8' }),
+      filename: `${options.title}.md`,
+      mimeType: 'text/markdown',
+    };
+  } catch (err) {
+    console.error('[Export Markdown] Structure export failed:', err);
+    const pages = options.pages ?? Array.from({ length: doc.pages.length }, (_, i) => i);
+    const parts: string[] = options.title ? [`# ${options.title}`, ''] : [];
+    for (let i = 0; i < pages.length; i++) {
+      const plain = engine.extractPagePlainText(doc, pages[i]).trim();
+      if (pages.length > 1) parts.push(`## Page ${pages[i] + 1}`, '');
+      parts.push(plain || `*(Page ${pages[i] + 1}: export failed)*`, '');
+      onProgress?.(i + 1, pages.length);
+    }
+    return {
+      blob: new Blob([parts.join('\n').trimEnd() + '\n'], { type: 'text/markdown;charset=utf-8' }),
+      filename: `${options.title}.md`,
+      mimeType: 'text/markdown',
+    };
   }
-
-  return {
-    blob: new Blob([parts.join('\n---\n\n')], { type: 'text/markdown' }),
-    filename: `${options.title}.md`,
-    mimeType: 'text/markdown',
-  };
 }
 
 export async function exportToPlainText(
@@ -501,147 +589,16 @@ export async function exportToWord(
   options: ExportOptions,
   onProgress?: (current: number, total: number) => void,
 ): Promise<ExportResult> {
-  // Dynamically import docx to keep it off the initial bundle
-  const docxLib = await import('docx');
-  const {
-    Document: DocxDocument,
-    Packer,
-    Paragraph,
-    TextRun: DocxTextRun,
-    Textbox,
-    ImageRun,
-  } = docxLib;
-
-  const pages = options.pages ?? Array.from({ length: doc.pages.length }, (_, i) => i);
-  const sections: Array<{
-    properties: Record<string, unknown>;
-    children: Array<InstanceType<typeof Paragraph> | InstanceType<typeof Textbox>>;
-  }> = [];
-
-  for (let i = 0; i < pages.length; i++) {
-    const pageIdx = pages[i];
-    const page = doc.pages[pageIdx];
-    const mediaBox = page.mediaBox;
-    const pageWidthPt = mediaBox.width;
-    const pageHeightPt = mediaBox.height;
-
-    // Convert pt to twips (1pt = 20 twips) for page size
-    const pageWidthTwip = Math.round(pageWidthPt * 20);
-    const pageHeightTwip = Math.round(pageHeightPt * 20);
-
-    // Get text lines via the proper engine pipeline
-    const contentBytes = engine.getPageContentBytes(page, doc.objects);
-    const interpreted = engine.interpretPage(contentBytes, page, doc.objects);
-    const flow = engine.buildDocumentFlow(interpreted.textRuns);
-    const textLines: TextLine[] = flow.lines;
-
-    // Render the full page as a background image
-    const bgImage = await renderPageToBytes(doc, pageIdx, engine, 150);
-
-    const children: Array<InstanceType<typeof Paragraph> | InstanceType<typeof Textbox>> = [];
-
-    // Add the page background image as an inline image in the first paragraph
-    children.push(
-      new Paragraph({
-        children: [
-          new ImageRun({
-            data: bgImage.data,
-            transformation: {
-              width: pageWidthPt * 0.75, // pt → CSS px (0.75 factor)
-              height: pageHeightPt * 0.75,
-            },
-            type: 'png',
-          }),
-        ],
-      }),
-    );
-
-    // Now overlay each text line as an absolutely-positioned Textbox.
-    for (const line of textLines) {
-      if (!line.text.trim()) continue;
-
-      // PDF y is bottom-up, DOCX y is top-down
-      const yFromTop = pageHeightPt - line.y - line.height;
-
-      const docxRuns = (line.runs || []).map((run: EngineTextRun) => {
-        const flags = detectFontFlags(run.fontName ?? '');
-        const fontFamily = cleanFontFamily(run.fontName ?? 'Helvetica');
-        const fontSize = run.fontSize ?? 12;
-        const color = run.fillColor
-          ? rgbToHex(run.fillColor[0], run.fillColor[1], run.fillColor[2])
-          : '000000';
-
-        return new DocxTextRun({
-          text: run.text,
-          bold: flags.bold,
-          italics: flags.italic,
-          size: Math.round(fontSize * 2), // half-points
-          font: fontFamily,
-          color,
-        });
-      });
-
-      if (docxRuns.length === 0) continue;
-
-      try {
-        children.push(
-          new Textbox({
-            children: docxRuns,
-            style: {
-              position: 'absolute',
-              width: ptUnit(Math.max(line.width, 10)),
-              height: ptUnit(Math.max(line.height, 8)),
-              left: ptUnit(line.x),
-              top: ptUnit(Math.max(0, yFromTop)),
-              wrapStyle: 'none',
-            },
-          }),
-        );
-      } catch {
-        // Fallback: add as a regular paragraph if Textbox fails
-        children.push(
-          new Paragraph({
-            children: docxRuns,
-          }),
-        );
-      }
-    }
-
-    sections.push({
-      properties: {
-        page: {
-          size: {
-            width: pageWidthTwip,
-            height: pageHeightTwip,
-          },
-          margin: {
-            top: 0,
-            right: 0,
-            bottom: 0,
-            left: 0,
-            header: 0,
-            footer: 0,
-            gutter: 0,
-          },
-        },
-      },
-      children,
-    });
-
-    onProgress?.(i + 1, pages.length);
-  }
-
-  const docx = new DocxDocument({
-    sections: sections as any,
+  const result = await engine.exportToDocx(doc, {
+    title: options.title || 'Export',
+    pages: options.pages ?? undefined,
+    onProgress,
   });
 
-  // Use toBlob for browser compatibility (toBuffer requires Node.js Buffer)
-  const blob = await Packer.toBlob(docx);
-
   return {
-    blob,
-    filename: `${options.title}.docx`,
-    mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    blob: result.blob,
+    filename: result.filename,
+    mimeType: result.mimeType,
   };
 }
 
@@ -678,27 +635,49 @@ export function estimateDocumentSize(doc: PDFDocumentData): SizeEstimation {
   const currentSizeBytes = doc.rawBytes?.length ?? 0;
   const pageCount = doc.pages.length;
 
-  let streamBytesTotal = 0;
   let imageCount = 0;
+  let imageContentBytes = 0;
 
   for (const [, obj] of doc.objects) {
     if (obj && typeof obj === 'object' && 'rawBytes' in obj) {
-      const stream = obj as { rawBytes?: Uint8Array; dict?: { get?: (k: string) => unknown } };
+      const stream = obj as {
+        rawBytes?: Uint8Array;
+        dict?: { getName?: (k: string) => string | undefined };
+      };
       const bytes = stream.rawBytes?.length ?? 0;
-      streamBytesTotal += bytes;
-      const subtype = stream.dict?.get?.('Subtype');
-      if (subtype && String(subtype) === '/Image') {
+      const subtype = stream.dict?.getName?.('Subtype');
+      if (subtype === 'Image') {
         imageCount++;
+        imageContentBytes += bytes;
       }
     }
   }
 
-  const imageContentBytes = Math.round(streamBytesTotal * 0.8);
   const textContentBytes = Math.max(0, currentSizeBytes - imageContentBytes);
-  const metadataBytes = Math.max(2048, pageCount * 512);
-  const minTextBytes = Math.round(textContentBytes * 0.25);
-  const minImageBytes = imageCount * 2048;
-  const minAchievableBytes = Math.max(metadataBytes + minTextBytes + minImageBytes, 1024);
+  const metadataBytes = Math.max(1024, pageCount * 256);
+
+  // Honest floor:
+  // - No images → almost nothing to reclaim (fonts/structure stay). ~95% of current.
+  // - With images → images can shrink a lot; text/structure still need ~70% of non-image bytes.
+  let minAchievableBytes: number;
+  if (imageCount === 0 || imageContentBytes === 0) {
+    minAchievableBytes = Math.max(
+      Math.round(currentSizeBytes * 0.95),
+      metadataBytes,
+      2048,
+    );
+  } else {
+    const minImageBytes = Math.max(imageCount * 1500, Math.round(imageContentBytes * 0.08));
+    const minTextBytes = Math.round(textContentBytes * 0.7);
+    minAchievableBytes = Math.max(metadataBytes + minTextBytes + minImageBytes, 2048);
+    // Never claim below ~40% of current even for image-heavy files
+    minAchievableBytes = Math.max(minAchievableBytes, Math.round(currentSizeBytes * 0.15));
+  }
+
+  // Clamp: min cannot exceed current
+  if (currentSizeBytes > 0) {
+    minAchievableBytes = Math.min(minAchievableBytes, currentSizeBytes);
+  }
 
   return {
     currentSizeBytes,
@@ -723,22 +702,25 @@ export function evaluateTargetSize(
   let zone: 'green' | 'yellow' | 'red';
   let message: string;
 
-  if (targetBytes >= currentSizeBytes * 0.6) {
+  if (targetBytes >= currentSizeBytes) {
     zone = 'green';
-    message = 'Easily achievable with standard compression.';
-  } else if (targetBytes >= minAchievableBytes) {
-    zone = 'yellow';
-    message = imageCount > 0
-      ? `Achievable, but image quality will be significantly reduced. ${imageCount} image${imageCount > 1 ? 's' : ''} will be recompressed.`
-      : 'Achievable with aggressive text compression, but quality may decrease slightly.';
-  } else {
+    message = 'Target is at or above the current size — file will be saved as-is (light optimize only).';
+  } else if (targetBytes < minAchievableBytes) {
     zone = 'red';
-    const minSizeStr = formatFileSize(minAchievableBytes);
-    if (imageCount > 0) {
-      message = `Not achievable. Your PDF has ${imageCount} image${imageCount > 1 ? 's' : ''} that limit compression. Minimum possible: ${minSizeStr}.`;
-    } else {
-      message = `Not achievable. The text content and PDF structure require at minimum ${minSizeStr}.`;
-    }
+    message =
+      imageCount === 0
+        ? `Not achievable. This PDF has no compressible images (current ${formatFileSize(currentSizeBytes)}). Minimum realistic size ≈ ${formatFileSize(minAchievableBytes)}.`
+        : `Not achievable. Minimum realistic size with heavy image compression ≈ ${formatFileSize(minAchievableBytes)}.`;
+  } else if (imageCount === 0) {
+    // Text-only: only a tiny shrink is ever green/yellow
+    zone = 'yellow';
+    message = `Limited savings possible (text/fonts). Best case ≈ ${formatFileSize(minAchievableBytes)} — will not rasterize pages (that would make the file larger).`;
+  } else if (targetBytes >= currentSizeBytes * 0.55) {
+    zone = 'green';
+    message = 'Achievable by recompressing embedded images.';
+  } else {
+    zone = 'yellow';
+    message = `Achievable with heavy image quality reduction (${imageCount} image${imageCount > 1 ? 's' : ''}).`;
   }
 
   return {

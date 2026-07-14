@@ -267,7 +267,7 @@ export {
 export type { PageLinkInfo } from './editor/link';
 
 // ── Writer ──
-export { serializeDocument, getNextObjNum } from './writer/serializer';
+export { serializeDocument, serializeDocumentCompact, getNextObjNum } from './writer/serializer';
 export { saveIncremental } from './writer/incremental-writer';
 export { saveQuick, saveOptimized, saveDocument } from './writer/save-pipeline';
 export type { SaveMode } from './writer/save-pipeline';
@@ -394,6 +394,8 @@ export {
   buildSemanticPage,
   exportPageToHTML,
   exportPageToMarkdown,
+  structureToHTML,
+  structureToMarkdown,
 } from './export';
 export type {
   SemanticPage,
@@ -407,9 +409,24 @@ export type {
   ExportTableCellInput,
 } from './export';
 
+// ── DOCX Export ──
+export { exportToDocx, exportToStructure } from './docx-export';
+export type { DocxExportOptions, DocxExportResult, ExtractedDocument } from './docx-export';
+
 // ── Optimize (Phase 9) ──
-export { garbageCollect, deduplicateStreams, computeReachability } from './optimize';
-export type { GarbageCollectResult, DeduplicateResult, ReachabilityResult } from './optimize';
+export {
+  garbageCollect,
+  deduplicateStreams,
+  computeReachability,
+  compressDocumentImages,
+} from './optimize';
+export type {
+  GarbageCollectResult,
+  DeduplicateResult,
+  ReachabilityResult,
+  ImageCompressOptions,
+  ImageCompressResult,
+} from './optimize';
 
 // ── Signatures (Phase 10) ──
 export {

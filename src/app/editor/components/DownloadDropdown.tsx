@@ -5,23 +5,28 @@ import {
   Download,
   ChevronDown,
   Loader2,
-  AlertTriangle,
-  CheckCircle2,
-  Info,
   Gauge,
-  HardDrive,
   Target,
+  HardDrive,
+  Info,
 } from 'lucide-react';
 import type { PDFDocumentData } from '@/engine';
 import {
   estimateDocumentSize,
-  evaluateTargetSize,
   formatFileSize,
-  parseFileSize,
   type SizeEstimation,
 } from '../export-formats';
 
 // ─── Props ──────────────────────────────────────────────────────────────────────
+
+export interface CompressedDownloadOptions {
+  /** JPEG quality 0–1. Used when targetBytes is not set. */
+  quality: number;
+  /** Target image DPI (downsamples denser images). */
+  dpi: number;
+  /** Optional max file size in bytes — binary-searches quality to fit. */
+  targetBytes?: number;
+}
 
 interface DownloadDropdownProps {
   isSaving: boolean;
@@ -29,8 +34,8 @@ interface DownloadDropdownProps {
   saveMode: 'quick' | 'optimized';
   onSaveModeChange: (mode: 'quick' | 'optimized') => void;
   doc: PDFDocumentData | null;
-  /** Custom download with compression target. */
-  onCompressedDownload?: (targetBytes: number, quality: number) => void;
+  /** Custom download with compression / DPI / target size. */
+  onCompressedDownload?: (opts: CompressedDownloadOptions) => void;
 }
 
 // ─── DPI Presets ────────────────────────────────────────────────────────────────
@@ -40,6 +45,13 @@ const DPI_PRESETS = [
   { value: 150, label: 'Standard', desc: '150 DPI — Good balance' },
   { value: 300, label: 'Print', desc: '300 DPI — Print quality' },
   { value: 600, label: 'High', desc: '600 DPI — Maximum detail' },
+];
+
+const COMPRESSION_PRESETS = [
+  { value: 20, label: 'Extreme', desc: 'Smallest file' },
+  { value: 50, label: 'High', desc: 'Good balance' },
+  { value: 75, label: 'Medium', desc: 'Better quality' },
+  { value: 100, label: 'Low', desc: 'Highest quality' },
 ];
 
 // ─── Component ──────────────────────────────────────────────────────────────────
@@ -54,10 +66,8 @@ export function DownloadDropdown({
 }: DownloadDropdownProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [selectedDpi, setSelectedDpi] = useState(150);
-  const [compressionQuality, setCompressionQuality] = useState(80);
-  const [targetSizeInput, setTargetSizeInput] = useState('');
+  const [compressionQuality, setCompressionQuality] = useState(75);
   const [sizeEstimation, setSizeEstimation] = useState<SizeEstimation | null>(null);
-  const [targetEstimation, setTargetEstimation] = useState<SizeEstimation | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -65,19 +75,6 @@ export function DownloadDropdown({
       setSizeEstimation(estimateDocumentSize(doc));
     }
   }, [isOpen, doc]);
-
-  useEffect(() => {
-    if (!sizeEstimation || !targetSizeInput.trim()) {
-      setTargetEstimation(null);
-      return;
-    }
-    const targetBytes = parseFileSize(targetSizeInput);
-    if (targetBytes === null) {
-      setTargetEstimation(null);
-      return;
-    }
-    setTargetEstimation(evaluateTargetSize(sizeEstimation, targetBytes));
-  }, [targetSizeInput, sizeEstimation]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -99,19 +96,24 @@ export function DownloadDropdown({
     return () => window.removeEventListener('keydown', handler);
   }, [isOpen]);
 
-  const handleCompressedDownload = useCallback(() => {
-    if (!onCompressedDownload || !targetSizeInput.trim()) {
+  const handleOptionsDownload = useCallback(() => {
+    if (!onCompressedDownload) {
       onDownload();
+      setIsOpen(false);
       return;
     }
-    const targetBytes = parseFileSize(targetSizeInput);
-    if (targetBytes === null) {
-      onDownload();
-      return;
-    }
-    onCompressedDownload(targetBytes, compressionQuality / 100);
+    // Dropdown Download always runs the compressor with current settings
+    onCompressedDownload({
+      quality: compressionQuality / 100,
+      dpi: selectedDpi,
+    });
     setIsOpen(false);
-  }, [onCompressedDownload, onDownload, targetSizeInput, compressionQuality]);
+  }, [
+    onCompressedDownload,
+    onDownload,
+    compressionQuality,
+    selectedDpi,
+  ]);
 
   const currentSize = sizeEstimation?.currentSizeBytes ?? 0;
 
@@ -121,7 +123,7 @@ export function DownloadDropdown({
         <button
           onClick={onDownload}
           disabled={isSaving}
-          title={saveMode === 'quick' ? 'Quick incremental save' : 'Optimized save'}
+          title="Download original / edited PDF (no recompression)"
           className="flex items-center gap-2 text-xs font-medium pl-4 pr-3 py-2 bg-gradient-to-b from-blue-500 to-blue-600 hover:from-blue-400 hover:to-blue-500 disabled:from-zinc-700 disabled:to-zinc-800 disabled:text-zinc-500 text-white rounded-l-xl transition-all duration-200 ease-out shadow-lg shadow-blue-900/25 active:scale-[0.98]"
         >
           {isSaving ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
@@ -162,9 +164,23 @@ export function DownloadDropdown({
           </div>
 
           <div className="px-5 py-3 border-b border-zinc-800/60">
-            <label className="text-[11px] font-medium text-zinc-400 uppercase tracking-wider mb-2 block">
-              Save Mode
-            </label>
+            <div className="flex items-center gap-1.5 mb-2">
+              <label className="text-[11px] font-medium text-zinc-400 uppercase tracking-wider block">
+                Save Mode
+              </label>
+              <div className="group relative flex items-center justify-center">
+                <Info size={12} className="text-zinc-500 hover:text-zinc-300 cursor-help transition-colors" />
+                <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 w-56 p-2.5 bg-zinc-800 border border-zinc-700/60 rounded-xl shadow-xl text-[10.5px] text-zinc-300 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-[60] leading-relaxed">
+                  <strong className="text-zinc-100">Save Mode</strong> determines how changes are saved.
+                  <ul className="mt-1.5 space-y-1 list-disc pl-3.5 text-zinc-400">
+                    <li><strong className="text-zinc-200">Optimized:</strong> Rebuilds the file and removes unused data. Slower, but results in a smaller file.</li>
+                    <li><strong className="text-zinc-200">Quick:</strong> Appends changes to the end. Faster, but file size grows over time.</li>
+                  </ul>
+                  <div className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 border-[6px] border-transparent border-t-zinc-700/60" />
+                  <div className="absolute -bottom-[5px] left-1/2 -translate-x-1/2 border-[5px] border-transparent border-t-zinc-800" />
+                </div>
+              </div>
+            </div>
             <div className="flex gap-1.5 p-1 bg-zinc-800/50 rounded-xl">
               {[
                 { value: 'optimized' as const, label: 'Optimized', desc: 'GC + dedup' },
@@ -189,9 +205,25 @@ export function DownloadDropdown({
           <div className="px-5 py-3 border-b border-zinc-800/60">
             <div className="flex items-center gap-2 mb-2">
               <Gauge size={13} className="text-zinc-500" />
-              <label className="text-[11px] font-medium text-zinc-400 uppercase tracking-wider">
-                Resolution
-              </label>
+              <div className="flex items-center gap-1.5">
+                <label className="text-[11px] font-medium text-zinc-400 uppercase tracking-wider">
+                  Resolution
+                </label>
+                <div className="group relative flex items-center justify-center">
+                  <Info size={12} className="text-zinc-500 hover:text-zinc-300 cursor-help transition-colors" />
+                  <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 w-56 p-2.5 bg-zinc-800 border border-zinc-700/60 rounded-xl shadow-xl text-[10.5px] text-zinc-300 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-[60] leading-relaxed">
+                    <strong className="text-zinc-100">DPI (Dots Per Inch)</strong> controls image clarity. Higher DPI looks better but makes the file bigger.
+                    <ul className="mt-1.5 space-y-1 list-disc pl-3.5 text-zinc-400">
+                      <li><strong className="text-zinc-200">72:</strong> Good for sharing on web/email.</li>
+                      <li><strong className="text-zinc-200">150:</strong> Good balance for viewing on screens.</li>
+                      <li><strong className="text-zinc-200">300:</strong> Standard for high-quality printing.</li>
+                      <li><strong className="text-zinc-200">600:</strong> Maximum detail (very large file).</li>
+                    </ul>
+                    <div className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 border-[6px] border-transparent border-t-zinc-700/60" />
+                    <div className="absolute -bottom-[5px] left-1/2 -translate-x-1/2 border-[5px] border-transparent border-t-zinc-800" />
+                  </div>
+                </div>
+              </div>
             </div>
             <div className="grid grid-cols-4 gap-1.5">
               {DPI_PRESETS.map(preset => (
@@ -209,116 +241,59 @@ export function DownloadDropdown({
                 </button>
               ))}
             </div>
-          </div>
-
-          <div className="px-5 py-3 border-b border-zinc-800/60">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2">
-                <Target size={13} className="text-zinc-500" />
-                <label className="text-[11px] font-medium text-zinc-400 uppercase tracking-wider">
-                  Compression
-                </label>
-              </div>
-              <span className="text-xs font-mono text-zinc-300 bg-zinc-800 px-2 py-0.5 rounded-md">
-                {compressionQuality}%
-              </span>
-            </div>
-            <input
-              type="range"
-              min={10}
-              max={100}
-              value={compressionQuality}
-              onChange={(e) => setCompressionQuality(Number(e.target.value))}
-              className="w-full accent-blue-500"
-              style={{ height: '3px' }}
-            />
-            <div className="flex justify-between mt-1.5">
-              <span className="text-[9px] text-zinc-600">Smallest file</span>
-              <span className="text-[9px] text-zinc-600">Best quality</span>
-            </div>
+            <p className="text-[9px] text-zinc-600 mt-2">
+              Downsamples embedded images denser than the selected DPI.
+            </p>
           </div>
 
           <div className="px-5 py-3 border-b border-zinc-800/60">
             <div className="flex items-center gap-2 mb-2">
-              <HardDrive size={13} className="text-zinc-500" />
-              <label className="text-[11px] font-medium text-zinc-400 uppercase tracking-wider">
-                Target File Size
-              </label>
-              <span className="text-[9px] text-zinc-600 ml-auto">Optional</span>
-            </div>
-            <input
-              type="text"
-              value={targetSizeInput}
-              onChange={(e) => setTargetSizeInput(e.target.value)}
-              placeholder="e.g. 5 MB, 500 KB"
-              className="w-full px-3 py-2.5 text-sm bg-zinc-800/60 border border-zinc-700/60 rounded-xl text-zinc-200 placeholder:text-zinc-600 focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500/40 outline-none transition-all duration-200"
-            />
-
-            {targetEstimation && (
-              <div className="mt-3 space-y-2">
-                <div className="relative h-2 bg-zinc-800 rounded-full overflow-hidden">
-                  <div className="absolute inset-0 flex">
-                    <div className="flex-1 bg-gradient-to-r from-emerald-500/60 to-emerald-500/30 rounded-l-full" />
-                    <div className="flex-1 bg-gradient-to-r from-amber-500/30 to-amber-500/60" />
-                    <div className="flex-1 bg-gradient-to-r from-red-500/30 to-red-500/60 rounded-r-full" />
+              <Target size={13} className="text-zinc-500" />
+              <div className="flex items-center gap-1.5">
+                <label className="text-[11px] font-medium text-zinc-400 uppercase tracking-wider">
+                  Compression
+                </label>
+                <div className="group relative flex items-center justify-center">
+                  <Info size={12} className="text-zinc-500 hover:text-zinc-300 cursor-help transition-colors" />
+                  <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 w-56 p-2.5 bg-zinc-800 border border-zinc-700/60 rounded-xl shadow-xl text-[10.5px] text-zinc-300 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-[60] leading-relaxed">
+                    <strong className="text-zinc-100">Compression</strong> shrinks the file size.
+                    <p className="mt-1.5 text-zinc-400">Lower quality makes images smaller but slightly blurrier. We also remove unused fonts to save space.</p>
+                    <div className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 border-[6px] border-transparent border-t-zinc-700/60" />
+                    <div className="absolute -bottom-[5px] left-1/2 -translate-x-1/2 border-[5px] border-transparent border-t-zinc-800" />
                   </div>
-                  {(() => {
-                    const targetBytes = parseFileSize(targetSizeInput);
-                    if (!targetBytes || !sizeEstimation) return null;
-                    const minB = sizeEstimation.minAchievableBytes;
-                    const maxB = sizeEstimation.currentSizeBytes;
-                    const range = maxB - minB;
-                    let pct = range > 0 ? ((targetBytes - minB) / range) * 100 : 50;
-                    pct = Math.max(2, Math.min(98, pct));
-                    return (
-                      <div
-                        className="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full shadow-lg border-2 border-zinc-900 transition-all duration-300"
-                        style={{ left: `${pct}%`, marginLeft: '-6px' }}
-                      />
-                    );
-                  })()}
-                </div>
-
-                <div className="flex justify-between text-[9px] text-zinc-600">
-                  <span>{formatFileSize(sizeEstimation?.minAchievableBytes ?? 0)}</span>
-                  <span>{formatFileSize(sizeEstimation?.currentSizeBytes ?? 0)}</span>
-                </div>
-
-                <div
-                  className={`flex items-start gap-2 p-2.5 rounded-xl text-xs leading-relaxed ${
-                    targetEstimation.zone === 'green'
-                      ? 'bg-emerald-500/8 border border-emerald-500/15 text-emerald-400'
-                      : targetEstimation.zone === 'yellow'
-                        ? 'bg-amber-500/8 border border-amber-500/15 text-amber-400'
-                        : 'bg-red-500/8 border border-red-500/15 text-red-400'
-                  }`}
-                >
-                  {targetEstimation.zone === 'green' ? (
-                    <CheckCircle2 size={14} className="flex-shrink-0 mt-0.5" />
-                  ) : targetEstimation.zone === 'yellow' ? (
-                    <Info size={14} className="flex-shrink-0 mt-0.5" />
-                  ) : (
-                    <AlertTriangle size={14} className="flex-shrink-0 mt-0.5" />
-                  )}
-                  <span>{targetEstimation.message}</span>
                 </div>
               </div>
-            )}
+            </div>
+            <div className="grid grid-cols-4 gap-1.5">
+              {COMPRESSION_PRESETS.map(preset => (
+                <button
+                  key={preset.value}
+                  onClick={() => setCompressionQuality(preset.value)}
+                  className={`px-2 py-2 rounded-lg text-center transition-all duration-200 ${
+                    compressionQuality === preset.value
+                      ? 'bg-blue-500/15 text-blue-400 border border-blue-500/30 ring-1 ring-blue-500/20'
+                      : 'bg-zinc-800/40 text-zinc-500 border border-zinc-800 hover:bg-zinc-800/80 hover:text-zinc-300'
+                  }`}
+                >
+                  <div className="text-xs font-medium">{preset.label}</div>
+                  <div className="text-[9px] opacity-60 mt-0.5">{preset.desc}</div>
+                </button>
+              ))}
+            </div>
           </div>
 
           <div className="px-5 py-3">
+            <p className="text-[10px] text-zinc-500 mb-2 leading-relaxed">
+              Use this button to apply compression. The left “Download” saves without recompressing.
+              Small text PDFs barely shrink; large image/scan PDFs shrink the most.
+            </p>
             <button
-              onClick={() => {
-                handleCompressedDownload();
-                setIsOpen(false);
-              }}
-              disabled={isSaving || targetEstimation?.zone === 'red'}
+              onClick={handleOptionsDownload}
+              disabled={isSaving}
               className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-b from-blue-500 to-blue-600 hover:from-blue-400 hover:to-blue-500 disabled:from-zinc-700 disabled:to-zinc-800 disabled:text-zinc-500 text-white font-medium text-sm rounded-xl shadow-lg shadow-blue-900/25 transition-all duration-200 ease-out active:scale-[0.98]"
             >
               {isSaving ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
-              {targetSizeInput.trim()
-                ? `Download (Target: ${targetSizeInput})`
-                : 'Download PDF'}
+              {`Download (${compressionQuality}% · ${selectedDpi} DPI)`}
             </button>
           </div>
         </div>

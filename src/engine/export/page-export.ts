@@ -1,8 +1,8 @@
 /**
- * Semantic page export — HTML and Markdown serializers.
+ * Semantic page export — Markdown serializer.
  *
  * Builds a logical page model from flow-like line input, then emits
- * standards-friendly HTML or GitHub-flavored Markdown.
+ * GitHub-flavored Markdown.
  */
 
 import type {
@@ -35,7 +35,7 @@ function headingLevel(fontSize: number): number {
 
 /**
  * Construct a semantic page from extracted lines (sorted by reading order).
- * Tables (when provided) become native table blocks — Acrobat/iLovePDF style.
+ * Tables (when provided) become native table blocks.
  */
 export function buildSemanticPage(input: ExportPageInput): SemanticPage {
   const blocks: SemanticBlock[] = [];
@@ -134,123 +134,6 @@ export function buildSemanticPage(input: ExportPageInput): SemanticPage {
   };
 }
 
-// ─── HTML export ─────────────────────────────────────────────────────────────
-
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-function spanToHtml(span: SemanticSpan, opts: ExportOptions): string {
-  let inner = opts.escapeHtml ? escapeHtml(span.text) : span.text;
-  if (span.link) {
-    inner = `<a href="${escapeHtml(span.link)}">${inner}</a>`;
-  }
-  const styles: string[] = [];
-  if (opts.inlineStyles && span.fontSize) styles.push(`font-size:${span.fontSize}pt`);
-  if (span.bold) inner = `<strong>${inner}</strong>`;
-  if (span.italic) inner = `<em>${inner}</em>`;
-  if (styles.length) return `<span style="${styles.join(';')}">${inner}</span>`;
-  return inner;
-}
-
-function blockToHtml(block: SemanticBlock, opts: ExportOptions): string {
-  if (block.kind === 'table' && block.table) {
-    const { rows, cols, cells } = block.table;
-    const grid: (typeof cells[0] | null)[][] = Array.from({ length: rows }, () =>
-      Array.from({ length: cols }, () => null),
-    );
-    for (const cell of cells) {
-      if (cell.row >= 0 && cell.row < rows && cell.col >= 0 && cell.col < cols) {
-        grid[cell.row][cell.col] = cell;
-      }
-    }
-    const rowHtml = grid.map((row, ri) => {
-      const tds = row.map(cell => {
-        const inner = cell
-          ? cell.spans.map(s => spanToHtml(s, opts)).join('')
-          : '';
-        const tag = ri === 0 ? 'th' : 'td';
-        return `<${tag}>${inner}</${tag}>`;
-      }).join('');
-      return `<tr>${tds}</tr>`;
-    }).join('');
-    return `<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:0.75rem 0">${rowHtml}</table>`;
-  }
-
-  const inner = block.spans.map(s => spanToHtml(s, opts)).join('');
-  switch (block.kind) {
-    case 'heading': {
-      const lvl = Math.min(6, Math.max(1, block.level ?? 2));
-      return `<h${lvl}>${inner}</h${lvl}>`;
-    }
-    case 'list-item':
-      return `<li>${inner.replace(/^([\u2022\u25CF\-\*]|\d+\.)\s*/, '')}</li>`;
-    case 'blockquote':
-      return `<blockquote>${inner}</blockquote>`;
-    case 'code':
-      return `<pre><code>${inner}</code></pre>`;
-    default:
-      return `<p>${inner}</p>`;
-  }
-}
-
-/**
- * Export semantic page to HTML fragment or full document.
- */
-export function exportPageToHTML(
-  page: SemanticPage,
-  options: Partial<ExportOptions> = {},
-): string {
-  const opts = { ...DEFAULT_EXPORT_OPTIONS, ...options, title: page.title ?? options.title ?? DEFAULT_EXPORT_OPTIONS.title };
-
-  const ordered = opts.documentWrapper
-    ? page.readingOrder.map(id => page.blocks.find(b => b.id === id)).filter(Boolean) as SemanticBlock[]
-    : page.blocks;
-
-  const bodyParts: string[] = [];
-  let inList = false;
-
-  for (const block of ordered) {
-    if (block.kind === 'list-item') {
-      if (!inList) {
-        bodyParts.push('<ul>');
-        inList = true;
-      }
-      bodyParts.push(blockToHtml(block, opts));
-    } else {
-      if (inList) {
-        bodyParts.push('</ul>');
-        inList = false;
-      }
-      bodyParts.push(blockToHtml(block, opts));
-    }
-  }
-  if (inList) bodyParts.push('</ul>');
-
-  const body = bodyParts.join('\n');
-
-  if (!opts.documentWrapper) return body;
-
-  return [
-    '<!DOCTYPE html>',
-    '<html lang="en">',
-    '<head>',
-    '<meta charset="utf-8">',
-    `<title>${escapeHtml(opts.title)}</title>`,
-    `<meta name="viewport" content="width=device-width, initial-scale=1">`,
-    `<style>body{font-family:system-ui,sans-serif;max-width:${page.width}px;margin:1rem auto;line-height:1.5;}</style>`,
-    '</head>',
-    '<body>',
-    body,
-    '</body>',
-    '</html>',
-  ].join('\n');
-}
-
 // ─── Markdown export ─────────────────────────────────────────────────────────
 
 function blockToMarkdown(block: SemanticBlock, opts: ExportOptions): string {
@@ -311,14 +194,6 @@ export function exportPageToMarkdown(
   }
 
   return parts.join('\n').trimEnd() + '\n';
-}
-
-/** Convenience: build semantic page from line input and export HTML. */
-export function exportInputToHTML(
-  input: ExportPageInput,
-  options?: Partial<ExportOptions>,
-): string {
-  return exportPageToHTML(buildSemanticPage(input), options);
 }
 
 /** Convenience: build semantic page from line input and export Markdown. */

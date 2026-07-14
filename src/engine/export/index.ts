@@ -1,12 +1,10 @@
 /**
- * Document export — semantic page model, HTML and Markdown serializers.
+ * Document export — semantic page model and Markdown serializer.
  */
 
 export {
   buildSemanticPage,
-  exportPageToHTML,
   exportPageToMarkdown,
-  exportInputToHTML,
   exportInputToMarkdown,
   resetExportBlockIdCounter,
 } from './page-export';
@@ -27,4 +25,4 @@ export type {
 
 export { DEFAULT_EXPORT_OPTIONS } from './types';
 
-export { structureToHTML, structureToMarkdown } from './structure-serialize';
+export { structureToMarkdown } from './structure-serialize';

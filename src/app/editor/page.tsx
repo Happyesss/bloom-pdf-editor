@@ -2603,19 +2603,126 @@ export default function EditorPage() {
   }, [router]);
 
   // ── Page Operations ──
+  const refreshAfterPageOp = useCallback((nextDoc: PDFDocumentData, nextCurrentPage?: number) => {
+    setDoc({ ...nextDoc });
+    setTotalPages(nextDoc.pages.length);
+    if (nextCurrentPage != null) {
+      setCurrentPage(Math.max(0, Math.min(nextCurrentPage, nextDoc.pages.length - 1)));
+    } else if (currentPage >= nextDoc.pages.length) {
+      setCurrentPage(Math.max(0, nextDoc.pages.length - 1));
+    }
+    setIsDirty(true);
+    setRenderKey((k) => k + 1);
+    setThumbnailKey((k) => k + 1);
+  }, [currentPage]);
+
+  const downloadPdfBytes = useCallback((bytes: Uint8Array, name: string) => {
+    const blob = new Blob([bytes as unknown as BlobPart], { type: 'application/pdf' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, []);
+
   const handleDeletePage = useCallback((index: number) => {
     if (!doc || !engineRef.current) return;
     try {
       engineRef.current.deletePage(doc, index);
-      setDoc({ ...doc });
-      setTotalPages(doc.pages.length);
-      if (currentPage >= doc.pages.length) {
-        setCurrentPage(Math.max(0, doc.pages.length - 1));
+      let nextPage = currentPage;
+      if (currentPage === index) {
+        nextPage = Math.min(index, doc.pages.length - 1);
+      } else if (currentPage > index) {
+        nextPage = currentPage - 1;
       }
+      refreshAfterPageOp(doc, nextPage);
     } catch (e) {
       setError(`Failed to delete page: ${e instanceof Error ? e.message : String(e)}`);
     }
-  }, [doc, currentPage]);
+  }, [doc, currentPage, refreshAfterPageOp]);
+
+  const handleRotatePage = useCallback((index: number) => {
+    if (!doc || !engineRef.current) return;
+    try {
+      engineRef.current.rotatePageBy(doc, index, 90);
+      refreshAfterPageOp(doc);
+    } catch (e) {
+      setError(`Failed to rotate page: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [doc, refreshAfterPageOp]);
+
+  const handleReorderPages = useCallback((fromIndex: number, toIndex: number) => {
+    if (!doc || !engineRef.current || fromIndex === toIndex) return;
+    try {
+      engineRef.current.movePage(doc, fromIndex, toIndex);
+      let nextPage = currentPage;
+      if (currentPage === fromIndex) {
+        nextPage = toIndex;
+      } else if (fromIndex < toIndex) {
+        if (currentPage > fromIndex && currentPage <= toIndex) nextPage = currentPage - 1;
+      } else if (currentPage >= toIndex && currentPage < fromIndex) {
+        nextPage = currentPage + 1;
+      }
+      refreshAfterPageOp(doc, nextPage);
+    } catch (e) {
+      setError(`Failed to reorder pages: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [doc, currentPage, refreshAfterPageOp]);
+
+  const handleMergePdf = useCallback(async (file: File) => {
+    if (!doc || !engineRef.current) return;
+    try {
+      const buffer = await file.arrayBuffer();
+      const sourceDoc = await engineRef.current.parsePDF(new Uint8Array(buffer));
+      const insertAt = doc.pages.length;
+      engineRef.current.insertPagesFromDocument(doc, sourceDoc, insertAt);
+      refreshAfterPageOp(doc);
+    } catch (e) {
+      setError(`Failed to merge PDF: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [doc, refreshAfterPageOp]);
+
+  const handleSplitCurrentPage = useCallback(async () => {
+    if (!doc || !engineRef.current) return;
+    try {
+      const engine = engineRef.current;
+      const extracted = engine.extractPages(doc, [currentPage]);
+      const bytes = await engine.saveQuick(extracted);
+      const base = (fileName || 'document').replace(/\.pdf$/i, '');
+      downloadPdfBytes(bytes, `${base}-page-${currentPage + 1}.pdf`);
+    } catch (e) {
+      setError(`Failed to split page: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [doc, currentPage, fileName, downloadPdfBytes]);
+
+  const handleSplitAllPages = useCallback(async () => {
+    if (!doc || !engineRef.current) return;
+    if (doc.pages.length < 2) return;
+    const ok = window.confirm(
+      `Download ${doc.pages.length} separate PDF files (one per page)?`,
+    );
+    if (!ok) return;
+    try {
+      const engine = engineRef.current;
+      const base = (fileName || 'document').replace(/\.pdf$/i, '');
+      for (let i = 0; i < doc.pages.length; i++) {
+        const extracted = engine.extractPages(doc, [i]);
+        const bytes = await engine.saveQuick(extracted);
+        downloadPdfBytes(bytes, `${base}-page-${i + 1}.pdf`);
+        // Brief pause so the browser doesn't coalesce / block downloads
+        await new Promise((r) => setTimeout(r, 120));
+      }
+    } catch (e) {
+      setError(`Failed to split pages: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [doc, fileName, downloadPdfBytes]);
+
+  const handleRemoveCurrentPage = useCallback(() => {
+    if (!doc || doc.pages.length <= 1) return;
+    if (!window.confirm(`Remove page ${currentPage + 1}?`)) return;
+    handleDeletePage(currentPage);
+  }, [doc, currentPage, handleDeletePage]);
 
   const handleDeleteSelectedDisplayItem = useCallback(async () => {
     if (!doc || !engineRef.current || !selectedDisplayItem) return;
@@ -2670,15 +2777,12 @@ export default function EditorPage() {
     if (!doc || !engineRef.current) return;
     try {
       engineRef.current.insertBlankPage(doc, index);
-      setDoc({ ...doc });
-      setTotalPages(doc.pages.length);
-      if (currentPage >= index) {
-        setCurrentPage(currentPage + 1);
-      }
+      const nextPage = currentPage >= index ? currentPage + 1 : currentPage;
+      refreshAfterPageOp(doc, nextPage);
     } catch (e) {
       setError(`Failed to insert blank page: ${e instanceof Error ? e.message : String(e)}`);
     }
-  }, [doc, currentPage]);
+  }, [doc, currentPage, refreshAfterPageOp]);
 
   const handleInsertPdf = useCallback(async (index: number, file: File) => {
     if (!doc || !engineRef.current) return;
@@ -2686,15 +2790,12 @@ export default function EditorPage() {
       const buffer = await file.arrayBuffer();
       const sourceDoc = await engineRef.current.parsePDF(new Uint8Array(buffer));
       engineRef.current.insertPagesFromDocument(doc, sourceDoc, index);
-      setDoc({ ...doc });
-      setTotalPages(doc.pages.length);
-      if (currentPage >= index) {
-        setCurrentPage(currentPage + sourceDoc.pages.length);
-      }
+      const nextPage = currentPage >= index ? currentPage + sourceDoc.pages.length : currentPage;
+      refreshAfterPageOp(doc, nextPage);
     } catch (e) {
       setError(`Failed to insert PDF: ${e instanceof Error ? e.message : String(e)}`);
     }
-  }, [doc, currentPage]);
+  }, [doc, currentPage, refreshAfterPageOp]);
 
 
   // ── Keyboard shortcuts (global — NOT during editing) ──
@@ -3660,6 +3761,12 @@ export default function EditorPage() {
           onDeletePage={handleDeletePage}
           onInsertBlankPage={handleInsertBlankPage}
           onInsertPdf={handleInsertPdf}
+          onRotatePage={handleRotatePage}
+          onReorderPages={handleReorderPages}
+          onMergePdf={handleMergePdf}
+          onSplitCurrentPage={handleSplitCurrentPage}
+          onSplitAllPages={handleSplitAllPages}
+          onRemoveCurrentPage={handleRemoveCurrentPage}
         />
       </div>
 

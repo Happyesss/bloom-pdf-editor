@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { parsePDF, getPageContentBytes } from '../parser/parser';
 import { interpretPage } from '../content/interpreter';
 import { buildDocumentFlow } from '../flow';
-import { buildSemanticPage, exportPageToHTML } from '../export/page-export';
+import { buildSemanticPage, exportPageToMarkdown } from '../export/page-export';
 import { parseAcroFormCatalog, detectFormFieldsOnPage } from '../forms/detect-fields';
 import { parseSoftMask, effectiveAlpha } from '../render/soft-mask';
 import { parseTilingPattern, isPatternColorSpace } from '../render/patterns';
@@ -123,7 +123,7 @@ describe('integration roundtrip', () => {
     expect(interpreted.displayList).toBeDefined();
   });
 
-  it('flow → export produces HTML from text runs', () => {
+  it('flow → export produces Markdown from text runs', () => {
     const runs = [mockTextRun('Hello PDF')];
     const flow = buildDocumentFlow(runs);
     expect(flow.lines.length).toBeGreaterThan(0);
@@ -143,8 +143,8 @@ describe('integration roundtrip', () => {
         italic: false,
       })),
     });
-    const html = exportPageToHTML(semantic);
-    expect(html).toContain('Hello');
+    const md = exportPageToMarkdown(semantic);
+    expect(md).toContain('Hello');
   });
 
   it('detects AcroForm widgets on page', () => {

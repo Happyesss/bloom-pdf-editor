@@ -1,167 +1,123 @@
-# PDF → DOCX Export Engine — Phase-by-Phase Build Plan
-### Pure TypeScript, built on top of your existing PDF parsing/rendering engine
+# PDF → DOCX Export — How Platforms Actually Do It
+
+This replaces the earlier phase plan. That plan assumed a single “rebuild paragraphs then dump to Word” pipeline. Real products (Adobe Acrobat, iLovePDF, Sejda, pdf2docx, BuildVu-class tools) expose **two different layout models**, because PDF and DOCX solve different problems.
 
 ---
 
-## Prerequisites (you already have these)
-- Custom PDF parser / object model
-- Content stream interpreter (used for canvas rendering)
-- Font parsing (TrueType/CMap) — glyph → Unicode mapping
-- Image XObject decoding (FlateDecode/DCTDecode → raw pixel/PNG/JPEG bytes)
+## The core mismatch (why conversion is hard)
 
-These are reused, not rebuilt, for export. The export engine is a **new consumer** of your existing extraction layer, not a replacement for it.
+| | PDF | Word (.docx) |
+|---|---|---|
+| Model | Fixed / presentation | Reflowable / document |
+| Placement | Absolute (x, y) on a page | Flow: paragraphs, sections, tables |
+| Structure | Usually absent (untagged) | Explicit styles + numbering |
 
----
+Almost every “looks perfect but won’t edit” Word export is **fixed layout**.  
+Almost every “edits nicely but layout drifts” export is **reflow / flowing text**.
 
-## Phase 0 — Scoping & Data Contracts
-**Goal:** Define the interfaces before writing logic, so every later phase has a stable contract to build against.
+Adobe names these explicitly:
 
-- Define `PositionedGlyph` (output of your content-stream interpreter, per glyph or per `Tj`/`TJ` run)
-- Define the `ExtractedDocument` model (`Block`, `ParagraphBlock`, `HeadingBlock`, `TableBlock`, `ImageBlock`, `ListBlock`, `TextRun`)
-- Decide scope for v1: single-column, no tables, no OCR (scanned PDFs out of scope initially)
+- **Retain Page Layout** → text boxes at PDF coordinates (visual fidelity, poor editability)
+- **Retain Flowing Text** → reconstructed paragraphs/tables (editable, layout inference errors)
 
-**Exit criteria:** Types compile, no logic yet. You can describe any test PDF's expected output using only these types.
+iLovePDF / Sejda-style tools offer the same trade-off under names like “exact layout” vs “editable / flow”.
 
----
-
-## Phase 1 — Glyph Extraction Layer
-**Goal:** Flatten a page's content stream into a list of positioned, styled glyphs.
-
-- Walk content stream operators, tracking graphics state (`CTM`, `Tm`, `Tf`, `Tc`, `Tw`, fill color)
-- On `Tj`/`TJ`, resolve each character via the font's CMap/encoding to get Unicode text
-- Apply `Tm × CTM` to get final `(x, y)` in page space for each glyph/run
-- Record `fontSize`, `fontFamily`, `bold`/`italic` (from font descriptor flags or subfamily name), `color`
-
-**Exit criteria:** For a simple single-paragraph test PDF, you can dump a JSON array of glyphs with correct text, position, and style — verified by eye against the rendered canvas output.
+There is no one pipeline that is both pixel-perfect and fully editable. Quality products pick a mode (or offer both).
 
 ---
 
-## Phase 2 — Line Grouping
-**Goal:** Cluster glyphs into words, then words into lines.
+## Mode A — Fixed layout (“keep page layout”)
 
-- Word grouping: merge glyphs where horizontal gap < threshold (relative to font size/space-width)
-- Line grouping: merge words whose baseline `y` values fall within a tolerance band (handles slight sub-pixel variance)
-- Sort lines top-to-bottom (descending `y`), sort words within a line left-to-right (ascending `x`)
+**What platforms do**
 
-**Exit criteria:** A multi-line paragraph PDF produces correctly ordered, correctly split lines — test against PDFs with varying font sizes on the same page.
+1. Extract positioned text runs (and images) from content streams.
+2. Optionally rasterize the page as a background for graphics that aren’t text.
+3. Emit each run as an absolutely positioned Word **textbox** (`w:txbxContent` / floating shapes), matching PDF left/top/width.
+4. Do **not** try hard to merge into flowing paragraphs.
 
----
+**When to use:** resumes, posters, forms, marketing one-pagers where visual match matters more than editing.
 
-## Phase 3 — Paragraph & Heading Detection
-**Goal:** Group lines into paragraphs; classify some as headings.
+**Cost:** Easy to implement; ugly editing experience (one box per fragment).
 
-- Compute line-to-line vertical gap; gap ≈ normal line-height → same paragraph, larger gap → new paragraph
-- Also break paragraphs on left-indent change or font-family/size change mid-block
-- Compute median body font-size across the document; lines significantly larger/bolder → heading candidates (bucket into H1/H2/H3 by relative size)
-- Preserve inline style runs (bold/italic mid-line) as separate `TextRun`s within a paragraph — don't flatten to one string
-
-**Exit criteria:** A test PDF with a title, subheadings, and body paragraphs is correctly split into `HeadingBlock`s and `ParagraphBlock`s with accurate levels.
+**Our stack mapping:** `docx` package `TextBox` + page size from MediaBox; glyph/line extraction from the existing interpreter. Background page image optional for vector art.
 
 ---
 
-## Phase 4 — Reading Order & Multi-Column Support
-**Goal:** Handle non-trivial page layouts correctly.
+## Mode B — Reflow / flowing text (what Acrobat prefers for editability)
 
-- Cluster lines by `x`-start position across the page to detect column boundaries
-- If ≥2 stable x-clusters with a consistent gap exist → treat as multi-column; process each column top-to-bottom before moving to the next
-- Handle headers/footers as a special case (thin bands at top/bottom, often repeated across pages) — exclude from body flow or tag separately
+**What platforms do**
 
-**Exit criteria:** A 2-column test PDF reads in correct logical order (full left column, then right column) instead of interleaving lines.
+1. **Glyph / run extraction** — Unicode + font size/style + final page-space coords (`Tm × CTM`).
+2. **Line grouping** — cluster by baseline Y tolerance; sort X within line.
+3. **Block reconstruction** — paragraph breaks from vertical gaps + indent changes; headings from relative font size/weight; lists from bullet/number markers at shared indent.
+4. **Reading order** — column detection (stable X clusters) before interleaving lines left-to-right across the page.
+5. **Tables** — either ruling-line grids or alignment columns; emit real `w:tbl`, not stacked textboxes.
+6. **Images** — XObject decode + place relative to surrounding blocks (or anchored).
+7. **Headers/footers** — repeated top/bottom bands stripped or tagged separately.
+8. **Serialize** — map blocks to Word paragraphs, styles, numbering, tables, drawings.
 
----
+Tagged PDF / structure tree (when present) is the gold path (Acrobat “Derivation”-style). Most uploaded PDFs are **untagged**, so heuristics (and increasingly ML layout models) fill the gap — same reason PDFix/ComPDF advertise AI layout recognition.
 
-## Phase 5 — Image Extraction & Placement
-**Goal:** Place images from your existing XObject decoder into the document model.
+**When to use:** reports, articles, contracts the user will edit in Word.
 
-- Reuse your existing image decoding (already needed for canvas rendering)
-- Record bounding box per image; decide inline vs. anchored placement based on how much text surrounds it
-- Insert `ImageBlock`s into the block stream at the correct position relative to surrounding text (by `y` position)
+**Cost:** Hard; quality comes from years of fixtures, not a perfect first design.
 
-**Exit criteria:** A PDF with an inline image and a full-width image both export with images in roughly correct position and size.
-
----
-
-## Phase 6 — Table Detection
-**Goal:** The highest-effort phase — detect and reconstruct tabular data. Build last, iterate longest.
-
-- **Ruling-line based:** detect horizontal/vertical stroking operators forming a grid; snap text blocks into resulting cells
-- **Alignment based** (no visible borders): detect repeated, consistent x-start positions across multiple consecutive lines → implies columns; assign each text run to a column/row
-- Merge multi-line cell content into single `TableCell.blocks`
-- Handle merged cells (colSpan/rowSpan) as a stretch goal — skip for v1, flag as known limitation
-
-**Exit criteria:** A simple bordered table (fixed columns, single-line cells) round-trips correctly. Complex tables (merged cells, nested tables) are explicitly out of scope for v1.
+**Our stack mapping:** `src/engine/docx-export/` (glyphs → lines → structure → assemble → `serializeToDocx`). This is Mode B.
 
 ---
 
-## Phase 7 — List Detection
-**Goal:** Recognize bulleted/numbered lists instead of exporting them as plain paragraphs.
+## What the old MD got wrong
 
-- Detect leading glyphs matching bullet characters (•, -, ●) or numbering patterns (`1.`, `a)`, roman numerals) at consistent left-indent
-- Group consecutive matching lines into a `ListBlock`, strip the marker from the text run
-
-**Exit criteria:** A bulleted and a numbered list both export as real Word list elements, not plain paragraphs with visible bullet characters.
-
----
-
-## Phase 8 — Document Assembly
-**Goal:** Combine per-page blocks into one coherent `ExtractedDocument`.
-
-- Decide: per-page grouping (simpler, paragraphs can split across page breaks) vs. whole-document glyph stream before grouping (handles cross-page paragraphs, more complex)
-- Recommended: start per-page for v1, document the page-break limitation, revisit later
-- Strip detected headers/footers from body flow (from Phase 4)
-
-**Exit criteria:** A multi-page test PDF produces one `ExtractedDocument` with correct page-to-page flow (accepting the page-break paragraph-split limitation for v1).
+- Treated Mode B as the only story and never named Mode A.
+- Claimed iLovePDF/Sejda quality from a linear phase checklist — those products ship **mode choice** + heavy iteration on real docs.
+- Suggested “get DOCX serialization early” without deciding which Word layout model you are targeting (textbox vs paragraph flow). Mixing both without a mode flag produces confusing output.
+- Under-specified: tagged-PDF path, header/footer, and that table detection is a separate research problem from paragraph grouping.
 
 ---
 
-## Phase 9 — DOCX Serialization
-**Goal:** Convert `ExtractedDocument` into an actual `.docx` file.
+## Recommended product stance for this editor
 
-- Map `HeadingBlock` → `docx` package `Heading1`/`Heading2`/etc.
-- Map `ParagraphBlock` → `Paragraph` with multiple `TextRun`s carrying bold/italic/size/color
-- Map `TableBlock` → `Table`/`TableRow`/`TableCell`
-- Map `ImageBlock` → `ImageRun` with correct sizing (convert PDF points → EMU/pixels as required by the `docx` package)
-- Map `ListBlock` → numbering/bullet paragraph properties
+Ship **Mode B (flowing)** as the default Word export (matches current `docx-export/` code).
 
-**Exit criteria:** Full pipeline PDF → `ExtractedDocument` → `.docx` produces a file that opens cleanly in Word/LibreOffice with correct text, styles, and basic layout.
+Optionally add **Mode A (fixed)** later as “Exact layout” — textboxes + optional page background — for users who need visual match.
 
----
+Do **not** invent a third hybrid until both modes are solid; ComPDF-style hybrids still start from this same split.
 
-## Phase 10 — Test Harness & Regression Suite
-**Goal:** Prevent regressions as you keep improving heuristics (this matters more than usual since it's all heuristic-based).
-
-- Build a fixture set: simple text, headings, 2-column, table, image, list, mixed — one PDF per case
-- Snapshot-test the `ExtractedDocument` JSON output per fixture (not just the final .docx — easier to diff and debug)
-- Add real-world PDFs as they break in production; each bug report becomes a new fixture
-
-**Exit criteria:** CI runs the full fixture set on every change; you can see exactly which layout case broke.
+Out of scope until Mode B is strong: OCR-only scans (needs OCR layer first), complex merged cells, full font embedding parity.
 
 ---
 
-## Phase 11 — Iteration Loop (ongoing, no exit criteria)
-This is where actual quality comes from — not the initial build.
+## Build order (Mode B) — aligned to real converters
 
-- Collect failing real-world PDFs from users
-- For each: identify which phase's heuristic is wrong (bad line-gap threshold? bad column detection? bad table grid?)
-- Add as a regression fixture, fix, re-run suite
-- This is literally how iLovePDF/Sejda-quality output is achieved — thousands of iterations on real documents, not a perfect initial design
+| Priority | Work | Why platforms do this first |
+|---|---|---|
+| 1 | Contracts: glyphs, lines, blocks, document | Stable intermediate (pdf2docx / Acrobat both reason about structure, not only bytes) |
+| 2 | Glyph extraction via existing interpreter | Reuse paint pipeline; don’t re-parse PDF |
+| 3 | Line + word grouping | Prerequisite for everything else |
+| 4 | Paragraph + heading heuristics | Smallest end-to-end editable Word |
+| 5 | DOCX serialize (paragraphs only) | Validate open-in-Word early |
+| 6 | Images | High user visibility, moderate difficulty |
+| 7 | Columns + reading order | Fixes “interleaved columns” class of bugs |
+| 8 | Lists | Cheap once paragraphs work |
+| 9 | Tables (rulings, then alignment) | Hardest; iterate longest |
+| 10 | Multi-page assembly + header/footer | Cross-page polish |
+| 11 | Fixture / snapshot suite | How Sejda/iLovePDF-level quality is maintained |
 
 ---
 
-## Suggested Build Order Summary
+## Exit criteria (per mode)
 
-| Priority | Phase | Effort | Depends on |
-|---|---|---|---|
-| 1 | 0 – Data contracts | Low | — |
-| 2 | 1 – Glyph extraction | Medium | Your existing content stream interpreter |
-| 3 | 2 – Line grouping | Medium | Phase 1 |
-| 4 | 3 – Paragraph/heading detection | Medium | Phase 2 |
-| 5 | 9 – Basic DOCX output (text-only) | Low | Phase 3 (get end-to-end working early!) |
-| 6 | 5 – Images | Low-Medium | Existing image decoder |
-| 7 | 4 – Multi-column | Medium-High | Phase 2 |
-| 8 | 7 – Lists | Low-Medium | Phase 3 |
-| 9 | 6 – Tables | High | Phase 2, 4 |
-| 10 | 8 – Multi-page assembly | Medium | All above |
-| 11 | 10 – Test harness | Medium | Should start alongside Phase 1, not after |
+**Mode A:** Side-by-side PDF vs DOCX look nearly identical at 100% zoom; text still selectable; editing may be painful.
 
-**Key advice:** Get Phase 9 (basic DOCX output) working right after Phase 3, even before columns/tables/images. A thin end-to-end pipeline (simple text PDF → readable DOCX) validated early is worth more than a fully-featured pipeline that's never been run end-to-end.
+**Mode B:** Simple single-column PDF opens in Word as real paragraphs; headings are Heading styles; a simple bordered table is a Word table; 2-column sample reads left column then right.
+
+**Regression:** Every fixed bug becomes a fixture PDF + expected structure JSON (not only a binary .docx snapshot).
+
+---
+
+## References (behavioral, not copied code)
+
+- Adobe Acrobat: Retain Page Layout vs Retain Flowing Text
+- iLovePDF / Sejda: exact vs editable layout product options
+- Industry write-ups on fixed vs reflowable PDF→Word (ComPDF, Acrobat user forums on textbox exports)
+- Open-source analogues: pdf2docx (reflow), PyMuPDF textbox dumps (fixed)

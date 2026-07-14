@@ -392,9 +392,7 @@ export type { ProjectionProfile, LayoutRegion, PageLayout } from './ocr';
 // ── Export (Phase 8) ──
 export {
   buildSemanticPage,
-  exportPageToHTML,
   exportPageToMarkdown,
-  structureToHTML,
   structureToMarkdown,
 } from './export';
 export type {

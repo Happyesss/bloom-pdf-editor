@@ -1,5 +1,5 @@
 /**
- * Semantic export model — structured page content for HTML/Markdown conversion.
+ * Semantic export model — structured page content for Markdown conversion.
  */
 
 /** Inline text styling preserved from PDF runs. */
@@ -38,7 +38,7 @@ export interface SemanticBlock {
   listMarker?: string;
   /** Nested blocks (e.g. row/cell hierarchy — optional). */
   children?: SemanticBlock[];
-  /** Native table grid when kind === 'table' (Acrobat/iLovePDF-style). */
+  /** Native table grid when kind === 'table'. */
   table?: SemanticTableData;
 }
 
@@ -70,23 +70,14 @@ export interface SemanticPage {
 }
 
 export interface ExportOptions {
-  /** Include inline style attributes in HTML. */
-  inlineStyles: boolean;
-  /** Wrap output in full HTML document shell. */
-  documentWrapper: boolean;
-  /** Page title for HTML <title>. */
+  /** Page title for document header. */
   title: string;
-  /** Escape HTML entities (always true for safe output). */
-  escapeHtml: boolean;
   /** Markdown heading style: 'atx' (#) or 'setext' (underline). */
   markdownHeadingStyle: 'atx' | 'setext';
 }
 
 export const DEFAULT_EXPORT_OPTIONS: ExportOptions = {
-  inlineStyles: true,
-  documentWrapper: true,
   title: 'Exported Page',
-  escapeHtml: true,
   markdownHeadingStyle: 'atx',
 };
 

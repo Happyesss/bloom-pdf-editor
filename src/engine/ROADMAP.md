@@ -1,7 +1,7 @@
 # PDF Engine — Master Roadmap
 
 Dependency-free TypeScript PDF engine targeting Adobe Acrobat parity.
-See `implimentation.txt` for the full multi-agent development contract.
+See `implimentation.md` for PDF→DOCX modes (fixed layout vs flowing text) and how platforms implement them.
 
 ## Phase Status
 

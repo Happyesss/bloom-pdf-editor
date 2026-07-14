@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   buildSemanticPage,
-  exportPageToHTML,
   exportPageToMarkdown,
   resetExportBlockIdCounter,
 } from '../export/page-export';
@@ -53,16 +52,6 @@ describe('export tables', () => {
     expect(page.blocks[1].table?.rows).toBe(3);
     expect(page.blocks[1].table?.cols).toBe(4);
     expect(page.blocks[2].text).toContain('PROFESSIONAL');
-  });
-
-  it('emits HTML <table> instead of stacked paragraphs', () => {
-    const page = buildSemanticPage(input);
-    const html = exportPageToHTML(page, { documentWrapper: false });
-    expect(html).toContain('<table');
-    expect(html).toContain('<th>');
-    expect(html).toContain('Course');
-    expect(html).toContain('CA Final');
-    expect(html).not.toMatch(/<p>Course<\/p>\s*<p>Year<\/p>/);
   });
 
   it('emits a markdown pipe table', () => {

@@ -4,7 +4,6 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
   X,
   FileText,
-  Globe,
   FileCode,
   Image as ImageIcon,
   Camera,
@@ -30,7 +29,6 @@ import {
 
 const FORMAT_ICONS: Record<ExportFormat, React.ReactNode> = {
   docx: <FileText size={22} />,
-  html: <Globe size={22} />,
   markdown: <FileCode size={22} />,
   png: <ImageIcon size={22} />,
   jpeg: <Camera size={22} />,
@@ -40,7 +38,6 @@ const FORMAT_ICONS: Record<ExportFormat, React.ReactNode> = {
 
 const FORMAT_GRADIENTS: Record<ExportFormat, string> = {
   docx: 'from-blue-500/20 to-blue-600/5',
-  html: 'from-orange-500/20 to-orange-600/5',
   markdown: 'from-emerald-500/20 to-emerald-600/5',
   png: 'from-purple-500/20 to-purple-600/5',
   jpeg: 'from-pink-500/20 to-pink-600/5',
@@ -50,7 +47,6 @@ const FORMAT_GRADIENTS: Record<ExportFormat, string> = {
 
 const FORMAT_ACCENT: Record<ExportFormat, string> = {
   docx: 'text-blue-400',
-  html: 'text-orange-400',
   markdown: 'text-emerald-400',
   png: 'text-purple-400',
   jpeg: 'text-pink-400',
@@ -60,7 +56,6 @@ const FORMAT_ACCENT: Record<ExportFormat, string> = {
 
 const FORMAT_RING: Record<ExportFormat, string> = {
   docx: 'ring-blue-500/40',
-  html: 'ring-orange-500/40',
   markdown: 'ring-emerald-500/40',
   png: 'ring-purple-500/40',
   jpeg: 'ring-pink-500/40',

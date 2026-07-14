@@ -60,7 +60,7 @@ export async function extractImages(
     const decoded = await Engine.decodeImage(stream, objects);
     if (!decoded) continue;
 
-    // Skip near-full-page images (backgrounds / scans) — HTML exact mode
+    // Skip near-full-page images (backgrounds / scans)
     // already positions text; full-page rasters bloat the file.
     if (item.width >= page.mediaBox.width * 0.9 && item.height >= page.mediaBox.height * 0.9) {
       continue;

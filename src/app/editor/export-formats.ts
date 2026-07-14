@@ -1,20 +1,19 @@
 /**
  * Client-side export logic for all formats.
  *
- * Uses the `docx` npm library for high-fidelity Word export with absolute
- * text positioning via Textbox elements (the same technique used by
- * professional tools like iLovePDF and Sejda).
+ * DOCX uses the engine's flowing-text pipeline (`exportToDocx`) — reconstructed
+ * paragraphs/tables, not absolute textboxes. See `implimentation.md` for how
+ * that maps to Acrobat/iLovePDF layout modes.
  *
  * Image exports (PNG/JPEG/SVG) render each page through the engine's
  * canvas renderer at the requested DPI for pixel-perfect output.
  */
 
-import type { PDFDocumentData, ExportPageInput, TextLine } from '@/engine';
-import type { TextRun as EngineTextRun } from '@/engine';
+import type { PDFDocumentData } from '@/engine';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
-export type ExportFormat = 'png' | 'jpeg' | 'svg' | 'html' | 'markdown' | 'txt' | 'docx';
+export type ExportFormat = 'png' | 'jpeg' | 'svg' | 'markdown' | 'txt' | 'docx';
 
 export interface ExportFormatInfo {
   id: ExportFormat;
@@ -36,17 +35,6 @@ export const EXPORT_FORMATS: ExportFormatInfo[] = [
     extension: '.docx',
     icon: '📄',
     mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    supportsQuality: false,
-    supportsDpi: false,
-    supportsPageRange: true,
-  },
-  {
-    id: 'html',
-    label: 'HTML',
-    description: 'Exact-layout HTML with text, images, headings & tables',
-    extension: '.html',
-    icon: '🌐',
-    mimeType: 'text/html',
     supportsQuality: false,
     supportsDpi: false,
     supportsPageRange: true,
@@ -269,156 +257,7 @@ export async function exportToSVG(
   };
 }
 
-// ─── Text-based Exports (HTML, Markdown, TXT) ──────────────────────────────────
-
-function buildExportInput(
-  doc: PDFDocumentData,
-  pageIndex: number,
-  engine: typeof import('@/engine'),
-): ExportPageInput {
-  const page = doc.pages[pageIndex];
-  const mediaBox = page.mediaBox;
-  const pageWidth = mediaBox.width;
-  const pageHeight = mediaBox.height;
-
-  const contentBytes = engine.getPageContentBytes(page, doc.objects);
-  const interpreted = engine.interpretPage(contentBytes, page, doc.objects);
-  const flow = engine.buildDocumentFlow(interpreted.textRuns);
-
-  const lines = flow.lines.map((line: TextLine) => ({
-    text: line.text,
-    x: line.x,
-    y: line.y,
-    width: line.width,
-    height: line.height,
-    fontSize: line.fontSize || line.runs[0]?.fontSize || 12,
-    bold: line.runs[0]?.fontName?.toLowerCase().includes('bold') ?? false,
-    italic: line.runs[0]?.fontName?.toLowerCase().includes('italic') ?? false,
-  }));
-
-  return {
-    pageIndex,
-    width: pageWidth,
-    height: pageHeight,
-    lines,
-    title: doc.info?.title,
-  };
-}
-
-function escapeXml(str: string): string {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
-}
-
-/** Absolute-positioned HTML for one page (visual fidelity). */
-function linesToPositionedHtml(
-  input: ExportPageInput,
-  pageLabel: string,
-): string {
-  const items = input.lines
-    .filter(l => l.text.trim().length > 0)
-    .map(line => {
-      // PDF y-up → CSS y-down
-      const top = input.height - line.y - line.height;
-      const fontWeight = line.bold ? 'bold' : 'normal';
-      const fontStyle = line.italic ? 'italic' : 'normal';
-      const size = Math.max(6, line.fontSize || 12);
-      return `<div class="pdf-line" style="left:${line.x.toFixed(1)}px;top:${top.toFixed(1)}px;width:${Math.max(line.width, 4).toFixed(1)}px;font-size:${size.toFixed(1)}px;font-weight:${fontWeight};font-style:${fontStyle};line-height:1.15;">${escapeXml(line.text)}</div>`;
-    })
-    .join('\n');
-
-  return `<section class="pdf-page" data-page="${pageLabel}" style="position:relative;width:${input.width}px;height:${input.height}px;margin:0 auto 2rem;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.12);overflow:hidden;">
-${items}
-</section>`;
-}
-
-async function renderPageDataUrl(
-  doc: PDFDocumentData,
-  pageIndex: number,
-  engine: typeof import('@/engine'),
-  dpi: number = 120,
-): Promise<string | null> {
-  try {
-    const scale = dpi / 72;
-    const result = await engine.renderPage(doc, pageIndex, { scale });
-    return result.canvas.toDataURL('image/jpeg', 0.85);
-  } catch {
-    return null;
-  }
-}
-
-export async function exportToHTML(
-  doc: PDFDocumentData,
-  engine: typeof import('@/engine'),
-  options: ExportOptions,
-  onProgress?: (current: number, total: number) => void,
-): Promise<ExportResult> {
-  try {
-    const { assembledPages } = await engine.exportToStructure(doc, {
-      title: options.title,
-      pages: options.pages ?? undefined,
-      onProgress,
-    });
-
-    const extracted = {
-      title: options.title,
-      pages: assembledPages,
-    };
-
-    // Exact layout (absolute CSS) — same idea as iLovePDF "Exact Layout"
-    let html = engine.structureToHTML(extracted, 'exact');
-
-    // If structure produced almost no content, fall back to raster pages
-    const textish = assembledPages.reduce((n, p) => {
-      return n + p.blocks.filter(b => b.type !== 'image').length;
-    }, 0);
-
-    if (textish === 0 && assembledPages.every(p => p.blocks.length === 0)) {
-      const sections: string[] = [];
-      const pages = options.pages ?? Array.from({ length: doc.pages.length }, (_, i) => i);
-      for (let i = 0; i < pages.length; i++) {
-        const dataUrl = await renderPageDataUrl(doc, pages[i], engine, Math.min(options.dpi || 120, 150));
-        const label = String(pages[i] + 1);
-        if (dataUrl) {
-          const page = doc.pages[pages[i]];
-          sections.push(`<section class="pdf-page" data-page="${label}" style="margin:0 auto 2rem;text-align:center;">
-<img src="${dataUrl}" alt="Page ${label}" width="${page.mediaBox.width}" style="max-width:100%;height:auto;" />
-</section>`);
-        }
-        onProgress?.(i + 1, pages.length);
-      }
-      html = `<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><title>${escapeXml(options.title)}</title></head>
-<body style="margin:0;padding:1.5rem;background:#f4f4f5;">${sections.join('\n')}</body></html>`;
-    }
-
-    return {
-      blob: new Blob([html], { type: 'text/html;charset=utf-8' }),
-      filename: `${options.title}.html`,
-      mimeType: 'text/html',
-    };
-  } catch (err) {
-    console.error('[Export HTML] Structure export failed, using plain fallback:', err);
-    // Last-resort: plain text wrapped in HTML
-    const pages = options.pages ?? Array.from({ length: doc.pages.length }, (_, i) => i);
-    const parts: string[] = [];
-    for (let i = 0; i < pages.length; i++) {
-      const plain = engine.extractPagePlainText(doc, pages[i]);
-      parts.push(`<section><h2>Page ${pages[i] + 1}</h2><pre style="white-space:pre-wrap;">${escapeXml(plain)}</pre></section>`);
-      onProgress?.(i + 1, pages.length);
-    }
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeXml(options.title)}</title></head><body>${parts.join('\n')}</body></html>`;
-    return {
-      blob: new Blob([html], { type: 'text/html;charset=utf-8' }),
-      filename: `${options.title}.html`,
-      mimeType: 'text/html',
-    };
-  }
-}
+// ─── Text-based Exports (Markdown, TXT) ────────────────────────────────────────
 
 export async function exportToMarkdown(
   doc: PDFDocumentData,
@@ -498,90 +337,7 @@ export async function exportToPlainText(
   };
 }
 
-// ─── DOCX Export (via `docx` library with absolute positioning) ─────────────────
-//
-// Strategy (same as iLovePDF/Sejda "keep layout" mode):
-// 1. Extract text lines + images from the PDF via the flow engine
-// 2. For each page, render a background image of the full page
-// 3. Place each text run as a Textbox with absolute positioning
-//    (position, left, top, width, height) matching its PDF coordinates
-// 4. This preserves the exact visual layout — fonts, positions, spacing
-//
-// We also render each page as a high-res background image embedded via
-// ImageRun to preserve vector graphics, shapes, charts, and images.
-
-/**
- * Convert PDF points to a CSS-like dimension string for the docx library.
- * The docx library's Textbox accepts LengthUnit which can be "Xpt".
- */
-function ptUnit(pts: number): `${number}pt` {
-  return `${Math.round(pts * 100) / 100}pt` as `${number}pt`;
-}
-
-/**
- * Render a full page to a PNG Uint8Array for embedding as background.
- */
-async function renderPageToBytes(
-  doc: PDFDocumentData,
-  pageIndex: number,
-  engine: typeof import('@/engine'),
-  dpi: number = 150,
-): Promise<{ data: Uint8Array; widthPx: number; heightPx: number }> {
-  const page = doc.pages[pageIndex];
-  const mediaBox = page.mediaBox;
-  const pageWidth = mediaBox.width;
-  const pageHeight = mediaBox.height;
-  const scale = dpi / 72;
-
-  // Use engine.renderPage which returns a RenderResult with a canvas
-  const result = await engine.renderPage(doc, pageIndex, { scale });
-  const canvas = result.canvas;
-
-  const blob = await new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob(
-      (b) => b ? resolve(b) : reject(new Error('toBlob failed')),
-      'image/png',
-    );
-  });
-
-  return {
-    data: new Uint8Array(await blob.arrayBuffer()),
-    widthPx: canvas.width,
-    heightPx: canvas.height,
-  };
-}
-
-/**
- * Detect font style flags from a run's fontName.
- */
-function detectFontFlags(fontName: string): { bold: boolean; italic: boolean } {
-  const lower = fontName.toLowerCase();
-  return {
-    bold: /bold|black|heavy|semibold|demibold/.test(lower),
-    italic: /italic|oblique/.test(lower),
-  };
-}
-
-/**
- * Extract a clean font family from a PDF font name (strip subset prefix, style suffixes).
- */
-function cleanFontFamily(fontName: string): string {
-  // Remove subset prefix like ABCDEF+
-  let name = fontName.replace(/^[A-Z]{6}\+/, '');
-  // Remove common style suffixes
-  name = name.replace(/[-,](Bold|Italic|BoldItalic|Regular|Light|Medium|Thin|Heavy|Black|SemiBold|ExtraBold|Condensed|Oblique)$/i, '');
-  // Remove hyphens that are separators
-  name = name.replace(/-$/, '');
-  return name || 'Calibri';
-}
-
-/**
- * Map a PDF color (r,g,b in 0-1) to a hex string.
- */
-function rgbToHex(r: number, g: number, b: number): string {
-  const toHex = (v: number) => Math.round(Math.min(1, Math.max(0, v)) * 255).toString(16).padStart(2, '0');
-  return `${toHex(r)}${toHex(g)}${toHex(b)}`;
-}
+// ─── DOCX Export (flowing text via engine.exportToDocx) ─────────────────────────
 
 export async function exportToWord(
   doc: PDFDocumentData,
@@ -616,8 +372,6 @@ export async function exportDocument(
       return exportToImages(doc, engine, options, onProgress);
     case 'svg':
       return exportToSVG(doc, engine, options, onProgress);
-    case 'html':
-      return exportToHTML(doc, engine, options, onProgress);
     case 'markdown':
       return exportToMarkdown(doc, engine, options, onProgress);
     case 'txt':

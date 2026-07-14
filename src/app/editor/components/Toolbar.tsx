@@ -149,7 +149,7 @@ export function Toolbar({
                 border border-zinc-700 hover:border-zinc-600
                 rounded-xl transition-all duration-200
               "
-              title="Export to Word, HTML, PNG, etc."
+              title="Export to Word, PNG, Markdown, etc."
             >
               <FileOutput size={14} />
               Export

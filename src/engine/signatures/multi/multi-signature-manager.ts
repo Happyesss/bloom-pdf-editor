@@ -2,14 +2,14 @@
  * Phase 12 — Multi-signature manager & revision viewer data.
  */
 
-import type { PDFDocumentData } from '../types';
-import { listRevisions, type PDFRevision, type RevisionChain } from '../writer/revision-manager';
-import { listSignatureFields, type SignatureField } from './signature-field';
+import type { PDFDocumentData } from '../../types';
+import { listRevisions, type PDFRevision, type RevisionChain } from '../../writer/revision-manager';
+import { listSignatureFields, type SignatureField } from '../fields/signature-field';
 import {
   extractPdfSignatureDict,
   validateSignatureField,
-} from './validation-engine';
-import type { SignatureValidationDetail, ValidationOptions } from './validation-types';
+} from '../validation/validation-engine';
+import type { SignatureValidationDetail, ValidationOptions } from '../validation/validation-types';
 
 export interface ManagedSignature {
   field: SignatureField;

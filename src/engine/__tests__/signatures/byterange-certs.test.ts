@@ -25,7 +25,7 @@ import {
   resetCertificateManagerForTests,
   createSignatureField,
   signDocumentCryptographic,
-} from '../signatures';
+} from '../../signatures';
 import {
   PDFArray,
   PDFDict,
@@ -33,8 +33,8 @@ import {
   PDFName,
   PDFNumber,
   PDFRef,
-} from '../types';
-import { serializeDocument } from '../writer/serializer';
+} from '../../types';
+import { serializeDocument } from '../../writer/serializer';
 
 const fixtures = join(__dirname, 'fixtures');
 
@@ -45,7 +45,7 @@ function latin1(str: string): Uint8Array {
 }
 
 function makeBasePdf(): PDFDocumentData {
-  const objects = new Map<string, import('../types').PDFObject>();
+  const objects = new Map<string, import('../../types').PDFObject>();
   const catalogRef = new PDFRef(1, 0);
   const pagesRef = new PDFRef(2, 0);
   const pageRef = new PDFRef(3, 0);

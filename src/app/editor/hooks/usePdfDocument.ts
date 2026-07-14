@@ -1,19 +1,25 @@
 /**
  * Load PDF from IndexedDB and parse with the engine.
+ * Handles encrypted PDFs via SecurityEngine + password callback.
  */
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { loadPdfFromStorage } from '@/lib/pdfStorage';
-import type { PDFDocumentData } from '@/engine';
+import type { PDFDocumentData, PdfPermissions } from '@/engine';
 
 export function usePdfDocument(onParsed?: (doc: PDFDocumentData, engine: typeof import('@/engine')) => void) {
   const router = useRouter();
   const engineRef = useRef<typeof import('@/engine') | null>(null);
+  const pendingEncryptedRef = useRef<PDFDocumentData | null>(null);
   const [doc, setDoc] = useState<PDFDocumentData | null>(null);
   const [fileName, setFileName] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [needsPassword, setNeedsPassword] = useState(false);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [isVerifyingPassword, setIsVerifyingPassword] = useState(false);
+  const [permissions, setPermissions] = useState<PdfPermissions | null>(null);
   const [modifiedKeys] = useState(() => new Set<string>());
 
   useEffect(() => {
@@ -33,6 +39,23 @@ export function usePdfDocument(onParsed?: (doc: PDFDocumentData, engine: typeof 
         const parsed = await engine.parsePDF(pdfBytes);
         if (cancelled) return;
 
+        if (engine.securityEngine.isEncrypted(parsed)) {
+          try {
+            const opened = await engine.securityEngine.open(parsed, '');
+            if (cancelled) return;
+            setDoc(opened.doc);
+            setPermissions(opened.permissions);
+            onParsed?.(opened.doc, engine);
+            setIsLoading(false);
+            return;
+          } catch {
+            pendingEncryptedRef.current = parsed;
+            setNeedsPassword(true);
+            setIsLoading(false);
+            return;
+          }
+        }
+
         setDoc(parsed);
         onParsed?.(parsed, engine);
         setIsLoading(false);
@@ -47,6 +70,29 @@ export function usePdfDocument(onParsed?: (doc: PDFDocumentData, engine: typeof 
     init();
     return () => { cancelled = true; };
   }, [router, onParsed]);
+
+  const submitPassword = useCallback(async (password: string) => {
+    const engine = engineRef.current;
+    const pending = pendingEncryptedRef.current;
+    if (!engine || !pending) return false;
+
+    setIsVerifyingPassword(true);
+    setPasswordError(null);
+    try {
+      const opened = await engine.securityEngine.open(pending, password);
+      setDoc(opened.doc);
+      setPermissions(opened.permissions);
+      setNeedsPassword(false);
+      pendingEncryptedRef.current = null;
+      onParsed?.(opened.doc, engine);
+      return true;
+    } catch (e) {
+      setPasswordError(e instanceof Error ? e.message : 'Incorrect password');
+      return false;
+    } finally {
+      setIsVerifyingPassword(false);
+    }
+  }, [onParsed]);
 
   const markModified = useCallback((key: string) => {
     modifiedKeys.add(key);
@@ -77,6 +123,11 @@ export function usePdfDocument(onParsed?: (doc: PDFDocumentData, engine: typeof 
     isLoading,
     error,
     setError,
+    needsPassword,
+    passwordError,
+    isVerifyingPassword,
+    submitPassword,
+    permissions,
     modifiedKeys,
     markModified,
     download,

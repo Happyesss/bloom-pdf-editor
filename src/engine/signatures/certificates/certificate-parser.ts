@@ -3,9 +3,9 @@
  * Uses existing ASN.1 DER reader; imports keys via WebCrypto.
  */
 
-import { parseDER, decodeOID, nodeOID, parseDERNode } from './signature-verify';
-import type { ASN1Node } from './types';
-import { hashBytes, bytesToHex } from './hash-engine';
+import { parseDER, decodeOID, nodeOID, parseDERNode } from '../crypto/signature-verify';
+import type { ASN1Node } from '../crypto/types';
+import { hashBytes, bytesToHex } from '../crypto/hash-engine';
 
 export type CertificateFormat = 'pem' | 'der' | 'pfx' | 'p12';
 

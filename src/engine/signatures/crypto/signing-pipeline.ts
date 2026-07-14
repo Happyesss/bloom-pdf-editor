@@ -16,15 +16,15 @@ import {
   PDFRef,
   PDFString,
   type PDFDocumentData,
-} from '../types';
-import { getNextObjNum } from '../writer/serializer';
+} from '../../types';
+import { getNextObjNum } from '../../writer/serializer';
 import {
   appendIncrementalUpdate,
   type IncrementalWriteResult,
-} from '../writer/incremental-writer';
-import { serializeDocument } from '../writer/serializer';
+} from '../../writer/incremental-writer';
+import { serializeDocument } from '../../writer/serializer';
 import { hashByteRanges, type HashAlgorithm } from './hash-engine';
-import { applySignatureFieldAppearance } from './appearance-stream';
+import { applySignatureFieldAppearance } from '../fields/appearance-stream';
 import {
   makeContentsPlaceholder,
   DEFAULT_CONTENTS_SIZE,
@@ -180,7 +180,7 @@ export async function signDocumentCryptographic(
   }
 
   const modified = new Set<string>([fieldRef.toKey(), sigRef.toKey()]);
-  const newObjects = new Map<string, import('../types').PDFObject>();
+  const newObjects = new Map<string, import('../../types').PDFObject>();
   for (const [key, obj] of doc.objects) {
     if (!doc.xref?.entries?.has(key) && key !== fieldRef.toKey() && key !== sigRef.toKey()) {
       newObjects.set(key, obj);

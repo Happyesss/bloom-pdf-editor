@@ -28,7 +28,7 @@ import {
   typedSignatureToSVG,
   importSvgString,
   DEFAULT_SIGNATURE_SIZE,
-} from '../signatures';
+} from '../../signatures';
 
 describe('Phase 1 — signature model', () => {
   beforeEach(() => resetSignatureIdCounter());

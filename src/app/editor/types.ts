@@ -7,10 +7,11 @@ import {
   Eraser,
   Stamp,
   PenLine,
+  Shield,
   LucideIcon
 } from 'lucide-react';
 
-export type EditorTool = 'select' | 'text' | 'addtext' | 'highlight' | 'draw' | 'erase' | 'watermark' | 'redact' | 'sign' | 'link';
+export type EditorTool = 'select' | 'text' | 'addtext' | 'highlight' | 'draw' | 'erase' | 'watermark' | 'redact' | 'sign' | 'link' | 'security';
 
 export interface ToolDef {
   id: EditorTool;
@@ -27,6 +28,7 @@ export const TOOLS: ToolDef[] = [
   { id: 'erase',     label: 'Erase',     icon: Eraser,  shortcut: 'E' },
   { id: 'watermark', label: 'Watermark', icon: Stamp,   shortcut: 'W' },
   { id: 'sign',      label: 'Sign',      icon: PenLine, shortcut: 'S' },
+  { id: 'security',  label: 'Security',  icon: Shield,  shortcut: 'X' },
 ];
 
 export type PathType = 'draw' | 'highlight';

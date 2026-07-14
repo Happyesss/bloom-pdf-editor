@@ -224,7 +224,13 @@ export async function buildXRefStream(
   packMap: Map<number, { containerObjNum: number; index: number }>,
   maxObjNum: number,
   xrefObjNum: number,
-  trailerKeys: { root?: PDFRef; info?: PDFObject; size: number },
+  trailerKeys: {
+    root?: PDFRef;
+    info?: PDFObject;
+    encrypt?: PDFObject;
+    id?: PDFObject;
+    size: number;
+  },
 ): Promise<{ objNum: number; stream: PDFStream; bytes: Uint8Array }> {
   const size = maxObjNum + 1;
 
@@ -292,6 +298,8 @@ export async function buildXRefStream(
   // Include trailer keys
   if (trailerKeys.root) dict.set('Root', trailerKeys.root);
   if (trailerKeys.info) dict.set('Info', trailerKeys.info as PDFObject);
+  if (trailerKeys.encrypt) dict.set('Encrypt', trailerKeys.encrypt);
+  if (trailerKeys.id) dict.set('ID', trailerKeys.id);
 
   const stream = new PDFStream(dict, compressed, xrefData);
 

@@ -1,0 +1,723 @@
+# Bloom PDF Security Engine — Complete Implementation Prompt
+
+## Project Overview
+
+Implement a professional, enterprise-grade PDF Security Engine for the Bloom PDF Engine comparable in capability to Adobe Acrobat's document security features.
+
+IMPORTANT:
+This project is ONLY for PDF security.
+
+DO NOT implement or modify anything related to digital signatures.
+
+Specifically exclude:
+- Digital Signature Engine
+- Signature Validation
+- ByteRange
+- CMS / PKCS#7
+- Timestamping
+- LTV
+- Certificate-based signing
+- Signature Appearance
+- Signature Fields
+
+Those belong to the separate Signature Engine.
+
+The Security Engine must integrate with the existing Bloom architecture while remaining completely modular.
+
+The implementation must follow ISO 32000-2 (PDF 2.0) where applicable.
+
+No external PDF libraries may be used.
+
+Reuse the existing Bloom parser, object resolver, renderer, serializer, and incremental writer whenever possible.
+
+The architecture must be scalable, testable, and suitable for future enterprise extensions.
+
+==========================================================
+PHASE 1 — SECURITY ENGINE FOUNDATION
+==========================================================
+
+Objective
+
+Create the complete architecture of the Bloom PDF Security Engine.
+
+Requirements
+
+Create the following modules:
+
+• SecurityEngine
+• EncryptionEngine
+• PasswordEngine
+• PermissionEngine
+• PublicKeyEncryptionEngine
+• MetadataEngine
+• EmbeddedFileSecurityEngine
+• JavaScriptSecurityEngine
+• RedactionEngine
+• SanitizationEngine
+• IntegrityScanner
+• SecureOptimizer
+• SecurityPolicyEngine
+• SecurityInspector
+
+Design clear interfaces.
+
+Every module should be independently testable.
+
+Integrate with:
+
+- Parser
+- Writer
+- Incremental Writer
+- Object Resolver
+- Cross Reference Manager
+
+Do not modify rendering.
+
+Deliverables
+
+- Module architecture
+- Interfaces
+- Dependency graph
+- Unit tests
+
+==========================================================
+PHASE 2 — ENCRYPTION PARSER
+==========================================================
+
+Implement encrypted PDF parsing.
+
+Support:
+
+Standard Security Handler
+
+Encryption revisions:
+
+RC4-40
+
+RC4-128
+
+AES-128
+
+AES-256 Revision 6
+
+Parse:
+
+Encrypt Dictionary
+
+Filter
+
+SubFilter
+
+V
+
+R
+
+Length
+
+O
+
+U
+
+OE
+
+UE
+
+Perms
+
+EncryptMetadata
+
+CF
+
+StmF
+
+StrF
+
+EFF
+
+Decrypt:
+
+• Strings
+
+• Streams
+
+• Embedded Files
+
+Support encrypted object resolution.
+
+Follow ISO 32000.
+
+Deliverables
+
+Encryption parser
+
+Decryption pipeline
+
+Tests
+
+==========================================================
+PHASE 3 — PASSWORD ENGINE
+==========================================================
+
+Implement password management.
+
+Support
+
+Owner Password
+
+User Password
+
+Unicode Passwords
+
+UTF-8 Passwords
+
+Password Verification
+
+Wrong Password Detection
+
+Password Cache
+
+Open encrypted PDFs
+
+Create encrypted PDFs
+
+Password API
+
+Password UI integration
+
+Deliverables
+
+Password engine
+
+Password validation
+
+Tests
+
+==========================================================
+PHASE 4 — ENCRYPTION WRITER
+==========================================================
+
+Implement encrypted PDF writing.
+
+Encrypt
+
+Streams
+
+Strings
+
+Embedded Files
+
+Generate
+
+Encrypt Dictionary
+
+Object Keys
+
+File Keys
+
+Trailer Updates
+
+Support
+
+AES-256
+
+AES-128
+
+RC4
+
+Incremental Save Compatibility
+
+Deliverables
+
+Encryption Writer
+
+Encryption Serializer
+
+Tests
+
+==========================================================
+PHASE 5 — PERMISSION ENGINE
+==========================================================
+
+Implement PDF permissions.
+
+Support
+
+Print
+
+High Quality Print
+
+Modify
+
+Copy
+
+Extract
+
+Comment
+
+Fill Forms
+
+Accessibility
+
+Document Assembly
+
+Maintain permission bits.
+
+Prevent restricted operations.
+
+Expose permission APIs.
+
+Deliverables
+
+Permission Engine
+
+Permission Parser
+
+Permission Serializer
+
+Tests
+
+==========================================================
+PHASE 6 — PUBLIC KEY ENCRYPTION
+==========================================================
+
+Implement Public Key Security Handler.
+
+Support
+
+Recipient Encryption
+
+Multiple Recipients
+
+Certificate Encryption
+
+Recipient Management
+
+Encrypted Distribution
+
+Do NOT implement digital signatures.
+
+Deliverables
+
+Public Key Encryption Engine
+
+Recipient Manager
+
+Encryption Workflow
+
+Tests
+
+==========================================================
+PHASE 7 — METADATA SECURITY
+==========================================================
+
+Support
+
+Info Dictionary
+
+XMP Metadata
+
+Custom Metadata
+
+Metadata Encryption
+
+Metadata Removal
+
+Metadata Editing
+
+Metadata Validation
+
+Metadata Preservation Options
+
+Deliverables
+
+Metadata Engine
+
+Metadata Serializer
+
+Tests
+
+==========================================================
+PHASE 8 — EMBEDDED FILE SECURITY
+==========================================================
+
+Secure embedded files.
+
+Support
+
+Encrypted Attachments
+
+Attachment Metadata
+
+Extraction Restrictions
+
+Attachment Permissions
+
+Embedded File Validation
+
+Future Malware Scan Hooks
+
+Deliverables
+
+Embedded File Security Module
+
+Tests
+
+==========================================================
+PHASE 9 — JAVASCRIPT SECURITY
+==========================================================
+
+Analyze PDF actions.
+
+Detect
+
+JavaScript
+
+Launch
+
+OpenAction
+
+SubmitForm
+
+ResetForm
+
+ImportData
+
+Named Actions
+
+Support
+
+Disable
+
+Remove
+
+Inspect
+
+Warn User
+
+Generate security analysis reports.
+
+Deliverables
+
+JavaScript Analyzer
+
+Removal Engine
+
+Tests
+
+==========================================================
+PHASE 10 — REDACTION ENGINE
+==========================================================
+
+Implement professional PDF redaction.
+
+Support
+
+Text Redaction
+
+Image Redaction
+
+Vector Redaction
+
+Annotation Redaction
+
+Form Field Redaction
+
+Metadata Redaction
+
+Rewrite affected content streams.
+
+Completely remove sensitive information.
+
+Do NOT paint black rectangles.
+
+Generate secure PDFs that cannot reveal removed content.
+
+Deliverables
+
+Redaction Engine
+
+Content Stream Rewriter
+
+Verification Tests
+
+==========================================================
+PHASE 11 — SANITIZATION ENGINE
+==========================================================
+
+Implement document sanitization.
+
+Remove
+
+Metadata
+
+Private Information
+
+Unused Objects
+
+Comments
+
+Hidden Layers
+
+JavaScript
+
+Embedded Files
+
+Optional Annotation Removal
+
+Alternative Images
+
+Generate
+
+Sanitized PDF
+
+Cleanup Report
+
+Deliverables
+
+Sanitization Engine
+
+Cleanup Report
+
+Tests
+
+==========================================================
+PHASE 12 — PDF INTEGRITY SCANNER
+==========================================================
+
+Verify
+
+Cross Reference Tables
+
+Cross Reference Streams
+
+Trailer
+
+Object Offsets
+
+Incremental Revisions
+
+Broken References
+
+Duplicate Objects
+
+Corrupt Streams
+
+Recover whenever possible.
+
+Generate diagnostics.
+
+Deliverables
+
+Integrity Scanner
+
+Repair Report
+
+Tests
+
+==========================================================
+PHASE 13 — SECURITY INSPECTOR
+==========================================================
+
+Create Acrobat-style Security Inspector.
+
+Display
+
+Encryption Algorithm
+
+Encryption Revision
+
+Password Protection
+
+Permissions
+
+Metadata Status
+
+Embedded Files
+
+JavaScript Status
+
+Redaction Status
+
+Sanitization Status
+
+Integrity Status
+
+Overall Security Summary
+
+Generate recommendations.
+
+Deliverables
+
+Security Inspector UI
+
+Security Report
+
+Tests
+
+==========================================================
+PHASE 14 — SECURE PDF OPTIMIZER
+==========================================================
+
+Optimize
+
+Encrypted PDFs
+
+Sanitized PDFs
+
+Redacted PDFs
+
+Compressed Streams
+
+Unused Objects
+
+Duplicate Resources
+
+Preserve all security properties while reducing file size.
+
+Deliverables
+
+Secure Optimizer
+
+Optimization Report
+
+Tests
+
+==========================================================
+PHASE 15 — SECURITY POLICY ENGINE
+==========================================================
+
+Create reusable security policies.
+
+Allow
+
+Create Policies
+
+Save Policies
+
+Load Policies
+
+Apply Policies
+
+Example Policies
+
+Read Only
+
+Internal Use
+
+Confidential
+
+Highly Confidential
+
+Encrypted Archive
+
+No Print
+
+No Copy
+
+Sanitized Export
+
+Policies should automatically configure
+
+Encryption
+
+Permissions
+
+Metadata
+
+JavaScript
+
+Embedded Files
+
+Deliverables
+
+Policy Engine
+
+Policy Editor
+
+Policy Storage
+
+Tests
+
+==========================================================
+PHASE 16 — ENTERPRISE FEATURES
+==========================================================
+
+Implement enterprise-level document security.
+
+Support
+
+Batch Encryption
+
+Batch Sanitization
+
+Batch Permission Changes
+
+Security Audit Logs
+
+Permission Templates
+
+Security Policy Inheritance
+
+Large Document Processing
+
+Parallel Security Operations
+
+Future Integration Interfaces
+
+Hardware Security Modules
+
+Smart Cards
+
+PKCS#11 Providers
+
+Cloud Key Management Systems
+
+Enterprise Key Management
+
+Design all enterprise components using interfaces so additional providers can be added without changing the core engine.
+
+Deliverables
+
+Enterprise Security Layer
+
+Batch Processing Framework
+
+Extension APIs
+
+Comprehensive Tests
+
+==========================================================
+GENERAL REQUIREMENTS
+==========================================================
+
+Maintain compatibility with Bloom PDF Engine.
+
+Use TypeScript.
+
+Follow existing coding conventions.
+
+Maintain high performance on large PDFs.
+
+Avoid unnecessary object allocations.
+
+Ensure every feature works with Incremental Save.
+
+Support encrypted and unencrypted PDFs.
+
+Support PDF 1.4 through PDF 2.0 where applicable.
+
+Provide comprehensive unit tests and integration tests for every phase.
+
+Document every public API.
+
+Maintain modular architecture.
+
+Avoid code duplication.
+
+Follow SOLID principles.
+
+Provide performance benchmarks where appropriate.
+
+Future-proof the design for additional security handlers and enterprise integrations.
+
+The completed Security Engine should function as an independent subsystem of the Bloom PDF Engine and provide Adobe Acrobat–class document protection capabilities without implementing any digital signature functionality.

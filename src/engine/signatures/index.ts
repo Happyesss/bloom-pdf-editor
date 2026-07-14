@@ -13,7 +13,7 @@ export {
   decodeOID,
   nodeOID,
   parseContentInfo,
-} from './signature-verify';
+} from './crypto/signature-verify';
 
 export {
   buildDetachedCMS,
@@ -22,8 +22,8 @@ export {
   signDocumentWithResult,
   signDocumentCryptographic,
   createSignatureDictionary,
-} from './sign';
-export type { SignOptions, CryptoSignOptions, SignPipelineResult } from './sign';
+} from './crypto/sign';
+export type { SignOptions, CryptoSignOptions, SignPipelineResult } from './crypto/sign';
 
 export type {
   ASN1Class,
@@ -34,9 +34,9 @@ export type {
   PDFSignatureDict,
   SignatureVerificationResult,
   VerifyDigestOptions,
-} from './types';
+} from './crypto/types';
 
-export { DEFAULT_VERIFY_OPTIONS, OID, OID_TO_DIGEST } from './types';
+export { DEFAULT_VERIFY_OPTIONS, OID, OID_TO_DIGEST } from './crypto/types';
 
 // ── Visual signatures (Phases 1–3) ──
 
@@ -56,12 +56,12 @@ export type {
   SignatureAppearance,
   AppearanceRenderOptions,
   AppearanceRenderResult,
-} from './visual-types';
+} from './visual/visual-types';
 
 export {
   DEFAULT_SIGNATURE_SIZE,
   TYPED_SIGNATURE_FONTS,
-} from './visual-types';
+} from './visual/visual-types';
 
 export {
   nextSignatureId,
@@ -77,38 +77,38 @@ export {
   deleteSignature,
   updateSignature,
   signatureToBBox,
-} from './signature-model';
-export type { CreateSignatureOpts } from './signature-model';
+} from './visual/signature-model';
+export type { CreateSignatureOpts } from './visual/signature-model';
 
-export { SignatureHistory } from './visual-history';
-export type { SignatureSnapshot } from './visual-history';
+export { SignatureHistory } from './visual/visual-history';
+export type { SignatureSnapshot } from './visual/visual-history';
 
 export {
   SignatureDrawEngine,
   paintStroke,
   strokeToPathD,
-} from './draw-engine';
+} from './visual/draw-engine';
 
 export {
   isAllowedSignatureFile,
   importSignatureFile,
   importSvgString,
   importDataURL,
-} from './import-engine';
-export type { ImportMime, ImportedSignature } from './import-engine';
+} from './visual/import-engine';
+export type { ImportMime, ImportedSignature } from './visual/import-engine';
 
 export {
   listTypedSignatureFonts,
   renderTypedSignature,
   typedSignatureToSVG,
-} from './typed-engine';
-export type { TypedSignatureOptions, TypedSignatureResult } from './typed-engine';
+} from './visual/typed-engine';
+export type { TypedSignatureOptions, TypedSignatureResult } from './visual/typed-engine';
 
 export {
   SignatureLibrary,
   getSignatureLibrary,
   resetSignatureLibraryForTests,
-} from './library';
+} from './visual/library';
 
 export {
   buildSignatureAppearance,
@@ -117,23 +117,23 @@ export {
   updateAppearanceLayout,
   listAppearanceTemplates,
   getAppearanceTemplate,
-} from './appearance-builder';
-export type { BuildAppearanceInput } from './appearance-builder';
+} from './visual/appearance-builder';
+export type { BuildAppearanceInput } from './visual/appearance-builder';
 
-export type { AppearanceTemplate } from './appearance-templates';
+export type { AppearanceTemplate } from './visual/appearance-templates';
 
 export {
   renderSignatureAppearance,
   buildAppearanceSVG,
   rasterizeAppearanceAsync,
-} from './appearance-renderer';
+} from './visual/appearance-renderer';
 
 // ── Phase 4 — Signature fields ──
 
 export type {
   SignatureField,
   CreateSignatureFieldOptions,
-} from './signature-field';
+} from './fields/signature-field';
 
 export {
   pageIndexForWidget,
@@ -147,7 +147,7 @@ export {
   placeSignatureInField,
   hitTestAnyFormOrSignatureField,
   ensureAcroFormCatalog,
-} from './signature-field';
+} from './fields/signature-field';
 
 // ── Phase 5 — Appearance streams ──
 
@@ -161,11 +161,11 @@ export {
   applySignatureFieldAppearance,
   applySignatureFieldAppearanceAsync,
   getNormalAppearanceRef,
-} from './appearance-stream';
+} from './fields/appearance-stream';
 export type {
   SignatureFieldAppearanceOptions,
   SerializedAppearance,
-} from './appearance-stream';
+} from './fields/appearance-stream';
 
 // ── Phase 7 — Hash / CMS / signing pipeline ──
 
@@ -178,8 +178,8 @@ export {
   hashAlgorithmOID,
   hashDigestLength,
   HASH_ALGORITHMS,
-} from './hash-engine';
-export type { HashAlgorithm } from './hash-engine';
+} from './crypto/hash-engine';
+export type { HashAlgorithm } from './crypto/hash-engine';
 
 export {
   buildDetachedCMSAdvanced,
@@ -190,8 +190,8 @@ export {
   derOctetString,
   derInteger,
   derObjectIdentifier,
-} from './cms-builder';
-export type { BuildCMSOptions, SignatureAlgorithmKind } from './cms-builder';
+} from './crypto/cms-builder';
+export type { BuildCMSOptions, SignatureAlgorithmKind } from './crypto/cms-builder';
 
 export {
   makeContentsPlaceholder,
@@ -208,10 +208,10 @@ export {
   finalizePdfSignature,
   DEFAULT_CONTENTS_SIZE,
   BYTERANGE_DIGIT_WIDTH,
-} from './signing-pipeline';
+} from './crypto/signing-pipeline';
 
-export type { ByteRange, ContentsSpan, ByteRangeCalculation } from './byterange';
-export type { FinalizeSignatureResult, FinalizeSignatureInput } from './finalizer';
+export type { ByteRange, ContentsSpan, ByteRangeCalculation } from './crypto/byterange';
+export type { FinalizeSignatureResult, FinalizeSignatureInput } from './crypto/finalizer';
 
 // ── Phase 9 — Certificates ──
 
@@ -224,26 +224,26 @@ export {
   importCertificateDer,
   formatCertificateSummary,
   isCertificateExpired,
-} from './certificate-parser';
+} from './certificates/certificate-parser';
 export type {
   CertificateFormat,
   DistinguishedName,
   CertificateInfo,
   ImportedKeyMaterial,
   ImportedCertificateBundle,
-} from './certificate-parser';
+} from './certificates/certificate-parser';
 
 export {
   importPkcs12,
   detectCertificateFileFormat,
-} from './pkcs12';
+} from './certificates/pkcs12';
 
 export {
   CertificateManager,
   getCertificateManager,
   resetCertificateManagerForTests,
-} from './certificate-manager';
-export type { ManagedIdentity } from './certificate-manager';
+} from './certificates/certificate-manager';
+export type { ManagedIdentity } from './certificates/certificate-manager';
 
 // ── Phase 10 — Validation ──
 
@@ -255,7 +255,7 @@ export {
   validateSignatureField,
   validateDocumentSignatures,
   validationStatusBadge,
-} from './validation-engine';
+} from './validation/validation-engine';
 export type {
   ValidationStatus,
   TrustAnchor,
@@ -263,7 +263,7 @@ export type {
   CertificateValidationInfo,
   SignatureValidationDetail,
   ValidationReport,
-} from './validation-types';
+} from './validation/validation-types';
 
 // ── Phase 11 — Timestamps ──
 
@@ -273,12 +273,12 @@ export {
   requestTimestamp,
   cmsHasTimestampToken,
   DEFAULT_TSA_URLS,
-} from './timestamp-parser';
+} from './timestamp/timestamp-parser';
 export type {
   TimestampRequestOptions,
   TimestampToken,
   TimestampResult,
-} from './timestamp-parser';
+} from './timestamp/timestamp-parser';
 
 // ── Phase 12 — Multi-signature ──
 
@@ -287,12 +287,12 @@ export {
   buildRevisionViewer,
   inspectMultiSignatures,
   canAddSignatureWithoutInvalidating,
-} from './multi-signature-manager';
+} from './multi/multi-signature-manager';
 export type {
   ManagedSignature,
   RevisionViewEntry,
   MultiSignatureSnapshot,
-} from './multi-signature-manager';
+} from './multi/multi-signature-manager';
 
 // ── Phase 13 — LTV / DSS ──
 
@@ -300,16 +300,16 @@ export {
   buildDocumentSecurityStore,
   embedDssIncremental,
   readDssSummary,
-} from './dss-builder';
-export type { DssBuildInput, DssBuildResult } from './dss-builder';
+} from './ltv/dss-builder';
+export type { DssBuildInput, DssBuildResult } from './ltv/dss-builder';
 
 export {
   collectEmbeddedCertificates,
   enableLongTermValidation,
   getLtvStatus,
   fetchOcspPlaceholder,
-} from './ltv-engine';
-export type { LtvEnableOptions, LtvStatus } from './ltv-engine';
+} from './ltv/ltv-engine';
+export type { LtvEnableOptions, LtvStatus } from './ltv/ltv-engine';
 
 // ── Phase 14 — UX helpers ──
 
@@ -321,4 +321,4 @@ export {
   lockSignaturesAfterSigning,
   snapToAlignmentGuides,
   defaultPageGuides,
-} from './ux-helpers';
+} from './ux/ux-helpers';

@@ -11,7 +11,7 @@
  * 7. Validate offsets
  */
 
-import type { PDFDocumentData, PDFRef } from '../types';
+import type { PDFDocumentData, PDFRef } from '../../types';
 import type { HashAlgorithm } from './hash-engine';
 import type { SignatureAlgorithmKind } from './cms-builder';
 import {
@@ -169,7 +169,7 @@ export async function finalizePdfSignature(
   let timestampError: string | undefined;
   if (input.enableTimestamp) {
     try {
-      const { requestTimestamp } = await import('./timestamp-client');
+      const { requestTimestamp } = await import('../timestamp/timestamp-client');
       const ts = await requestTimestamp({
         data: signature,
         hashAlgorithm,

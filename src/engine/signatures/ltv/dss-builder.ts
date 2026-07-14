@@ -12,9 +12,9 @@ import {
   PDFStream,
   type PDFDocumentData,
   type PDFObject,
-} from '../types';
-import { getNextObjNum } from '../writer/serializer';
-import { appendIncrementalUpdate } from '../writer/incremental-writer';
+} from '../../types';
+import { getNextObjNum } from '../../writer/serializer';
+import { appendIncrementalUpdate } from '../../writer/incremental-writer';
 
 export interface DssBuildInput {
   certificates?: Uint8Array[];

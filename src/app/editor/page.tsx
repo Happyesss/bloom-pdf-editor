@@ -26,14 +26,16 @@ import { PropertiesSidebar } from './components/PropertiesSidebar';
 import { EditableLineBox, type OverlaySegmentStyle } from './components/EditableLineBox';
 import { LinkPopover, type LinkPopoverMode } from './components/LinkPopover';
 import { EmbeddedImageOverlay } from './components/EmbeddedImageOverlay';
-import { SignatureOverlay } from './components/SignatureOverlay';
-import { SignatureCreateDialog, type SignatureCreateResult } from './components/SignatureCreateDialog';
-import { CertificateImportDialog } from './components/CertificateImportDialog';
+import { SignatureOverlay } from './components/signatures/SignatureOverlay';
+import { SignatureCreateDialog, type SignatureCreateResult } from './components/signatures/SignatureCreateDialog';
+import { CertificateImportDialog } from './components/signatures/CertificateImportDialog';
 import { WatermarkPreview } from './components/WatermarkPreview';
 import { ThumbnailsSidebar } from './components/ThumbnailsSidebar';
 import { FindReplacePanel } from './components/FindReplacePanel';
 import { StatusBar } from './components/StatusBar';
 import { ExportPanel } from './components/ExportPanel';
+import { PasswordDialog } from './components/PasswordDialog';
+import { SecurityPanel } from './components/SecurityPanel';
 import { useTextStyleActions, type TextStyleUI } from './hooks/useTextStyleActions';
 
 /** True if the run is underlined or a thin stroke path sits under it (certificate labels). */
@@ -98,6 +100,10 @@ export default function EditorPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isRendering, setIsRendering] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [needsPassword, setNeedsPassword] = useState(false);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [isVerifyingPassword, setIsVerifyingPassword] = useState(false);
+  const pendingEncryptedDocRef = useRef<PDFDocumentData | null>(null);
   const [renderResult, setRenderResult] = useState<RenderResult | null>(null);
   const [thumbnails, setThumbnails] = useState<string[]>([]);
   const [thumbnailKey, setThumbnailKey] = useState(0);
@@ -518,6 +524,26 @@ export default function EditorPage() {
   useEffect(() => {
     let cancelled = false;
 
+    async function finishLoad(parsed: PDFDocumentData, engine: NonNullable<typeof engineRef.current>) {
+      setDoc(parsed);
+      setTotalPages(parsed.pages.length);
+      setCurrentPage(0);
+      txStackRef.current.clear();
+      const page0 = parsed.pages[0];
+      const initialBytes = engine.getPageContentBytes(page0, parsed.objects);
+      txStackRef.current.push({
+        pageIndex: 0,
+        contentBytes: new Uint8Array(initialBytes),
+        label: 'initial',
+        timestamp: Date.now(),
+      });
+      syncTxState();
+      setNeedsPassword(false);
+      setPasswordError(null);
+      pendingEncryptedDocRef.current = null;
+      setIsLoading(false);
+    }
+
     async function init() {
       try {
         const stored = await loadPdfFromStorage();
@@ -533,20 +559,22 @@ export default function EditorPage() {
         const parsed = await engine.parsePDF(pdfBytes);
         if (cancelled) return;
 
-        setDoc(parsed);
-        setTotalPages(parsed.pages.length);
-        setCurrentPage(0);
-        txStackRef.current.clear();
-        const page0 = parsed.pages[0];
-        const initialBytes = engine.getPageContentBytes(page0, parsed.objects);
-        txStackRef.current.push({
-          pageIndex: 0,
-          contentBytes: new Uint8Array(initialBytes),
-          label: 'initial',
-          timestamp: Date.now(),
-        });
-        syncTxState();
-        setIsLoading(false);
+        if (engine.securityEngine.isEncrypted(parsed)) {
+          // Try empty password first (common for owner-only protection)
+          try {
+            const opened = await engine.securityEngine.open(parsed, '');
+            if (cancelled) return;
+            await finishLoad(opened.doc, engine);
+            return;
+          } catch {
+            pendingEncryptedDocRef.current = parsed;
+            setNeedsPassword(true);
+            setIsLoading(false);
+            return;
+          }
+        }
+
+        await finishLoad(parsed, engine);
       } catch (e) {
         if (cancelled) return;
         console.error('[Editor] Init failed:', e);
@@ -558,6 +586,37 @@ export default function EditorPage() {
     init();
     return () => { cancelled = true; };
   }, [router]);
+
+  const handlePasswordSubmit = useCallback(async (password: string) => {
+    const engine = engineRef.current;
+    const pending = pendingEncryptedDocRef.current;
+    if (!engine || !pending) return;
+
+    setIsVerifyingPassword(true);
+    setPasswordError(null);
+    try {
+      const opened = await engine.securityEngine.open(pending, password);
+      setDoc(opened.doc);
+      setTotalPages(opened.doc.pages.length);
+      setCurrentPage(0);
+      txStackRef.current.clear();
+      const page0 = opened.doc.pages[0];
+      const initialBytes = engine.getPageContentBytes(page0, opened.doc.objects);
+      txStackRef.current.push({
+        pageIndex: 0,
+        contentBytes: new Uint8Array(initialBytes),
+        label: 'initial',
+        timestamp: Date.now(),
+      });
+      syncTxState();
+      setNeedsPassword(false);
+      pendingEncryptedDocRef.current = null;
+    } catch (e) {
+      setPasswordError(e instanceof Error ? e.message : 'Incorrect password');
+    } finally {
+      setIsVerifyingPassword(false);
+    }
+  }, []);
 
   // ── Generate thumbnails ──
   useEffect(() => {
@@ -3692,6 +3751,21 @@ export default function EditorPage() {
     );
   }
 
+  // ── Password prompt for encrypted PDFs ──
+  if (needsPassword && !doc) {
+    return (
+      <div className="min-h-screen bg-zinc-950">
+        <PasswordDialog
+          fileName={fileName}
+          error={passwordError}
+          isVerifying={isVerifyingPassword}
+          onSubmit={handlePasswordSubmit}
+          onCancel={handleClose}
+        />
+      </div>
+    );
+  }
+
   // ── Error state ──
   if (error && !doc) {
     return (
@@ -3760,7 +3834,18 @@ export default function EditorPage() {
           highlightColor={highlightColor}
         />
 
-        {/* ── Left Sidebar (Properties) ── */}
+        {/* ── Left Sidebar (Properties / Security) ── */}
+        {activeTool === 'security' ? (
+          <SecurityPanel
+            doc={doc}
+            engine={engineModule}
+            onDocChange={(d) => {
+              setDoc(d);
+              setIsDirty(true);
+            }}
+            markDirty={() => setIsDirty(true)}
+          />
+        ) : (
         <PropertiesSidebar
           activeTool={activeTool}
           setActiveTool={setActiveTool}
@@ -3970,6 +4055,7 @@ export default function EditorPage() {
           managedSignatures={managedSignatures}
           revisionEntries={revisionEntries}
         />
+        )}
 
         <input
           type="file"

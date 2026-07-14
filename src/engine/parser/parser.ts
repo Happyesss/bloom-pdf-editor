@@ -38,21 +38,38 @@ import {
 
 // ─── Main parse function ────────────────────────────────────────────────────
 
+export interface ParsePDFOptions {
+  /**
+   * When the PDF is encrypted, skip stream filter decoding until
+   * SecurityEngine.open() decrypts the document. Default: true.
+   */
+  deferEncryptedFilters?: boolean;
+}
+
 /**
  * Parse a PDF file from raw bytes into a fully-resolved document structure.
+ *
+ * Encrypted documents are parsed structurally; call `securityEngine.open(doc, password)`
+ * to authenticate and decrypt strings/streams before rendering or editing.
  *
  * @param data Raw PDF file bytes
  * @returns Parsed document with resolved objects, page tree, and metadata
  */
-export async function parsePDF(data: Uint8Array): Promise<PDFDocumentData> {
+export async function parsePDF(
+  data: Uint8Array,
+  options: ParsePDFOptions = {},
+): Promise<PDFDocumentData> {
   // 1. Read header
   const version = readHeader(data);
 
   // 2. Build cross-reference table
   const xref = await buildFullXref(data);
 
-  // 3. Read all indirect objects
-  const objects = await readAllObjects(data, xref);
+  const encrypted = xref.trailerDict.has('Encrypt');
+  const deferFilters = options.deferEncryptedFilters !== false && encrypted;
+
+  // 3. Read all indirect objects (skip filter decode when encrypted)
+  const objects = await readAllObjects(data, xref, { skipFilters: deferFilters });
 
   // 4. Create resolver function
   const resolve = (obj: PDFObject): PDFObject => resolveRef(obj, objects);
@@ -66,7 +83,7 @@ export async function parsePDF(data: Uint8Array): Promise<PDFDocumentData> {
   // 6. Build page tree
   const pages = buildPageTree(catalog, objects, resolve);
 
-  // 7. Extract document info
+  // 7. Extract document info (may contain encrypted strings — leave as-is)
   const info = extractDocInfo(xref.trailerDict, resolve);
 
   return {
@@ -112,6 +129,7 @@ function readHeader(data: Uint8Array): string {
 async function readAllObjects(
   data: Uint8Array,
   xref: XRefTable,
+  opts: { skipFilters?: boolean } = {},
 ): Promise<Map<string, PDFObject>> {
   const objects = new Map<string, PDFObject>();
 
@@ -128,8 +146,8 @@ async function readAllObjects(
       if (obj) {
         objects.set(key, obj);
 
-        // If it's a stream, decode it
-        if (obj instanceof PDFStream) {
+        // If it's a stream, decode it (unless encrypted — decrypt first)
+        if (obj instanceof PDFStream && !opts.skipFilters) {
           await decodeStream(obj, objects);
         }
       }

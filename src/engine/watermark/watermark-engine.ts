@@ -139,7 +139,13 @@ export type Watermark = TextWatermark | ImageWatermark | PatternWatermark | Shap
  * Generate PDF content stream operators for a text watermark.
  * Returns the raw content bytes to inject into the page stream.
  */
-export function buildTextWatermarkContent(wm: TextWatermark, pageWidth: number, pageHeight: number): Uint8Array {
+export function buildTextWatermarkContent(
+  wm: TextWatermark,
+  pageWidth: number,
+  pageHeight: number,
+  originX: number = 0,
+  originY: number = 0,
+): Uint8Array {
   const lines: string[] = [];
   lines.push('q');
 
@@ -163,8 +169,8 @@ export function buildTextWatermarkContent(wm: TextWatermark, pageWidth: number, 
 
     for (let row = 0; row < rows; row++) {
       for (let col = 0; col < cols; col++) {
-        const cx = col * spacing;
-        const cy = row * spacing;
+        const cx = originX + col * spacing;
+        const cy = originY + row * spacing;
 
         lines.push('q');
         lines.push(`1 0 0 1 ${fmtNum(cx)} ${fmtNum(cy)} cm`);
@@ -182,7 +188,7 @@ export function buildTextWatermarkContent(wm: TextWatermark, pageWidth: number, 
       }
     }
   } else {
-    const { cx, cy } = resolvePosition(wm.position, pageWidth, pageHeight, wmWidth, wmHeight);
+    const { cx, cy } = resolvePosition(wm.position, pageWidth, pageHeight, wmWidth, wmHeight, originX, originY);
 
     lines.push('q');
     lines.push(`1 0 0 1 ${fmtNum(cx)} ${fmtNum(cy)} cm`);
@@ -213,6 +219,8 @@ export function buildImageWatermarkContent(
   pageWidth: number,
   pageHeight: number,
   imageXObjectName: string,
+  originX: number = 0,
+  originY: number = 0,
 ): Uint8Array {
   const lines: string[] = [];
   lines.push('q');
@@ -228,8 +236,8 @@ export function buildImageWatermarkContent(
 
     for (let row = 0; row < rows; row++) {
       for (let col = 0; col < cols; col++) {
-        const cx = col * spacing;
-        const cy = row * spacing;
+        const cx = originX + col * spacing;
+        const cy = originY + row * spacing;
 
         lines.push('q');
         lines.push(`1 0 0 1 ${fmtNum(cx)} ${fmtNum(cy)} cm`);
@@ -245,7 +253,7 @@ export function buildImageWatermarkContent(
       }
     }
   } else {
-    const { cx, cy } = resolvePosition(wm.position, pageWidth, pageHeight, wm.width, wm.height);
+    const { cx, cy } = resolvePosition(wm.position, pageWidth, pageHeight, wm.width, wm.height, originX, originY);
 
     lines.push(`1 0 0 1 ${fmtNum(cx)} ${fmtNum(cy)} cm`);
     if (wm.rotation !== 0) {
@@ -266,7 +274,13 @@ export function buildImageWatermarkContent(
 /**
  * Generate PDF content stream operators for a pattern watermark.
  */
-export function buildPatternWatermarkContent(wm: PatternWatermark, pageWidth: number, pageHeight: number): Uint8Array {
+export function buildPatternWatermarkContent(
+  wm: PatternWatermark,
+  pageWidth: number,
+  pageHeight: number,
+  originX: number = 0,
+  originY: number = 0,
+): Uint8Array {
   const lines: string[] = [];
 
   lines.push('q');
@@ -284,8 +298,8 @@ export function buildPatternWatermarkContent(wm: PatternWatermark, pageWidth: nu
 
   for (let row = 0; row < rows; row++) {
     for (let col = 0; col < cols; col++) {
-      let x = col * wm.hSpacing;
-      let y = row * wm.vSpacing;
+      let x = originX + col * wm.hSpacing;
+      let y = originY + row * wm.vSpacing;
 
       // Apply stagger for alternating rows
       if (wm.stagger && row % 2 === 1) {
@@ -313,7 +327,13 @@ export function buildPatternWatermarkContent(wm: PatternWatermark, pageWidth: nu
 /**
  * Generate PDF content stream operators for a shape watermark.
  */
-export function buildShapeWatermarkContent(wm: ShapeWatermark, pageWidth: number, pageHeight: number): Uint8Array {
+export function buildShapeWatermarkContent(
+  wm: ShapeWatermark,
+  pageWidth: number,
+  pageHeight: number,
+  originX: number = 0,
+  originY: number = 0,
+): Uint8Array {
   const lines: string[] = [];
   lines.push('q');
 
@@ -330,12 +350,12 @@ export function buildShapeWatermarkContent(wm: ShapeWatermark, pageWidth: number
     const rows = Math.ceil(pageHeight / spacing) + 1;
     for (let row = 0; row < rows; row++) {
       for (let col = 0; col < cols; col++) {
-        cxs.push(col * spacing);
-        cys.push(row * spacing);
+        cxs.push(originX + col * spacing);
+        cys.push(originY + row * spacing);
       }
     }
   } else {
-    const pos = resolvePosition(wm.position, pageWidth, pageHeight, wm.width, wm.height);
+    const pos = resolvePosition(wm.position, pageWidth, pageHeight, wm.width, wm.height, originX, originY);
     cxs.push(pos.cx);
     cys.push(pos.cy);
   }
@@ -475,6 +495,8 @@ export function createWatermarkImageXObject(
  * @param pageWidth Page width in PDF points
  * @param pageHeight Page height in PDF points
  * @param getNextObjNum Function to get the next available object number
+ * @param originX MediaBox lower-left X (default 0)
+ * @param originY MediaBox lower-left Y (default 0)
  * @returns Modified content stream bytes
  */
 export function applyWatermarkToPage(
@@ -485,16 +507,18 @@ export function applyWatermarkToPage(
   pageWidth: number,
   pageHeight: number,
   getNextObjNum: () => number,
+  originX: number = 0,
+  originY: number = 0,
 ): Uint8Array {
   let watermarkContent: Uint8Array;
   let needsExtGState = watermark.opacity < 1 || (watermark.blendMode !== undefined && watermark.blendMode !== 'Normal');
   let needsImageXObject = watermark.type === 'image';
 
-  // Build the watermark content operators
+  // Build the watermark content operators (positions relative to MediaBox origin)
   switch (watermark.type) {
     case 'text':
       registerFontInResources(page, objects, watermark.fontName, getNextObjNum);
-      watermarkContent = buildTextWatermarkContent(watermark, pageWidth, pageHeight);
+      watermarkContent = buildTextWatermarkContent(watermark, pageWidth, pageHeight, originX, originY);
       break;
     case 'image': {
       const imgWm = watermark as ImageWatermark;
@@ -506,16 +530,18 @@ export function applyWatermarkToPage(
       // Register in page Resources
       registerXObjectInResources(page, objects, name.replace('/', ''), objRef);
 
-      watermarkContent = buildImageWatermarkContent(imgWm, pageWidth, pageHeight, name);
+      watermarkContent = buildImageWatermarkContent(imgWm, pageWidth, pageHeight, name, originX, originY);
       break;
     }
     case 'pattern':
-      watermarkContent = buildPatternWatermarkContent(watermark as PatternWatermark, pageWidth, pageHeight);
+      watermarkContent = buildPatternWatermarkContent(
+        watermark as PatternWatermark, pageWidth, pageHeight, originX, originY,
+      );
       break;
     case 'shape': {
       const shapeWm = watermark as ShapeWatermark;
       registerFontInResources(page, objects, shapeWm.fontName, getNextObjNum);
-      watermarkContent = buildShapeWatermarkContent(shapeWm, pageWidth, pageHeight);
+      watermarkContent = buildShapeWatermarkContent(shapeWm, pageWidth, pageHeight, originX, originY);
       break;
     }
     default:
@@ -533,18 +559,33 @@ export function applyWatermarkToPage(
     registerExtGStateInResources(page, objects, gsName, objRef);
   }
 
-  // Inject watermark content into the page stream
-  // If layer is 'below', prepend; if 'above', append
-  const combined = new Uint8Array(contentBytes.length + watermarkContent.length + 2);
+  // Inject watermark into the page stream.
+  //
+  // Wrap the *existing* content in q/Q so any leftover CTM / graphics state
+  // from the original stream is restored before (or isolated from) the
+  // watermark. Many PDFs leave a non-identity CTM at end-of-stream; appending
+  // without this wrap makes the watermark inherit that transform and appear
+  // tilted or skewed — while other PDFs that end at identity look fine.
+  const save = stringToBytes('q\n');
+  const restore = stringToBytes('\nQ\n');
+  const combined = new Uint8Array(
+    save.length + contentBytes.length + restore.length + watermarkContent.length,
+  );
 
   if (watermark.layer === 'below') {
-    // Watermark goes first (renders under existing content)
-    combined.set(watermarkContent, 0);
-    combined.set(contentBytes, watermarkContent.length);
+    // Watermark first (clean user space), then wrapped original content
+    let offset = 0;
+    combined.set(watermarkContent, offset); offset += watermarkContent.length;
+    combined.set(save, offset); offset += save.length;
+    combined.set(contentBytes, offset); offset += contentBytes.length;
+    combined.set(restore, offset);
   } else {
-    // Watermark goes last (renders over existing content)
-    combined.set(contentBytes, 0);
-    combined.set(watermarkContent, contentBytes.length);
+    // Wrapped original content, then watermark in restored user space
+    let offset = 0;
+    combined.set(save, offset); offset += save.length;
+    combined.set(contentBytes, offset); offset += contentBytes.length;
+    combined.set(restore, offset); offset += restore.length;
+    combined.set(watermarkContent, offset);
   }
 
   return combined;
@@ -568,8 +609,11 @@ export function applyWatermarks(
     for (const pageIdx of targetPages) {
       if (pageIdx < 0 || pageIdx >= doc.pages.length) continue;
       const page = doc.pages[pageIdx];
+      // Position in PDF user space (MediaBox origin may be non-zero).
       const pageWidth = page.mediaBox.width;
       const pageHeight = page.mediaBox.height;
+      const originX = page.mediaBox.x;
+      const originY = page.mediaBox.y;
 
       // Get current content bytes
       const currentBytes = results.get(pageIdx) || getPageContentBytesRaw(page, doc.objects);
@@ -577,6 +621,7 @@ export function applyWatermarks(
       const newBytes = applyWatermarkToPage(
         currentBytes, page, doc.objects, wm,
         pageWidth, pageHeight, getNextObjNum,
+        originX, originY,
       );
       results.set(pageIdx, newBytes);
     }
@@ -720,6 +765,8 @@ function resolvePosition(
   pageHeight: number,
   wmWidth: number,
   wmHeight: number,
+  originX: number = 0,
+  originY: number = 0,
 ): { cx: number, cy: number } {
   const pad = 30; // 30 points padding
 
@@ -727,45 +774,45 @@ function resolvePosition(
     return { cx: position[0], cy: position[1] };
   }
 
-  let cx = pageWidth / 2;
-  let cy = pageHeight / 2;
+  let cx = originX + pageWidth / 2;
+  let cy = originY + pageHeight / 2;
 
   switch (position) {
     case 'top-left': 
-      cx = pad + wmWidth / 2;
-      cy = pageHeight - pad - wmHeight / 2;
+      cx = originX + pad + wmWidth / 2;
+      cy = originY + pageHeight - pad - wmHeight / 2;
       break;
     case 'top-center':
-      cx = pageWidth / 2;
-      cy = pageHeight - pad - wmHeight / 2;
+      cx = originX + pageWidth / 2;
+      cy = originY + pageHeight - pad - wmHeight / 2;
       break;
     case 'top-right':
-      cx = pageWidth - pad - wmWidth / 2;
-      cy = pageHeight - pad - wmHeight / 2;
+      cx = originX + pageWidth - pad - wmWidth / 2;
+      cy = originY + pageHeight - pad - wmHeight / 2;
       break;
     case 'center-left':
-      cx = pad + wmWidth / 2;
-      cy = pageHeight / 2;
+      cx = originX + pad + wmWidth / 2;
+      cy = originY + pageHeight / 2;
       break;
     case 'center':
-      cx = pageWidth / 2;
-      cy = pageHeight / 2;
+      cx = originX + pageWidth / 2;
+      cy = originY + pageHeight / 2;
       break;
     case 'center-right':
-      cx = pageWidth - pad - wmWidth / 2;
-      cy = pageHeight / 2;
+      cx = originX + pageWidth - pad - wmWidth / 2;
+      cy = originY + pageHeight / 2;
       break;
     case 'bottom-left':
-      cx = pad + wmWidth / 2;
-      cy = pad + wmHeight / 2;
+      cx = originX + pad + wmWidth / 2;
+      cy = originY + pad + wmHeight / 2;
       break;
     case 'bottom-center':
-      cx = pageWidth / 2;
-      cy = pad + wmHeight / 2;
+      cx = originX + pageWidth / 2;
+      cy = originY + pad + wmHeight / 2;
       break;
     case 'bottom-right':
-      cx = pageWidth - pad - wmWidth / 2;
-      cy = pad + wmHeight / 2;
+      cx = originX + pageWidth - pad - wmWidth / 2;
+      cy = originY + pad + wmHeight / 2;
       break;
   }
   

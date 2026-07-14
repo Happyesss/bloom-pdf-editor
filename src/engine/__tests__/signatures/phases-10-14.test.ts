@@ -12,8 +12,8 @@ import {
   PDFName,
   PDFNumber,
   PDFRef,
-} from '../types';
-import { serializeDocument } from '../writer/serializer';
+} from '../../types';
+import { serializeDocument } from '../../writer/serializer';
 import {
   createSignatureField,
   signDocumentCryptographic,
@@ -38,12 +38,12 @@ import {
   defaultPageGuides,
   createVisualSignature,
   SIGNATURE_SHORTCUTS,
-} from '../signatures';
+} from '../../signatures';
 
 const fixtures = join(__dirname, 'fixtures');
 
 function makeBasePdf(): PDFDocumentData {
-  const objects = new Map<string, import('../types').PDFObject>();
+  const objects = new Map<string, import('../../types').PDFObject>();
   const catalogRef = new PDFRef(1, 0);
   const pagesRef = new PDFRef(2, 0);
   const pageRef = new PDFRef(3, 0);
@@ -148,7 +148,7 @@ describe('Phase 10 — validation engine', () => {
     bytes[last] = (bytes[last] ^ 0xff) & 0xff;
     doc.rawBytes = bytes;
 
-    const fields = (await import('../signatures')).listSignatureFields(doc);
+    const fields = (await import('../../signatures')).listSignatureFields(doc);
     const field = fields.find((f) => f.signed)!;
     const detail = await validateSignatureField(doc, field, bytes, { allowSelfSigned: true });
     // Digest should fail after tamper
@@ -231,7 +231,7 @@ describe('Phase 14 — UX helpers', () => {
         { id: 'b', name: 'B', createdAt: 1, updatedAt: 1, favorite: false, source: 'draw', imageDataUrl: '', width: 1, height: 1 },
         { id: 'a', name: 'A', createdAt: 1, updatedAt: 1, favorite: false, source: 'draw', imageDataUrl: '', width: 1, height: 1 },
         { id: 'c', name: 'C', createdAt: 1, updatedAt: 1, favorite: true, source: 'draw', imageDataUrl: '', width: 1, height: 1 },
-      ] as import('../signatures').SignatureLibraryEntry[],
+      ] as import('../../signatures').SignatureLibraryEntry[],
       listRecentSignatureIds(fake),
     );
     expect(ordered[0].id).toBe('a');

@@ -83,14 +83,18 @@ export async function serializeDocument(doc: PDFDocumentData): Promise<Uint8Arra
   chunks.push(xrefBytes);
   currentOffset += xrefBytes.length;
 
-  // 5. Write trailer
+  // 5. Write trailer (preserve Encrypt + ID for secured documents)
   const catalogRef = doc.xref.trailerDict.getRef('Root');
   const infoRef = doc.xref.trailerDict.get('Info');
+  const encryptRef = doc.xref.trailerDict.get('Encrypt');
+  const idArr = doc.xref.trailerDict.get('ID');
 
   const trailerDict = new PDFDict();
   trailerDict.set('Size', new PDFNumber(nextObjNum));
   if (catalogRef) trailerDict.set('Root', catalogRef);
   if (infoRef) trailerDict.set('Info', infoRef as PDFObject);
+  if (encryptRef) trailerDict.set('Encrypt', encryptRef as PDFObject);
+  if (idArr) trailerDict.set('ID', idArr as PDFObject);
 
   const trailerBytes = stringToBytes(
     `trailer\n${trailerDictToString(trailerDict)}\n` +
@@ -179,6 +183,7 @@ async function _serializeCompact(doc: PDFDocumentData): Promise<Uint8Array> {
   // Build and write xref stream
   const xrefStreamOffset = currentOffset;
   const infoRef = doc.xref.trailerDict.get('Info');
+  const idArr = doc.xref.trailerDict.get('ID');
 
   const xrefResult = await buildXRefStream(
     standaloneOffsets,
@@ -188,6 +193,8 @@ async function _serializeCompact(doc: PDFDocumentData): Promise<Uint8Array> {
     {
       root: catalogRef,
       info: infoRef,
+      encrypt: encryptRef ?? undefined,
+      id: idArr ?? undefined,
       size: xrefObjNum + 1,
     },
   );

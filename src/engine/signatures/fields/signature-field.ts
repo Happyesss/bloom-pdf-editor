@@ -12,16 +12,16 @@ import {
   PDFString,
   type PDFDocumentData,
   type PDFRectangle,
-} from '../types';
-import { resolveRef } from '../parser/parser';
+} from '../../types';
+import { resolveRef } from '../../parser/parser';
 import {
   detectFormFieldsOnPage,
   listAllFormWidgets,
   hitTestFormField,
   parseAcroFormCatalog,
-} from '../forms/detect-fields';
-import type { AcroFormWidget } from '../forms/types';
-import { createSignatureField } from './sign';
+} from '../../forms/detect-fields';
+import type { AcroFormWidget } from '../../forms/types';
+import { createSignatureField } from '../crypto/sign';
 import {
   applySignatureFieldAppearance,
   type SignatureFieldAppearanceOptions,
@@ -74,7 +74,7 @@ export function pageIndexForWidget(
 
 function widgetHasAppearance(
   dict: PDFDict,
-  objects: Map<string, import('../types').PDFObject>,
+  objects: Map<string, import('../../types').PDFObject>,
 ): boolean {
   const ap = dict.get('AP');
   if (!ap) return false;
@@ -85,7 +85,7 @@ function widgetHasAppearance(
 
 function widgetValueRef(
   dict: PDFDict,
-  objects: Map<string, import('../types').PDFObject>,
+  objects: Map<string, import('../../types').PDFObject>,
 ): PDFRef | null {
   const v = dict.get('V');
   if (v instanceof PDFRef) {

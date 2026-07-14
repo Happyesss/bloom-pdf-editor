@@ -11,7 +11,7 @@ import {
   PDFNumber,
   PDFRef,
   PDFString,
-} from '../types';
+} from '../../types';
 import {
   appendIncrementalUpdate,
   IncrementalUpdateSession,
@@ -19,18 +19,18 @@ import {
   OffsetManager,
   RevisionManager,
   saveIncremental,
-} from '../writer/incremental-writer';
+} from '../../writer/incremental-writer';
 import {
   hashBytes,
   hashByteRanges,
   bytesToHex,
   HASH_ALGORITHMS,
-} from '../signatures/hash-engine';
+} from '../../signatures/crypto/hash-engine';
 import {
   buildDetachedCMSAdvanced,
   getSignedAttributesForSigning,
   buildDetachedCMS,
-} from '../signatures/cms-builder';
+} from '../../signatures/crypto/cms-builder';
 import {
   makeContentsPlaceholder,
   findContentsHexSpan,
@@ -40,8 +40,8 @@ import {
   createSignatureField,
   signDocumentCryptographic,
   DEFAULT_CONTENTS_SIZE,
-} from '../signatures';
-import { serializeDocument } from '../writer/serializer';
+} from '../../signatures';
+import { serializeDocument } from '../../writer/serializer';
 
 function latin1(str: string): Uint8Array {
   const b = new Uint8Array(str.length);
@@ -51,7 +51,7 @@ function latin1(str: string): Uint8Array {
 
 /** Minimal valid-enough PDF for incremental append tests. */
 function makeBasePdf(): { doc: PDFDocumentData; bytes: Uint8Array } {
-  const objects = new Map<string, import('../types').PDFObject>();
+  const objects = new Map<string, import('../../types').PDFObject>();
 
   const catalogRef = new PDFRef(1, 0);
   const pagesRef = new PDFRef(2, 0);

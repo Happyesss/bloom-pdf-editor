@@ -12,7 +12,7 @@ import {
   PDFRef,
   PDFStream,
   PDFString,
-} from '../types';
+} from '../../types';
 import {
   createSignatureField,
   createSignatureFieldAtPoint,
@@ -28,11 +28,11 @@ import {
   applySignatureFieldAppearance,
   getNormalAppearanceRef,
   attachNormalAppearance,
-} from '../signatures';
-import { parseAcroFormCatalog, detectFormFieldsOnPage } from '../forms';
+} from '../../signatures';
+import { parseAcroFormCatalog, detectFormFieldsOnPage } from '../../forms';
 
 function makeMinimalDoc(): PDFDocumentData {
-  const objects = new Map<string, import('../types').PDFObject>();
+  const objects = new Map<string, import('../../types').PDFObject>();
   const pageDict = new PDFDict();
   pageDict.set('Type', new PDFName('Page'));
   pageDict.set('MediaBox', new PDFArray([

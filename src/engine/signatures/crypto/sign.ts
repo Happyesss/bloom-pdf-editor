@@ -12,9 +12,9 @@ import {
   PDFString,
   type PDFDocumentData,
   type PDFRectangle,
-} from '../types';
-import { getNextObjNum } from '../writer/serializer';
-import { addAnnotationToPage } from '../editor/annotation-engine';
+} from '../../types';
+import { getNextObjNum } from '../../writer/serializer';
+import { addAnnotationToPage } from '../../editor/annotation-engine';
 import { buildDetachedCMS } from './cms-builder';
 import {
   signDocumentCryptographic,

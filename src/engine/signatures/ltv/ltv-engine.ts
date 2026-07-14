@@ -3,16 +3,16 @@
  * Embeds certificate chains (+ optional OCSP/CRL) into DSS for offline validation.
  */
 
-import type { PDFDocumentData } from '../types';
-import { listSignatureFields } from './signature-field';
-import { extractPdfSignatureDict } from './validation-engine';
-import { parseCMSSignedData, parseDERNode } from './signature-verify';
+import type { PDFDocumentData } from '../../types';
+import { listSignatureFields } from '../fields/signature-field';
+import { extractPdfSignatureDict } from '../validation/validation-engine';
+import { parseCMSSignedData, parseDERNode } from '../crypto/signature-verify';
 import {
   embedDssIncremental,
   readDssSummary,
   type DssBuildResult,
 } from './dss-builder';
-import type { ASN1Node } from './types';
+import type { ASN1Node } from '../crypto/types';
 
 export interface LtvEnableOptions {
   /** Extra certificates beyond those embedded in CMS. */

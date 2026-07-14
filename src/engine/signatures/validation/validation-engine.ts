@@ -11,17 +11,17 @@ import {
   PDFRef,
   PDFString,
   type PDFDocumentData,
-} from '../types';
-import { listRevisions } from '../writer/revision-manager';
-import { listSignatureFields, type SignatureField } from './signature-field';
+} from '../../types';
+import { listRevisions } from '../../writer/revision-manager';
+import { listSignatureFields, type SignatureField } from '../fields/signature-field';
 import {
   parseCMSSignedData,
   verifySignatureDigest,
   parseDERNode,
   nodeOID,
-} from './signature-verify';
-import { parseCertificateDer, isCertificateExpired } from './certificate-parser';
-import { OID, type PDFSignatureDict, type ASN1Node } from './types';
+} from '../crypto/signature-verify';
+import { parseCertificateDer, isCertificateExpired } from '../certificates/certificate-parser';
+import { OID, type PDFSignatureDict, type ASN1Node } from '../crypto/types';
 import type {
   CertificateValidationInfo,
   SignatureValidationDetail,

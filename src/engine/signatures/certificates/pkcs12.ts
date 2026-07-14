@@ -9,8 +9,8 @@
  * directing users to PEM export (openssl pkcs12 -nodes).
  */
 
-import { parseDERNode, decodeOID } from './signature-verify';
-import type { ASN1Node } from './types';
+import { parseDERNode, decodeOID } from '../crypto/signature-verify';
+import type { ASN1Node } from '../crypto/types';
 import {
   importPrivateKey,
   parseCertificateDer,

@@ -14,7 +14,7 @@ See `implimentation.md` for PDF→DOCX modes (fixed layout vs flowing text) and 
 | 4 | Forms | `forms/widget-appearances.ts` | **Active** — checkbox/radio AP, choice, NeedAppearances, /CO calc |
 | 5 | Rendering | `render/type3.ts` | **Active** — Type3 CharProcs + golden smoke tests |
 | 6 | Save pipeline | `writer/save-pipeline.ts` | **Active** — quick incremental / optimized GC+dedup |
-| 7 | Signatures | `signatures/sign.ts` | **Active** — field create, CMS build, Web Crypto sign |
+| 7 | Signatures | `signatures/` (`visual/`, `fields/`, `crypto/`, …) | **Active** — full signature engine |
 | 8 | OCR | `lib/ocr/`, `editor/invisible-text.ts` | **Active** — adapter + invisible text layer |
 | 9 | Export / AI | `ai/compare.ts` | **Active** — document text compare |
 | 10 | Fonts | `fonts/` | **Active** — GSUB/GPOS + font augmentation |

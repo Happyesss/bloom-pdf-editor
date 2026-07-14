@@ -2,10 +2,10 @@
  * Phase 11 — RFC 3161 timestamp request / response (TimeStampReq / TimeStampResp).
  */
 
-import { derLength, derSequence, derInteger, derObjectIdentifier, derOctetString } from './cms-builder';
-import { hashBytes, hashAlgorithmOID, type HashAlgorithm } from './hash-engine';
-import { parseDERNode, nodeOID } from './signature-verify';
-import type { ASN1Node } from './types';
+import { derLength, derSequence, derInteger, derObjectIdentifier, derOctetString } from '../crypto/cms-builder';
+import { hashBytes, hashAlgorithmOID, type HashAlgorithm } from '../crypto/hash-engine';
+import { parseDERNode, nodeOID } from '../crypto/signature-verify';
+import type { ASN1Node } from '../crypto/types';
 
 /** Default public TSA (fallback list — may be unavailable). */
 export const DEFAULT_TSA_URLS = [

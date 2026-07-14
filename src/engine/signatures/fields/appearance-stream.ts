@@ -21,9 +21,9 @@ import {
   type PDFDocumentData,
   type PDFObject,
   type PDFRectangle,
-} from '../types';
-import { getNextObjNum } from '../writer/serializer';
-import { resolveRef } from '../parser/parser';
+} from '../../types';
+import { getNextObjNum } from '../../writer/serializer';
+import { resolveRef } from '../../parser/parser';
 
 // ─── Resource manager ───────────────────────────────────────────────────────
 

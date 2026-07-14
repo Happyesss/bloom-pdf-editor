@@ -43,8 +43,11 @@ export function WatermarkPreview({
   if (!doc || !doc.pages[currentPage]) return null;
 
   const page = doc.pages[currentPage];
-  const pageWidth = page.mediaBox.width;
-  const pageHeight = page.mediaBox.height;
+  // Match renderer: swapped dimensions when page /Rotate is 90 or 270
+  const rotate = ((page.rotate % 360) + 360) % 360;
+  const isRotated = rotate === 90 || rotate === 270;
+  const pageWidth = isRotated ? page.mediaBox.height : page.mediaBox.width;
+  const pageHeight = isRotated ? page.mediaBox.width : page.mediaBox.height;
   const opacity = watermarkOpacity / 100;
   const fontSizeCss = (72 * (watermarkSize / 100)) * scale;
   const imgWidthCss = watermarkImageDims?.width ? (watermarkImageDims.width * (watermarkSize / 100)) * scale : 0;
@@ -68,6 +71,10 @@ export function WatermarkPreview({
     : watermarkBlendMode === 'SoftLight' ? 'soft-light'
     : watermarkBlendMode.toLowerCase()) as React.CSSProperties['mixBlendMode'];
 
+  // CSS positive rotation is clockwise; PDF is counter-clockwise. Negate so
+  // the overlay matches the baked watermark after the renderer's Y-flip.
+  const cssRotation = -watermarkRotation;
+
   const renderItem = (cx: number, cy: number, key: string) => (
     <div
       key={key}
@@ -75,7 +82,7 @@ export function WatermarkPreview({
         position: 'absolute',
         left: `${cx}px`,
         top: `${cy}px`,
-        transform: `translate(-50%, -50%) rotate(${-watermarkRotation}deg)`,
+        transform: `translate(-50%, -50%) rotate(${cssRotation}deg)`,
         opacity,
         display: 'flex',
         alignItems: 'center',

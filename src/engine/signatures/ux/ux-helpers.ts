@@ -2,9 +2,9 @@
  * Phase 14 — Signature UX helpers (recent list, shortcuts, lock-after-sign).
  */
 
-import type { SignatureLibraryEntry } from './visual-types';
-import type { VisualSignature } from './visual-types';
-import { setSignatureLocked } from './signature-model';
+import type { SignatureLibraryEntry } from '../visual/visual-types';
+import type { VisualSignature } from '../visual/visual-types';
+import { setSignatureLocked } from '../visual/signature-model';
 
 const RECENT_KEY = 'bloom-pdf-recent-signatures-v1';
 const MAX_RECENT = 8;

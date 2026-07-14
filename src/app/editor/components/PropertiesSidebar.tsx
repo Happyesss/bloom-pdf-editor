@@ -46,16 +46,16 @@ interface PropertiesSidebarProps {
 
   /** Add a URI link to the current text selection / line (Acrobat-like). */
   onAddLink?: () => void;
+  /** Scan/highlight links on the PDF page (hover popovers live on the canvas). */
+  onScanLinks?: () => void;
+  linksHighlighted?: boolean;
   pageLinkCount?: number;
-  pageLinks?: Array<{ refKey: string; url: string }>;
-  onSelectPageLink?: (refKey: string) => void;
-  selectedLinkRefKey?: string | null;
+  linkCreatePending?: boolean;
   selectedLinkUrl?: string;
   onSelectedLinkUrlChange?: (url: string) => void;
   onSaveSelectedLink?: () => void;
   onRemoveSelectedLink?: () => void;
   hasSelectedLink?: boolean;
-  linkCreatePending?: boolean;
 
   selectedDisplayItem: ImageItem | PathItem | null;
   setSelectedDisplayItem: (item: ImageItem | PathItem | null) => void;
@@ -130,8 +130,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
     drawColor, setDrawColor, drawSize, setDrawSize,
     highlightColor, setHighlightColor, highlightSize, setHighlightSize,
     eraserSize, setEraserSize,
-    onAddLink, pageLinkCount = 0,
-    pageLinks = [], onSelectPageLink, selectedLinkRefKey = null,
+    onAddLink, onScanLinks, linksHighlighted = false, pageLinkCount = 0,
     selectedLinkUrl = '', onSelectedLinkUrlChange, onSaveSelectedLink, onRemoveSelectedLink,
     hasSelectedLink = false, linkCreatePending = false,
     selectedDisplayItem, setSelectedDisplayItem, onDeleteSelectedDisplayItem, onReplaceSelectedImage, onClearImageReplaceMode, displayItems,
@@ -164,8 +163,44 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
 
   if (!['text', 'addtext', 'draw', 'highlight', 'erase', 'select', 'watermark'].includes(activeTool)) return null;
 
+  const FONT_FAMILIES = [
+    'Helvetica',
+    'Arial',
+    'Arial Black',
+    'Times-Roman',
+    'Times New Roman',
+    'Georgia',
+    'Courier',
+    'Courier New',
+    'Verdana',
+    'Trebuchet MS',
+    'Palatino',
+    'Garamond',
+    'Comic Sans MS',
+    'Impact',
+    'Lucida Console',
+    'Lucida Sans Unicode',
+    'Tahoma',
+    'Calibri',
+    'Cambria',
+    'Candara',
+    'Consolas',
+    'Franklin Gothic Medium',
+    'Gill Sans',
+    'Optima',
+    'Segoe UI',
+    'Roboto',
+    'Open Sans',
+    'Lato',
+    'Montserrat',
+    'Inter',
+  ];
+
   return (
-    <div className="w-64 bg-zinc-900/95 backdrop-blur-md border-r border-zinc-800/80 flex flex-col shrink-0 z-10 overflow-y-auto shadow-[4px_0_24px_rgba(0,0,0,0.2)]">
+    <div
+      className="w-64 bg-zinc-900/95 backdrop-blur-md border-r border-zinc-800/80 flex flex-col shrink-0 z-10 overflow-y-auto shadow-[4px_0_24px_rgba(0,0,0,0.2)]"
+      data-keep-text-edit
+    >
       {/* TEXT TOOL PROPERTIES */}
       {(activeTool === 'text' || activeTool === 'addtext') && (
         <div className="p-4 space-y-4 animate-in fade-in slide-in-from-left-4 duration-300">
@@ -185,20 +220,28 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
           {/* Font Family */}
           <div className="space-y-1.5">
             <label className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase">Font</label>
-            <select
-              value={textFontFamily}
-              onChange={(e) => setTextFontFamily(e.target.value)}
-              className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-xs text-zinc-200 outline-none focus:border-blue-500 transition-colors cursor-pointer appearance-none"
-            >
-              <option value="Helvetica">Helvetica</option>
-              <option value="Times-Roman">Times Roman</option>
-              <option value="Courier">Courier</option>
-              <option value="Arial">Arial</option>
-              <option value="Georgia">Georgia</option>
-              <option value="Verdana">Verdana</option>
-              <option value="Trebuchet MS">Trebuchet MS</option>
-              <option value="Palatino">Palatino</option>
-            </select>
+            {(() => {
+              const isResourceId = !textFontFamily || /^F\d+$/i.test(textFontFamily);
+              const fontValue = isResourceId
+                ? 'Helvetica'
+                : textFontFamily;
+              const showCurrent = !isResourceId && !FONT_FAMILIES.includes(fontValue);
+              return (
+                <select
+                  value={fontValue}
+                  onChange={(e) => setTextFontFamily(e.target.value)}
+                  onFocus={(e) => e.stopPropagation()}
+                  className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-xs text-zinc-200 outline-none focus:border-blue-500 transition-colors cursor-pointer"
+                >
+                  {showCurrent && (
+                    <option value={fontValue}>{fontValue}</option>
+                  )}
+                  {FONT_FAMILIES.map((f) => (
+                    <option key={f} value={f}>{f}</option>
+                  ))}
+                </select>
+              );
+            })()}
           </div>
 
           {/* Font Size */}
@@ -232,6 +275,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 <button
                   key={s}
                   onClick={() => setTextFontSize(s)}
+                  onMouseDown={(e) => e.preventDefault()}
                   className={`px-2 py-0.5 rounded text-[10px] font-medium transition-all ${textFontSize === s ? 'bg-blue-600 text-white shadow-sm' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 border border-zinc-700/50'}`}
                 >
                   {s}
@@ -298,6 +342,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 <button
                   key={c}
                   onClick={() => setTextColor(c)}
+                  onMouseDown={(e) => e.preventDefault()}
                   className={`w-5 h-5 rounded-full border-2 transition-transform ${textColor.toLowerCase() === c ? 'scale-125 border-blue-400' : 'border-zinc-700 hover:scale-110'}`}
                   style={{ backgroundColor: c }}
                 />
@@ -317,6 +362,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 <button
                   key={a.val}
                   onClick={() => setTextAlign(a.val)}
+                  onMouseDown={(e) => e.preventDefault()}
                   className={`flex-1 py-1.5 rounded-md flex items-center justify-center transition-all ${textAlign === a.val ? 'bg-blue-600 text-white shadow-sm' : 'text-zinc-400 hover:text-zinc-200'}`}
                 >
                   {a.icon}
@@ -325,43 +371,31 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             </div>
           </div>
 
-          {/* Link — list page links, create from selection, edit selected */}
+          {/* Links — scan highlights on the PDF; edit/open via page hover popover */}
           <div className="space-y-1.5">
             <label className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase">
               Links {pageLinkCount > 0 ? `(${pageLinkCount})` : ''}
             </label>
 
-            {pageLinks.length > 0 && (
-              <div className="space-y-1 max-h-36 overflow-y-auto rounded-lg border border-zinc-700/50 bg-zinc-800/40 p-1">
-                {pageLinks.map((link, i) => {
-                  const selected = selectedLinkRefKey === link.refKey;
-                  const label = link.url?.trim() || '(empty URL)';
-                  return (
-                    <button
-                      key={link.refKey}
-                      type="button"
-                      onClick={() => onSelectPageLink?.(link.refKey)}
-                      className={`w-full text-left px-2.5 py-2 rounded-md text-[11px] transition-colors ${
-                        selected
-                          ? 'bg-blue-500/20 text-blue-200 border border-blue-500/40'
-                          : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 border border-transparent'
-                      }`}
-                    >
-                      <div className="font-medium text-[10px] text-zinc-500 mb-0.5">
-                        Link {i + 1}
-                      </div>
-                      <div className="truncate font-mono">{label}</div>
-                    </button>
-                  );
-                })}
-              </div>
+            {onScanLinks && (
+              <button
+                type="button"
+                onClick={onScanLinks}
+                onMouseDown={(e) => e.preventDefault()}
+                className={`w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-semibold transition-colors border ${
+                  linksHighlighted
+                    ? 'bg-blue-600/25 text-blue-300 border-blue-500/40'
+                    : 'bg-zinc-800 text-zinc-300 border-zinc-700 hover:bg-zinc-700'
+                }`}
+              >
+                <Link2 size={14} />
+                {linksHighlighted ? 'Links highlighted' : 'Scan for links'}
+              </button>
             )}
 
-            {(hasSelectedLink || linkCreatePending) ? (
+            {linkCreatePending ? (
               <div className="space-y-2 rounded-lg border border-blue-500/30 bg-blue-500/5 p-2.5">
-                <p className="text-[10px] text-blue-300 font-medium">
-                  {hasSelectedLink ? 'Editing selected link' : 'New link URL'}
-                </p>
+                <p className="text-[10px] text-blue-300 font-medium">New link URL</p>
                 <input
                   type="url"
                   value={selectedLinkUrl}
@@ -374,6 +408,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   <button
                     type="button"
                     onClick={onSaveSelectedLink}
+                    onMouseDown={(e) => e.preventDefault()}
                     className="flex-1 py-1.5 rounded-lg bg-blue-600 text-white text-[11px] font-semibold hover:bg-blue-500"
                   >
                     Save
@@ -381,9 +416,10 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   <button
                     type="button"
                     onClick={onRemoveSelectedLink}
+                    onMouseDown={(e) => e.preventDefault()}
                     className="flex-1 py-1.5 rounded-lg bg-red-500/15 text-red-400 border border-red-500/30 text-[11px] font-semibold hover:bg-red-500/25"
                   >
-                    {hasSelectedLink ? 'Remove' : 'Cancel'}
+                    Cancel
                   </button>
                 </div>
               </div>
@@ -393,6 +429,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   <button
                     type="button"
                     onClick={onAddLink}
+                    onMouseDown={(e) => e.preventDefault()}
                     className="w-full flex items-center justify-center gap-2 py-2 rounded-lg bg-blue-600/15 text-blue-400 border border-blue-500/30 hover:bg-blue-600/25 text-xs font-semibold transition-colors"
                   >
                     <Link2 size={14} />
@@ -400,10 +437,9 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   </button>
                 )}
                 <p className="text-[10px] text-zinc-500 leading-relaxed">
-                  {pageLinks.length > 0
-                    ? 'Click a link above (or its blue box on the page) to edit. Select text to add a new one.'
-                    : 'Select text, then add a URL. Links on the page appear here once created.'}
-                  {' '}Ctrl/Cmd+click opens a link.
+                  {linksHighlighted
+                    ? 'Hover a highlighted link on the page to edit or open it.'
+                    : 'Click Scan for links to highlight them on the PDF. Select text to add a new one.'}
                 </p>
               </>
             )}

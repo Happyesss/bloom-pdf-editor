@@ -4,7 +4,7 @@
 
 import type { PDFObject, PDFPageInfo } from '../types';
 import { applyTextEdits, applyRunPositionShifts, type EditResult, type TextEdit } from '../editor/text-editor';
-import { distributeTextToSegments } from './reflow';
+import { distributeTextChangeToSegments, distributeTextToSegments } from './reflow';
 import {
   computeLayoutPlan,
   computeHorizontalShifts,
@@ -32,6 +32,13 @@ function buildLayoutPlan(
   };
 }
 
+export interface LineTextEditOptions {
+  /** Original line text at edit-session start (for caret-aware redistribute). */
+  oldText?: string;
+  /** Caret index after the edit (matches overlay preview). */
+  caretAfter?: number;
+}
+
 /**
  * Apply a Word-style line edit with paragraph layout:
  * distributes text across styled runs, wraps overflow, and shifts positions.
@@ -43,13 +50,19 @@ export function applyLineTextEdit(
   line: TextLine,
   newText: string,
   flow?: DocumentFlow,
+  options?: LineTextEditOptions,
 ): EditResult {
   const plan = buildLayoutPlan(flow, line, newText);
   const edits: TextEdit[] = [];
+  const oldText = options?.oldText ?? line.text;
+  const caretAfter = options?.caretAfter ?? newText.length;
 
   for (let i = 0; i < plan.lineEdits.length; i++) {
     const { line: targetLine, newText: lineText } = plan.lineEdits[i];
-    const segmentEdits = distributeTextToSegments(targetLine, lineText);
+    // Prefer caret-aware split (same as the live overlay) so commit matches preview.
+    const segmentEdits = i === 0 && (options?.oldText != null || options?.caretAfter != null)
+      ? distributeTextChangeToSegments(targetLine, oldText, lineText, caretAfter)
+      : distributeTextToSegments(targetLine, lineText);
     for (let j = 0; j < segmentEdits.length; j++) {
       edits.push({
         targetRun: segmentEdits[j].run,

@@ -14,7 +14,7 @@ import { TOOLS } from './types';
 import {
   canvasToPdf, pdfToCanvas, hexToRGB,
   hitTestTextLine, findNearestTextLine, caretIndexFromLineX,
-  getLineBounds, getOverlayFontFamily,
+  getLineBounds, getOverlayFontFamily, getDisplayFontFamily,
 } from './utils';
 import { buildDisplayListIndex, hitTestDisplayList, isSelectableDisplayItem, TransactionStack, deleteObject, visualFontSize, resolveRunStyleFlags, transformObject, applyObjectTransform, distributeTextChangeToSegments, segmentAtIndex } from '@/engine';
 import type { QuadTree, SelectableItem, EditableObject } from '@/engine';
@@ -24,6 +24,7 @@ import { Toolbar } from './components/Toolbar';
 import { ToolsSidebar } from './components/ToolsSidebar';
 import { PropertiesSidebar } from './components/PropertiesSidebar';
 import { EditableLineBox, type OverlaySegmentStyle } from './components/EditableLineBox';
+import { LinkPopover, type LinkPopoverMode } from './components/LinkPopover';
 import { EmbeddedImageOverlay } from './components/EmbeddedImageOverlay';
 import { WatermarkPreview } from './components/WatermarkPreview';
 import { ThumbnailsSidebar } from './components/ThumbnailsSidebar';
@@ -59,7 +60,26 @@ type EditStyleOverride = {
   italic?: boolean;
   underline?: boolean;
   color?: string;
+  fontSize?: number;
+  fontFamily?: string;
 };
+
+/** Map sidebar font names to a CSS font-family stack for the edit overlay. */
+function cssFontFamilyFromUI(name: string): string {
+  const n = name.trim();
+  if (!n) return 'Helvetica, Arial, sans-serif';
+  const lower = n.toLowerCase();
+  if (lower === 'helvetica') return 'Helvetica, Arial, sans-serif';
+  if (lower === 'times-roman' || lower === 'times') return '"Times New Roman", Times, serif';
+  if (lower === 'courier') return '"Courier New", Courier, monospace';
+  if (lower.includes('mono') || lower.includes('consolas') || lower.includes('courier')) {
+    return `"${n}", "Courier New", monospace`;
+  }
+  if (lower.includes('serif') || lower.includes('times') || lower.includes('georgia') || lower.includes('garamond') || lower.includes('palatino') || lower.includes('cambria')) {
+    return `"${n}", "Times New Roman", serif`;
+  }
+  return `"${n}", Helvetica, Arial, sans-serif`;
+}
 
 // ─── Component ──────────────────────────────────────────────────────────────
 
@@ -103,7 +123,9 @@ export default function EditorPage() {
   /** Pending style patches queued while typing, each with a char range. */
   const pendingStylesRef = useRef<Array<{ patch: Partial<TextStyleUI>; start: number; end: number }>>([]);
   /** Word-like typing style: applies to newly typed chars when caret is collapsed. */
-  const typingStyleRef = useRef<Partial<Pick<TextStyleUI, 'bold' | 'italic' | 'underline' | 'color'>>>({});
+  const typingStyleRef = useRef<Partial<Pick<TextStyleUI, 'bold' | 'italic' | 'underline' | 'color' | 'fontSize' | 'fontFamily'>>>({});
+  /** True while the pointer is over the link popover (keeps hover open). */
+  const linkPopoverHoverRef = useRef(false);
   const editTextRef = useRef('');
   const [editText, setEditText] = useState('');
   const [caretPos, setCaretPos] = useState(0); // character index for caret
@@ -140,6 +162,11 @@ export default function EditorPage() {
   const [pageLinks, setPageLinks] = useState<import('@/engine').PageLinkInfo[]>([]);
   const [selectedLink, setSelectedLink] = useState<import('@/engine').PageLinkInfo | null>(null);
   const [linkDraftUrl, setLinkDraftUrl] = useState('');
+  const [linkDisplayDraft, setLinkDisplayDraft] = useState('');
+  /** Only after "Scan for links" — highlights + hover popovers on the PDF. */
+  const [linksHighlighted, setLinksHighlighted] = useState(false);
+  const [linkPopoverMode, setLinkPopoverMode] = useState<LinkPopoverMode | null>(null);
+  const linkHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Pending "add link" flow: waiting for URL in the text sidebar. */
   const [linkCreatePending, setLinkCreatePending] = useState(false);
 
@@ -280,7 +307,8 @@ export default function EditorPage() {
     if (!selectedLine) return;
     if (editingLineRef.current) {
       const sel = editSelRef.current;
-      // Collapsed caret → typing style only (Word-like). Do NOT restyle the whole box.
+      const line = editAnchorLineRef.current ?? selectedLine;
+      // Collapsed caret → typing style only (Word-like). Do NOT restyle existing text.
       if (sel.end <= sel.start) {
         typingStyleRef.current = {
           ...typingStyleRef.current,
@@ -288,10 +316,12 @@ export default function EditorPage() {
           ...(patch.italic != null ? { italic: patch.italic } : {}),
           ...(patch.underline != null ? { underline: patch.underline } : {}),
           ...(patch.color != null ? { color: patch.color } : {}),
+          ...(patch.fontSize != null ? { fontSize: patch.fontSize } : {}),
+          ...(patch.fontFamily != null ? { fontFamily: patch.fontFamily } : {}),
         };
         return;
       }
-      const line = editAnchorLineRef.current ?? selectedLine;
+      // Real selection (drag / double-click word / select-all) → style only that range
       const range = resolveEditStyleRange(line, sel.start, sel.end);
       if (range.end <= range.start) return;
       pendingStylesRef.current = [...pendingStylesRef.current, { patch, ...range }];
@@ -304,6 +334,8 @@ export default function EditorPage() {
           italic: patch.italic,
           underline: patch.underline,
           color: patch.color,
+          fontSize: patch.fontSize,
+          fontFamily: patch.fontFamily,
         },
       ]);
       return;
@@ -324,16 +356,21 @@ export default function EditorPage() {
     const seg = segmentAtIndex(line, start);
     if (!seg) return;
     const run = seg.run;
-    const fontData = renderResult.fonts.get(run.fontName);
-    const flags = resolveRunStyleFlags(run.fontName, fontData);
+    const flags = resolveRunStyleFlags(run.fontName, renderResult.fonts.get(run.fontName));
     let bold = flags.bold;
     let italic = flags.italic;
     let underline = !!run.isUnderline || runHasPathUnderline(run, strokePaths);
+    let fontSize = visualFontSize(run);
+    const fontData = renderResult.fonts.get(run.fontName);
+    let fontFamily = getDisplayFontFamily(run.fontName, fontData);
     for (const ov of editStyleOverrides) {
       if (start >= ov.start && start < ov.end) {
         if (ov.bold != null) bold = ov.bold;
         if (ov.italic != null) italic = ov.italic;
         if (ov.underline != null) underline = ov.underline;
+        if (ov.fontSize != null) fontSize = ov.fontSize;
+        if (ov.fontFamily) fontFamily = ov.fontFamily;
+        if (ov.color) setTextColor(ov.color.startsWith('#') ? ov.color : textColor);
       }
     }
     // Collapsed caret: typing style wins (user just toggled bold off to type normal)
@@ -342,18 +379,26 @@ export default function EditorPage() {
       if (ts.bold != null) bold = ts.bold;
       if (ts.italic != null) italic = ts.italic;
       if (ts.underline != null) underline = ts.underline;
+      if (ts.fontSize != null) fontSize = ts.fontSize;
+      if (ts.fontFamily) fontFamily = ts.fontFamily;
       if (ts.color) setTextColor(ts.color);
     }
     setTextBold(bold);
     setTextItalic(italic);
     setTextUnderline(underline);
-    setTextFontSize(visualFontSize(run));
+    setTextFontSize(fontSize);
+    setTextFontFamily(fontFamily);
     if (!(start === end && typingStyleRef.current.color != null) && run.fillColor) {
-      const [r, g, b] = run.fillColor;
-      const hex = '#' + [r, g, b].map(c => Math.round(c * 255).toString(16).padStart(2, '0')).join('');
-      setTextColor(hex);
+      const hasColorOv = editStyleOverrides.some(
+        ov => start >= ov.start && start < ov.end && ov.color,
+      );
+      if (!hasColorOv) {
+        const [r, g, b] = run.fillColor;
+        const hex = '#' + [r, g, b].map(c => Math.round(c * 255).toString(16).padStart(2, '0')).join('');
+        setTextColor(hex);
+      }
     }
-  }, [renderResult, strokePaths, editStyleOverrides]);
+  }, [renderResult, strokePaths, editStyleOverrides, textFontFamily, textColor]);
 
   const handleTextBold = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
     setTextBold(prev => {
@@ -377,10 +422,29 @@ export default function EditorPage() {
     });
   }, [queueOrApplyStyle]);
   const handleTextFontSize = useCallback((v: number | ((prev: number) => number)) => {
+    if (blurTimeoutRef.current) {
+      clearTimeout(blurTimeoutRef.current);
+      blurTimeoutRef.current = null;
+    }
     setTextFontSize(prev => {
       const next = typeof v === 'function' ? v(prev) : v;
       queueOrApplyStyle({ fontSize: next });
       return next;
+    });
+    // Keep the edit box focused after clicking a size preset in the sidebar
+    requestAnimationFrame(() => {
+      hiddenInputRef.current?.focus({ preventScroll: true });
+    });
+  }, [queueOrApplyStyle]);
+  const handleTextFontFamily = useCallback((v: string) => {
+    if (blurTimeoutRef.current) {
+      clearTimeout(blurTimeoutRef.current);
+      blurTimeoutRef.current = null;
+    }
+    setTextFontFamily(v);
+    queueOrApplyStyle({ fontFamily: v });
+    requestAnimationFrame(() => {
+      hiddenInputRef.current?.focus({ preventScroll: true });
     });
   }, [queueOrApplyStyle]);
   const handleTextColor = useCallback((v: string) => {
@@ -498,8 +562,8 @@ export default function EditorPage() {
       const run = selectedLine.runs[0];
       // Keep fractional size so overlay matches canvas (rounding caused a visible jump)
       setTextFontSize(visualFontSize(run));
-      if (run.fontName) setTextFontFamily(run.fontName);
       const fontData = renderResult?.fonts.get(run.fontName);
+      setTextFontFamily(getDisplayFontFamily(run.fontName, fontData));
       const flags = resolveRunStyleFlags(run.fontName, fontData);
       setTextBold(flags.bold);
       setTextItalic(flags.italic);
@@ -682,11 +746,21 @@ export default function EditorPage() {
     if (editingLine && editAnchorLineRef.current) {
       const anchor = editAnchorLineRef.current;
       const bounds = getLineBounds(anchor);
-      const fontSize = anchor.runs[0] ? visualFontSize(anchor.runs[0]) : anchor.fontSize;
-      const fontSizeCss = fontSize * scale;
+      let maxFs = anchor.runs[0] ? visualFontSize(anchor.runs[0]) : anchor.fontSize;
+      for (const run of anchor.runs) maxFs = Math.max(maxFs, visualFontSize(run));
+      for (const ov of editStyleOverrides) {
+        if (ov.fontSize != null) maxFs = Math.max(maxFs, ov.fontSize);
+      }
+      if (typingStyleRef.current.fontSize != null) {
+        maxFs = Math.max(maxFs, typingStyleRef.current.fontSize);
+      }
+      if (editSel.end <= editSel.start && textFontSize > 0) {
+        maxFs = Math.max(maxFs, textFontSize);
+      }
+      const fontSizeCss = maxFs * scale;
       const baseline = anchor.baseline;
-      const ascent = fontSizeCss * 0.8;
-      const descent = fontSizeCss * 0.05;
+      const ascent = fontSizeCss * 0.85;
+      const descent = fontSizeCss * 0.25;
 
       ctx.save();
       ctx.scale(dpr, dpr);
@@ -817,8 +891,13 @@ export default function EditorPage() {
       ctx.restore();
     }
 
-    // ── Link annotation overlays (visible in text / select) ──
-    if ((activeTool === 'text' || activeTool === 'select' || activeTool === 'addtext') && pageLinks.length > 0 && !editingLine) {
+    // ── Link annotation overlays (only after "Scan for links") ──
+    if (
+      linksHighlighted
+      && (activeTool === 'text' || activeTool === 'select' || activeTool === 'addtext')
+      && pageLinks.length > 0
+      && !editingLine
+    ) {
       ctx.save();
       ctx.scale(dpr, dpr);
       for (const link of pageLinks) {
@@ -834,13 +913,22 @@ export default function EditorPage() {
         const by = Math.min(topLeft.cssY, bottomRight.cssY);
         const bw = Math.abs(bottomRight.cssX - topLeft.cssX);
         const bh = Math.abs(bottomRight.cssY - topLeft.cssY);
-        const selected = selectedLink?.ref.toKey() === link.ref.toKey();
-        ctx.strokeStyle = selected ? '#2563eb' : 'rgba(37, 99, 235, 0.85)';
-        ctx.lineWidth = selected ? 2 : 1;
-        ctx.setLineDash(selected ? [] : [4, 3]);
-        ctx.fillStyle = selected ? 'rgba(37, 99, 235, 0.12)' : 'rgba(37, 99, 235, 0.06)';
-        ctx.fillRect(bx, by, bw, bh);
-        ctx.strokeRect(bx, by, bw, bh);
+        const active = selectedLink?.ref.toKey() === link.ref.toKey();
+        ctx.strokeStyle = active ? '#52525b' : 'rgba(37, 99, 235, 0.85)';
+        ctx.lineWidth = active ? 2 : 1;
+        ctx.setLineDash(active ? [] : [4, 3]);
+        ctx.fillStyle = active ? 'rgba(63, 63, 70, 0.28)' : 'rgba(37, 99, 235, 0.06)';
+        // Rounded highlight for the active/hovered link
+        const r = Math.min(6, bw / 2, bh / 2);
+        ctx.beginPath();
+        ctx.moveTo(bx + r, by);
+        ctx.arcTo(bx + bw, by, bx + bw, by + bh, r);
+        ctx.arcTo(bx + bw, by + bh, bx, by + bh, r);
+        ctx.arcTo(bx, by + bh, bx, by, r);
+        ctx.arcTo(bx, by, bx + bw, by, r);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
         ctx.setLineDash([]);
       }
       ctx.restore();
@@ -876,7 +964,7 @@ export default function EditorPage() {
       }
       ctx.restore();
     }
-  }, [editingLine, editText, caretPos, renderResult, doc, currentPage, scale, drawnPaths, activeTool, displayItems, selectedDisplayItem, formFields, selectedFormField, editOffsetCss, editManualSize, pageLinks, selectedLink, detectedTables, activeTableId]);
+  }, [editingLine, editText, caretPos, renderResult, doc, currentPage, scale, drawnPaths, activeTool, displayItems, selectedDisplayItem, formFields, selectedFormField, editOffsetCss, editManualSize, editStyleOverrides, editSel, textFontSize, pageLinks, selectedLink, linksHighlighted, detectedTables, activeTableId]);
 
   // Re-draw overlay whenever edit state changes
   useEffect(() => { drawOverlay(); }, [drawOverlay]);
@@ -966,8 +1054,8 @@ export default function EditorPage() {
       const run = seg?.run ?? line.runs[0];
       if (run) {
         setTextFontSize(visualFontSize(run));
-        if (run.fontName) setTextFontFamily(run.fontName);
         const fontData = renderResult?.fonts.get(run.fontName);
+        setTextFontFamily(getDisplayFontFamily(run.fontName, fontData));
         const flags = resolveRunStyleFlags(run.fontName, fontData);
         setTextBold(flags.bold);
         setTextItalic(flags.italic);
@@ -1032,13 +1120,18 @@ export default function EditorPage() {
         : engine.getPageContentBytes(page, doc.objects);
 
       if (textChanged) {
+        const commitText = editTextRef.current || editText;
         const editResult = engine.applyLineTextEdit(
           bytes,
           page,
           doc.objects,
           targetLine,
-          editText,
+          commitText,
           renderResult?.documentFlow,
+          {
+            oldText: initialRunTextRef.current || targetLine.text,
+            caretAfter: editSelRef.current.end,
+          },
         );
 
         if (editResult.needsFontAugmentation) {
@@ -1062,7 +1155,21 @@ export default function EditorPage() {
       await engine.updatePageContent(page.contentRefs, bytes, doc.objects);
 
       if (hasPendingStyles) {
-        const queued = [...pendingStyles].filter(p => p.end > p.start);
+        const commitText = editTextRef.current || editText;
+        // Merge adjacent identical patches so we don't split the same run repeatedly
+        const raw = [...pendingStyles]
+          .filter(p => p.end > p.start)
+          .sort((a, b) => a.start - b.start || a.end - b.end);
+        const queued: typeof raw = [];
+        for (const item of raw) {
+          const prev = queued[queued.length - 1];
+          const samePatch = prev && JSON.stringify(prev.patch) === JSON.stringify(item.patch);
+          if (samePatch && prev.end >= item.start) {
+            prev.end = Math.max(prev.end, item.end);
+          } else {
+            queued.push({ ...item, patch: { ...item.patch } });
+          }
+        }
         pendingStylesRef.current = [];
         // Re-interpret so selection ranges map onto the updated line text/runs
         let styleLine: TextLine = targetLine;
@@ -1071,7 +1178,7 @@ export default function EditorPage() {
           const interpreted = engine.interpretPage(freshBytes, page, doc.objects);
           const flow = engine.buildDocumentFlow(interpreted.textRuns);
           styleLine =
-            flow.lines.find((l: TextLine) => l.text === editText) ??
+            flow.lines.find((l: TextLine) => l.text === commitText) ??
             findMatchingFlowLine(targetLine, flow.lines) ??
             targetLine;
         } catch (reErr) {
@@ -1080,18 +1187,23 @@ export default function EditorPage() {
         for (const item of queued) {
           const style: Record<string, unknown> = {};
           if (item.patch.fontSize != null) style.fontSize = item.patch.fontSize;
+          if (item.patch.fontFamily != null) style.fontFamily = item.patch.fontFamily;
           if (item.patch.color != null) style.color = hexToRGB(item.patch.color);
           if (item.patch.bold != null) style.bold = item.patch.bold;
           if (item.patch.italic != null) style.italic = item.patch.italic;
           if (item.patch.underline != null) style.underline = item.patch.underline;
           if (item.patch.align != null) style.align = item.patch.align;
           if (Object.keys(style).length === 0) continue;
+          // Clamp to the committed line length
+          const start = Math.max(0, Math.min(item.start, styleLine.text.length));
+          const end = Math.max(start, Math.min(item.end, styleLine.text.length));
+          if (end <= start) continue;
           await engine.applyStyleToSelectionOnPage(
             doc,
             currentPage,
             styleLine,
-            item.start,
-            item.end,
+            start,
+            end,
             style,
           );
         }
@@ -1409,6 +1521,18 @@ export default function EditorPage() {
     return () => document.removeEventListener('keydown', handler);
   }, [handleUndo, handleRedo]);
 
+  const resolveLinkDisplay = useCallback((link: import('@/engine').PageLinkInfo) => {
+    const lines = renderResult?.textLines ?? [];
+    if (!lines.length) return { text: '', line: null as TextLine | null, start: 0, end: 0 };
+    const cx = link.rect.x + link.rect.width / 2;
+    const cy = link.rect.y + link.rect.height / 2;
+    const line = hitTestTextLine(cx, cy, lines) || findNearestTextLine(cx, cy, lines, 24);
+    if (!line) return { text: '', line: null, start: 0, end: 0 };
+    const start = caretIndexFromLineX(link.rect.x, line);
+    const end = Math.max(start, caretIndexFromLineX(link.rect.x + link.rect.width, line));
+    return { text: line.text.slice(start, end), line, start, end };
+  }, [renderResult]);
+
   // ── Canvas click handler — caret-based, no boxes ──
   const handleCanvasClick = useCallback((e: React.MouseEvent) => {
     if (!renderResult || !doc) return;
@@ -1450,18 +1574,26 @@ export default function EditorPage() {
         }
       }
 
-      // Click a link box → select it for editing in the text sidebar
-      if (engineRef.current) {
+      // Click a highlighted link → open hover/edit popover on the PDF
+      if (linksHighlighted && engineRef.current) {
         const linkHit = engineRef.current.hitTestPageLink(doc, currentPage, pdfX, pdfY);
         if (linkHit) {
           if (editingLine) void handleEditSubmit(false);
-          setSelectedLink(linkHit);
-          setLinkDraftUrl(linkHit.url || 'https://');
-          setLinkCreatePending(false);
           setSelectedLine(null);
           setSelectedDisplayItem(null);
-          setActiveTool('text');
+          setLinkCreatePending(false);
+          setSelectedLink(linkHit);
+          setLinkDraftUrl(linkHit.url || '');
+          setLinkDisplayDraft(resolveLinkDisplay(linkHit).text);
+          setLinkPopoverMode('hover');
           return;
+        }
+        // Click outside any link while a popover is open → dismiss it
+        if (linkPopoverMode) {
+          setLinkPopoverMode(null);
+          setSelectedLink(null);
+          setLinkDraftUrl('');
+          setLinkDisplayDraft('');
         }
       }
 
@@ -1585,7 +1717,7 @@ export default function EditorPage() {
         }
       }
     }
-  }, [renderResult, doc, currentPage, scale, activeTool, editingLine, handleEditSubmit, beginEditSession, displayItems, textFontSize, textColor, textFontFamily, highlightColor, formFields, handleFormFieldSelect]);
+  }, [renderResult, doc, currentPage, scale, activeTool, editingLine, handleEditSubmit, beginEditSession, displayItems, textFontSize, textColor, textFontFamily, highlightColor, formFields, handleFormFieldSelect, linksHighlighted, linkPopoverMode, resolveLinkDisplay]);
 
   // Double-click in select mode → enter text edit
   const handleCanvasDoubleClick = useCallback((e: React.MouseEvent) => {
@@ -1918,6 +2050,148 @@ export default function EditorPage() {
     drawDraggedRef.current = false;
   }, [isDrawing, activeTool, drawColor, drawSize, highlightColor, highlightSize]);
 
+  const openLinkHover = useCallback((link: import('@/engine').PageLinkInfo) => {
+    if (linkHoverTimerRef.current) {
+      clearTimeout(linkHoverTimerRef.current);
+      linkHoverTimerRef.current = null;
+    }
+    // Already showing this link — don't reset state (avoids flicker / remount)
+    if (
+      selectedLink?.ref.toKey() === link.ref.toKey()
+      && (linkPopoverMode === 'hover' || linkPopoverMode === 'edit')
+    ) {
+      return;
+    }
+    if (linkPopoverMode === 'edit') return;
+    setSelectedLink(link);
+    setLinkDraftUrl(link.url || '');
+    setLinkDisplayDraft(resolveLinkDisplay(link).text);
+    setLinkPopoverMode('hover');
+  }, [linkPopoverMode, selectedLink, resolveLinkDisplay]);
+
+  const scheduleLinkHoverClose = useCallback(() => {
+    if (linkPopoverMode === 'edit') return;
+    if (linkPopoverHoverRef.current) return;
+    if (linkHoverTimerRef.current) clearTimeout(linkHoverTimerRef.current);
+    linkHoverTimerRef.current = setTimeout(() => {
+      linkHoverTimerRef.current = null;
+      if (linkPopoverHoverRef.current) return;
+      setLinkPopoverMode((mode) => {
+        if (mode === 'hover') {
+          setSelectedLink(null);
+          return null;
+        }
+        return mode;
+      });
+    }, 700);
+  }, [linkPopoverMode]);
+
+  const handleCanvasMouseMove = useCallback((e: React.MouseEvent) => {
+    handleDrawMove(e);
+    if (!linksHighlighted || !doc || !engineRef.current || !renderResult || editingLine) return;
+    if (linkPopoverMode === 'edit') return;
+    if (['draw', 'highlight', 'erase'].includes(activeTool)) return;
+    // Pointer is over the popover — keep it open
+    if (linkPopoverHoverRef.current) return;
+
+    const rect = canvasContainerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const cssX = e.clientX - rect.left;
+    const cssY = e.clientY - rect.top;
+    const page = doc.pages[currentPage];
+    const { pdfX, pdfY } = canvasToPdf(
+      cssX, cssY, scale,
+      renderResult.pageWidth, renderResult.pageHeight,
+      page.mediaBox.x, page.mediaBox.y,
+    );
+    const hit = engineRef.current.hitTestPageLink(doc, currentPage, pdfX, pdfY);
+    if (hit) {
+      openLinkHover(hit);
+    } else if (linkPopoverMode === 'hover') {
+      scheduleLinkHoverClose();
+    }
+  }, [
+    handleDrawMove, linksHighlighted, doc, renderResult, editingLine,
+    linkPopoverMode, activeTool, currentPage, scale, openLinkHover, scheduleLinkHoverClose,
+  ]);
+
+  const handleCanvasMouseLeave = useCallback((e: React.MouseEvent) => {
+    handleDrawEnd();
+    const next = e.relatedTarget as HTMLElement | null;
+    if (next?.closest?.('[data-link-popover]')) return;
+    if (linkPopoverMode === 'hover' && !linkPopoverHoverRef.current) {
+      scheduleLinkHoverClose();
+    }
+  }, [handleDrawEnd, linkPopoverMode, scheduleLinkHoverClose]);
+
+  const closeLinkPopover = useCallback(() => {
+    if (linkHoverTimerRef.current) {
+      clearTimeout(linkHoverTimerRef.current);
+      linkHoverTimerRef.current = null;
+    }
+    setLinkPopoverMode(null);
+    setSelectedLink(null);
+    setLinkDraftUrl('');
+    setLinkDisplayDraft('');
+  }, []);
+
+  const saveLinkFromPopover = useCallback(async (andClose = true) => {
+    if (!doc || !engineRef.current || !selectedLink) {
+      if (andClose) closeLinkPopover();
+      return;
+    }
+    const url = linkDraftUrl.trim();
+    if (!url || url === 'https://') {
+      if (andClose) closeLinkPopover();
+      return;
+    }
+
+    try {
+      const display = resolveLinkDisplay(selectedLink);
+      // Update display text in the PDF if the user changed it
+      if (display.line && linkDisplayDraft !== display.text && display.end > display.start) {
+        const line = display.line;
+        const nextText =
+          line.text.slice(0, display.start) + linkDisplayDraft + line.text.slice(display.end);
+        const page = doc.pages[currentPage];
+        const bytes = engineRef.current.getPageContentBytes(page, doc.objects);
+        const editResult = engineRef.current.applyLineTextEdit(
+          bytes, page, doc.objects, line, nextText, renderResult?.documentFlow,
+        );
+        await engineRef.current.updatePageContent(
+          page.contentRefs, editResult.newContentBytes, doc.objects,
+        );
+      }
+
+      if (url !== selectedLink.url) {
+        engineRef.current.updatePageLinkUrl(doc, currentPage, selectedLink, url);
+      }
+      setIsDirty(true);
+      setRenderKey(k => k + 1);
+      if (andClose) closeLinkPopover();
+    } catch (err) {
+      console.warn('[Editor] Save link failed:', err);
+    }
+  }, [
+    doc, selectedLink, linkDraftUrl, linkDisplayDraft, resolveLinkDisplay,
+    currentPage, renderResult, closeLinkPopover,
+  ]);
+
+  const removeLinkFromPopover = useCallback(() => {
+    if (!doc || !engineRef.current || !selectedLink) {
+      closeLinkPopover();
+      return;
+    }
+    try {
+      engineRef.current.removePageLink(doc, currentPage, selectedLink.ref);
+      setIsDirty(true);
+      setRenderKey(k => k + 1);
+      closeLinkPopover();
+    } catch (err) {
+      console.warn('[Editor] Remove link failed:', err);
+    }
+  }, [doc, selectedLink, currentPage, closeLinkPopover]);
+
   const handleFloatingTextPointerDown = useCallback((e: React.PointerEvent, id: string) => {
     e.stopPropagation();
     setActiveFloatingTextId(id);
@@ -2172,9 +2446,13 @@ export default function EditorPage() {
       }).filter(p => p.end > p.start);
     }
 
-    // Apply typing style to newly inserted characters
+    // Apply typing style to newly inserted characters only
     const ts = typingStyleRef.current;
-    if (delta > 0 && (ts.bold != null || ts.italic != null || ts.underline != null || ts.color != null)) {
+    if (
+      delta > 0
+      && (ts.bold != null || ts.italic != null || ts.underline != null
+        || ts.color != null || ts.fontSize != null || ts.fontFamily != null)
+    ) {
       const insertStart = sel - delta;
       const insertEnd = sel;
       const patch: Partial<TextStyleUI> = {};
@@ -2182,6 +2460,8 @@ export default function EditorPage() {
       if (ts.italic != null) patch.italic = ts.italic;
       if (ts.underline != null) patch.underline = ts.underline;
       if (ts.color != null) patch.color = ts.color;
+      if (ts.fontSize != null) patch.fontSize = ts.fontSize;
+      if (ts.fontFamily != null) patch.fontFamily = ts.fontFamily;
       pendingStylesRef.current = [...pendingStylesRef.current, { patch, start: insertStart, end: insertEnd }];
       setEditStyleOverrides(prev => [
         ...prev,
@@ -2192,6 +2472,8 @@ export default function EditorPage() {
           italic: ts.italic,
           underline: ts.underline,
           color: ts.color,
+          fontSize: ts.fontSize,
+          fontFamily: ts.fontFamily,
         },
       ]);
     }
@@ -2247,6 +2529,12 @@ export default function EditorPage() {
     }
     blurTimeoutRef.current = setTimeout(() => {
       blurTimeoutRef.current = null;
+      // Sidebar / font <select> uses data-keep-text-edit — keep edit open.
+      // Do NOT refocus the textarea here or the native dropdown closes instantly.
+      const active = document.activeElement as HTMLElement | null;
+      if (active?.closest?.('[data-keep-text-edit]')) {
+        return;
+      }
       if (editingLineRef.current) {
         handleEditSubmit();
       }
@@ -2256,19 +2544,17 @@ export default function EditorPage() {
   // ── Navigation handlers ──
   const goToPrev = useCallback(() => {
     commitDrawingsToPdf();
-    setSelectedLink(null);
+    closeLinkPopover();
     setLinkCreatePending(false);
-    setLinkDraftUrl('');
     setCurrentPage(p => Math.max(0, p - 1));
-  }, [commitDrawingsToPdf]);
+  }, [commitDrawingsToPdf, closeLinkPopover]);
 
   const goToNext = useCallback(() => {
     commitDrawingsToPdf();
-    setSelectedLink(null);
+    closeLinkPopover();
     setLinkCreatePending(false);
-    setLinkDraftUrl('');
     setCurrentPage(p => Math.min(totalPages - 1, p + 1));
-  }, [totalPages, commitDrawingsToPdf]);
+  }, [totalPages, commitDrawingsToPdf, closeLinkPopover]);
 
   const zoomIn = useCallback(() => {
     setScale(s => Math.min(4, Math.round((s + 0.25) * 100) / 100));
@@ -3049,7 +3335,7 @@ export default function EditorPage() {
           setActiveTool={setActiveTool}
           selectedRun={selectedLine?.runs[0] ?? null}
           textFontFamily={textFontFamily}
-          setTextFontFamily={setTextFontFamily}
+          setTextFontFamily={handleTextFontFamily}
           textFontSize={textFontSize}
           setTextFontSize={handleTextFontSize}
           textBold={textBold}
@@ -3077,18 +3363,23 @@ export default function EditorPage() {
           eraserSize={eraserSize}
           setEraserSize={setEraserSize}
           pageLinkCount={pageLinks.length}
-          pageLinks={pageLinks.map(l => ({ refKey: l.ref.toKey(), url: l.url }))}
-          selectedLinkRefKey={selectedLink?.ref.toKey() ?? null}
-          onSelectPageLink={(refKey) => {
-            const hit = pageLinks.find(l => l.ref.toKey() === refKey);
-            if (!hit) return;
-            if (editingLine) void handleEditSubmit(false);
-            setSelectedLink(hit);
-            setLinkDraftUrl(hit.url || 'https://');
-            setLinkCreatePending(false);
-            setActiveTool('text');
+          linksHighlighted={linksHighlighted}
+          onScanLinks={() => {
+            if (!doc || !engineRef.current) return;
+            try {
+              const links = engineRef.current.listPageLinks(doc, currentPage);
+              setPageLinks(links);
+              setLinksHighlighted(true);
+              setLinkCreatePending(false);
+              closeLinkPopover();
+              if (links.length === 0) {
+                window.alert('No links found on this page.');
+              }
+            } catch (err) {
+              console.warn('[Editor] Scan links failed:', err);
+            }
           }}
-          hasSelectedLink={!!selectedLink}
+          hasSelectedLink={false}
           linkCreatePending={linkCreatePending}
           selectedLinkUrl={linkDraftUrl}
           onSelectedLinkUrlChange={setLinkDraftUrl}
@@ -3096,20 +3387,6 @@ export default function EditorPage() {
             if (!doc || !engineRef.current) return;
             const url = linkDraftUrl.trim();
             if (!url || url === 'https://') return;
-
-            if (selectedLink) {
-              try {
-                engineRef.current.updatePageLinkUrl(doc, currentPage, selectedLink, url);
-                setSelectedLink(null);
-                setLinkDraftUrl('');
-                setLinkCreatePending(false);
-                setIsDirty(true);
-                setRenderKey(k => k + 1);
-              } catch (err) {
-                console.warn('[Editor] Update link failed:', err);
-              }
-              return;
-            }
 
             // Create from current text selection / line
             const line = editAnchorLineRef.current ?? selectedLine ?? editingLine;
@@ -3135,30 +3412,19 @@ export default function EditorPage() {
               if (ref) {
                 setLinkCreatePending(false);
                 setLinkDraftUrl('');
+                setLinksHighlighted(true);
                 setIsDirty(true);
                 setRenderKey(k => k + 1);
+              } else {
+                window.alert('Select some text first, then add a link.');
               }
             } catch (err) {
               console.warn('[Editor] Add link failed:', err);
             }
           }}
           onRemoveSelectedLink={() => {
-            if (!doc || !engineRef.current || !selectedLink) {
-              setLinkCreatePending(false);
-              setLinkDraftUrl('');
-              setSelectedLink(null);
-              return;
-            }
-            try {
-              engineRef.current.removePageLink(doc, currentPage, selectedLink.ref);
-              setSelectedLink(null);
-              setLinkDraftUrl('');
-              setLinkCreatePending(false);
-              setIsDirty(true);
-              setRenderKey(k => k + 1);
-            } catch (err) {
-              console.warn('[Editor] Remove link failed:', err);
-            }
+            setLinkCreatePending(false);
+            setLinkDraftUrl('');
           }}
           onAddLink={() => {
             const line = editAnchorLineRef.current ?? selectedLine ?? editingLine;
@@ -3166,7 +3432,7 @@ export default function EditorPage() {
               window.alert('Select or click a text line first, then add a link.');
               return;
             }
-            setSelectedLink(null);
+            closeLinkPopover();
             setLinkCreatePending(true);
             setLinkDraftUrl('https://');
             setActiveTool('text');
@@ -3300,9 +3566,9 @@ export default function EditorPage() {
             }}
             onDoubleClick={handleCanvasDoubleClick}
             onMouseDown={handleDrawStart}
-            onMouseMove={handleDrawMove}
+            onMouseMove={handleCanvasMouseMove}
             onMouseUp={handleDrawEnd}
-            onMouseLeave={handleDrawEnd}
+            onMouseLeave={handleCanvasMouseLeave}
           >
             {/* PDF canvas is prepended here by the render effect */}
 
@@ -3599,10 +3865,28 @@ export default function EditorPage() {
               const { mediaBox } = page;
               const primaryRun = anchor.runs[0];
               const visualSize = primaryRun ? visualFontSize(primaryRun) : anchor.fontSize;
-              const fontSizeCss = (textFontSize || visualSize) * scale;
+              // Box height follows the tallest glyph on the line (mixed sizes / overrides)
+              let maxFontSizeCss = visualSize * scale;
+              for (const run of anchor.runs) {
+                maxFontSizeCss = Math.max(maxFontSizeCss, visualFontSize(run) * scale);
+              }
+              for (const ov of editStyleOverrides) {
+                if (ov.fontSize != null) {
+                  maxFontSizeCss = Math.max(maxFontSizeCss, ov.fontSize * scale);
+                }
+              }
+              const tsSize = typingStyleRef.current.fontSize;
+              if (tsSize != null) {
+                maxFontSizeCss = Math.max(maxFontSizeCss, tsSize * scale);
+              }
+              // Include sidebar size while typing so the box grows with the caret style
+              if (editSel.end <= editSel.start && textFontSize > 0) {
+                maxFontSizeCss = Math.max(maxFontSizeCss, textFontSize * scale);
+              }
+              const fontSizeCss = maxFontSizeCss;
               const baseline = anchor.baseline;
-              const ascent = fontSizeCss * 0.8;
-              const descent = fontSizeCss * 0.2;
+              const ascent = fontSizeCss * 0.85;
+              const descent = fontSizeCss * 0.25;
               const origin = pdfToCanvas(
                 bounds.x,
                 baseline,
@@ -3691,6 +3975,8 @@ export default function EditorPage() {
                 let color = run.fillColor
                   ? `rgb(${Math.round(run.fillColor[0] * 255)}, ${Math.round(run.fillColor[1] * 255)}, ${Math.round(run.fillColor[2] * 255)})`
                   : colorCss;
+                let segFontSize = visualFontSize(run) * scale;
+                let segFontFamily = getOverlayFontFamily(run.fontName, fd);
 
                 for (const ov of editStyleOverrides) {
                   if (piece.start >= ov.start && piece.end <= ov.end) {
@@ -3698,12 +3984,15 @@ export default function EditorPage() {
                     if (ov.italic != null) italic = ov.italic;
                     if (ov.underline != null) underline = ov.underline;
                     if (ov.color) color = ov.color.startsWith('#') ? ov.color : color;
+                    if (ov.fontSize != null) segFontSize = ov.fontSize * scale;
+                    if (ov.fontFamily) segFontFamily = cssFontFamilyFromUI(ov.fontFamily);
                   }
                 }
 
                 return {
                   text: piece.text,
-                  fontFamily: getOverlayFontFamily(run.fontName, fd),
+                  fontFamily: segFontFamily,
+                  fontSizeCss: segFontSize,
                   fontWeight: bold ? 'bold' : 'normal',
                   fontStyle: italic ? 'italic' : 'normal',
                   underline,
@@ -3741,6 +4030,61 @@ export default function EditorPage() {
                 />
               );
             })()}
+
+            {/* Link hover / edit popovers on the PDF (after Scan for links) */}
+            {linksHighlighted && selectedLink && linkPopoverMode && renderResult && doc && (() => {
+              const page = doc.pages[currentPage];
+              const { mediaBox } = page;
+              const topLeft = pdfToCanvas(
+                selectedLink.rect.x,
+                selectedLink.rect.y + selectedLink.rect.height,
+                scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
+              );
+              const bottomRight = pdfToCanvas(
+                selectedLink.rect.x + selectedLink.rect.width,
+                selectedLink.rect.y,
+                scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
+              );
+              const bx = Math.min(topLeft.cssX, bottomRight.cssX);
+              const by = Math.min(topLeft.cssY, bottomRight.cssY);
+              const bw = Math.abs(bottomRight.cssX - topLeft.cssX);
+              const bh = Math.abs(bottomRight.cssY - topLeft.cssY);
+              return (
+                <LinkPopover
+                  mode={linkPopoverMode}
+                  anchorX={bx + bw / 2}
+                  anchorY={by + bh}
+                  url={linkDraftUrl}
+                  displayText={linkDisplayDraft}
+                  onUrlChange={setLinkDraftUrl}
+                  onDisplayChange={setLinkDisplayDraft}
+                  onEdit={() => {
+                    if (linkHoverTimerRef.current) {
+                      clearTimeout(linkHoverTimerRef.current);
+                      linkHoverTimerRef.current = null;
+                    }
+                    setLinkPopoverMode('edit');
+                  }}
+                  onOpen={() => {
+                    const url = (linkDraftUrl || selectedLink.url || '').trim();
+                    if (url) window.open(url, '_blank', 'noopener,noreferrer');
+                  }}
+                  onRemove={removeLinkFromPopover}
+                  onClose={() => { void saveLinkFromPopover(true); }}
+                  onPopoverEnter={() => {
+                    linkPopoverHoverRef.current = true;
+                    if (linkHoverTimerRef.current) {
+                      clearTimeout(linkHoverTimerRef.current);
+                      linkHoverTimerRef.current = null;
+                    }
+                  }}
+                  onPopoverLeave={() => {
+                    linkPopoverHoverRef.current = false;
+                    if (linkPopoverMode === 'hover') scheduleLinkHoverClose();
+                  }}
+                />
+              );
+            })()}
           </div>
           </div>
         </div>
@@ -3753,9 +4097,8 @@ export default function EditorPage() {
           isGeneratingThumbnails={isGeneratingThumbnails}
           onPageSelect={(i) => {
             commitDrawingsToPdf();
-            setSelectedLink(null);
+            closeLinkPopover();
             setLinkCreatePending(false);
-            setLinkDraftUrl('');
             setCurrentPage(i);
           }}
           onDeletePage={handleDeletePage}

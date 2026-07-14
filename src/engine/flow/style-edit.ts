@@ -23,9 +23,12 @@ import { getPageContentBytes, resolveRef } from '../parser/parser';
 import {
   compileInstructions,
   encodeTextForFont,
+  encodeTextWinAnsi,
   loadFontForName,
   type EditResult,
+  type EncodedText,
 } from '../editor/text-editor';
+import { ensureFallbackFont } from '../fonts/font-augmentation';
 import { updatePageContent } from '../editor/stream-compiler';
 import { parseContentStream, type CSInstruction } from '../content/operator-lexer';
 import type { TextLine, StyledSegment } from './types';
@@ -33,12 +36,48 @@ import { fontNameStyleFlags, visualFontSize } from './metrics';
 
 export interface TextStylePatch {
   fontSize?: number;
+  /** UI / CSS family name (Helvetica, Arial, Times New Roman, …) mapped to Standard 14. */
+  fontFamily?: string;
   /** RGB in 0–1 */
   color?: [number, number, number];
   bold?: boolean;
   italic?: boolean;
   underline?: boolean;
   align?: 'left' | 'center' | 'right';
+}
+
+/** Map a UI font family (+ style flags) onto a Standard 14 face name. */
+function mapUIFamilyToStandard14(family: string, wantBold: boolean, wantItalic: boolean): string {
+  const lower = family.toLowerCase();
+  let base: 'Helvetica' | 'Times' | 'Courier' = 'Helvetica';
+  if (
+    lower.includes('times') || lower.includes('georgia') || lower.includes('garamond')
+    || lower.includes('palatino') || lower.includes('cambria') || lower.includes('serif')
+  ) {
+    base = 'Times';
+  } else if (
+    lower.includes('courier') || lower.includes('mono') || lower.includes('consolas')
+    || lower.includes('lucida console')
+  ) {
+    base = 'Courier';
+  }
+
+  if (base === 'Times') {
+    if (wantBold && wantItalic) return 'Times-BoldItalic';
+    if (wantBold) return 'Times-Bold';
+    if (wantItalic) return 'Times-Italic';
+    return 'Times-Roman';
+  }
+  if (base === 'Courier') {
+    if (wantBold && wantItalic) return 'Courier-BoldOblique';
+    if (wantBold) return 'Courier-Bold';
+    if (wantItalic) return 'Courier-Oblique';
+    return 'Courier';
+  }
+  if (wantBold && wantItalic) return 'Helvetica-BoldOblique';
+  if (wantBold) return 'Helvetica-Bold';
+  if (wantItalic) return 'Helvetica-Oblique';
+  return 'Helvetica';
 }
 
 export interface StyleEditResult extends EditResult {
@@ -363,13 +402,16 @@ function patchRunStyle(
   }
 
   // Font size / face: patch existing Tf / Tm only
-  if (style.fontSize != null || style.bold != null || style.italic != null) {
+  if (style.fontSize != null || style.bold != null || style.italic != null || style.fontFamily != null) {
     let fontKey: string | null = null;
-    if (style.bold != null || style.italic != null) {
-      const currentFlags = fontNameStyleFlags(run.fontName);
-      const wantBold = style.bold ?? currentFlags.bold;
-      const wantItalic = style.italic ?? currentFlags.italic;
+    const currentFlags = fontNameStyleFlags(run.fontName);
+    const wantBold = style.bold ?? currentFlags.bold;
+    const wantItalic = style.italic ?? currentFlags.italic;
 
+    if (style.fontFamily) {
+      const desired = mapUIFamilyToStandard14(style.fontFamily, wantBold, wantItalic);
+      fontKey = ensureStandard14Font(page, objects, desired);
+    } else if (style.bold != null || style.italic != null) {
       // 1) Prefer a sibling already on the page (embedded resume fonts)
       fontKey = findSiblingFontKey(page, objects, run.fontName, wantBold, wantItalic);
 
@@ -380,14 +422,24 @@ function patchRunStyle(
       }
     }
 
-    // Partial bold/italic: split the Tj into before/mid/after with different Tf
-    if (isPartial && fontKey && (style.bold != null || style.italic != null)) {
+    // Partial range: split Tj into before/mid/after so fontSize/face only hit the selection
+    const needsSplit = isPartial && (
+      style.fontSize != null
+      || (fontKey != null && (style.bold != null || style.italic != null || style.fontFamily != null))
+    );
+    if (needsSplit) {
       const splitOk = splitRunTextStyle(
-        instructions, run, textIndex, clampStart, clampEnd, fontKey, page, objects,
+        instructions,
+        run,
+        textIndex,
+        clampStart,
+        clampEnd,
+        fontKey,
+        page,
+        objects,
+        style.fontSize ?? null,
       );
-      if (splitOk) {
-        // Still allow underline patches below
-      } else {
+      if (!splitOk) {
         // Fall through to whole-run patch if split failed
         applyWholeRunFontPatch(instructions, run, textIndex, range, style, fontKey);
       }
@@ -480,8 +532,28 @@ function widthUpToChar(run: TextRun, charCount: number): number {
 }
 
 /**
- * Split a single Tj/TJ at [localStart, localEnd) and apply a different font to the middle.
- * Keeps surrounding glyphs on the original face — Word-like partial bold/unbold.
+ * Encode a text piece for a style split. Fall back to Helvetica/WinAnsi when the
+ * subset font can't encode bullets, periods, or typed ASCII (avoids `?` / missing glyphs).
+ */
+function encodePieceForStyle(
+  text: string,
+  fontData: ReturnType<typeof loadFontForName>,
+  page: PDFPageInfo,
+  objects: Map<string, PDFObject>,
+): { encoded: EncodedText; fontKey: string | null } {
+  if (!text) return { encoded: encodeTextWinAnsi(''), fontKey: null };
+  const encoded = encodeTextForFont(text, fontData);
+  const lossy = encoded.missing.length > 0
+    || (encoded.pdfString instanceof PDFString && encoded.pdfString.value.includes('?') && !text.includes('?'));
+  if (lossy) {
+    return { encoded: encodeTextWinAnsi(text), fontKey: ensureFallbackFont(page, objects) };
+  }
+  return { encoded, fontKey: null };
+}
+
+/**
+ * Split a single Tj/TJ at [localStart, localEnd) and apply a different face
+ * and/or font size to the middle. Surrounding glyphs keep the original style.
  */
 function splitRunTextStyle(
   instructions: CSInstruction[],
@@ -489,11 +561,13 @@ function splitRunTextStyle(
   textIndex: number,
   localStart: number,
   localEnd: number,
-  newFontKey: string,
+  newFontKey: string | null,
   page: PDFPageInfo,
   objects: Map<string, PDFObject>,
+  newFontSize: number | null = null,
 ): boolean {
   if (textIndex < 0 || textIndex >= instructions.length) return false;
+  if (newFontKey == null && newFontSize == null) return false;
   const inst = instructions[textIndex];
   if (inst.operator !== 'Tj' && inst.operator !== 'TJ' && inst.operator !== "'" && inst.operator !== '"') {
     return false;
@@ -505,32 +579,56 @@ function splitRunTextStyle(
   if (!mid) return false;
 
   const fontData = loadFontForName(run.fontName, page, objects);
-  const encBefore = before ? encodeTextForFont(before, fontData) : null;
-  const encMid = encodeTextForFont(mid, fontData);
-  const encAfter = after ? encodeTextForFont(after, fontData) : null;
+  const beforePiece = before ? encodePieceForStyle(before, fontData, page, objects) : null;
+  const midPiece = encodePieceForStyle(mid, fontData, page, objects);
+  const afterPiece = after ? encodePieceForStyle(after, fontData, page, objects) : null;
 
-  // Find current Tf size to reuse
+  // Find current Tf size / name
   let tfSize: PDFObject = new PDFNumber(run.fontSize);
+  let origFontName = run.fontName.replace(/^\//, '');
   for (let i = textIndex; i >= 0; i--) {
     if (instructions[i].operator === 'BT') break;
     if (instructions[i].operator === 'Tf' && instructions[i].operands.length >= 2) {
       tfSize = instructions[i].operands[1];
+      const nameOp = instructions[i].operands[0];
+      if (nameOp instanceof PDFName) origFontName = nameOp.name;
       break;
     }
   }
 
+  // Unit Tf + scaled Tm: NEVER rewrite Tm (breaks other lines in the same BT).
+  // Instead scale the mid Tf relatively: visual' = (midTf/curTf) * visual.
+  const curTf = tfSize instanceof PDFNumber ? tfSize.value : run.fontSize;
+  const visual = Math.max(0.1, visualFontSize(run));
+  const usesScaledTm = curTf > 0 && curTf <= 1.5 && Math.abs(visual - curTf) > 1;
+
+  let midSize: PDFObject = tfSize;
+  if (newFontSize != null) {
+    if (usesScaledTm) {
+      // Keep Tm; choose Tf so rendered size ≈ newFontSize
+      midSize = new PDFNumber((newFontSize / visual) * curTf);
+    } else {
+      midSize = new PDFNumber(newFontSize);
+    }
+  }
+
+  const beforeFont = (beforePiece?.fontKey ?? origFontName).replace(/^\//, '');
+  const midFont = (newFontKey ?? midPiece.fontKey ?? origFontName).replace(/^\//, '');
+  const afterFont = (afterPiece?.fontKey ?? origFontName).replace(/^\//, '');
+
   const replacement: CSInstruction[] = [];
   // Tj advances the text matrix, so consecutive Tj ops stay on one baseline
   // without Td — inserting Td would double-advance and shift glyphs.
-  if (before) {
-    replacement.push(op('Tj', [encBefore!.pdfString]));
+  if (before && beforePiece) {
+    replacement.push(op('Tf', [new PDFName(beforeFont), tfSize]));
+    replacement.push(op('Tj', [beforePiece.encoded.pdfString]));
   }
-  replacement.push(op('Tf', [new PDFName(newFontKey), tfSize]));
-  replacement.push(op('Tj', [encMid.pdfString]));
-  // Always restore the original face so later ops in the same BT stay correct.
-  replacement.push(op('Tf', [new PDFName(run.fontName.replace(/^\//, '')), tfSize]));
-  if (after) {
-    replacement.push(op('Tj', [encAfter!.pdfString]));
+  replacement.push(op('Tf', [new PDFName(midFont), midSize]));
+  replacement.push(op('Tj', [midPiece.encoded.pdfString]));
+  // Restore face/size for the tail (and later ops in this BT).
+  replacement.push(op('Tf', [new PDFName(afterFont), tfSize]));
+  if (after && afterPiece) {
+    replacement.push(op('Tj', [afterPiece.encoded.pdfString]));
   }
 
   // If the original used TJ with spacing, falling back to Tj is acceptable for the selection.

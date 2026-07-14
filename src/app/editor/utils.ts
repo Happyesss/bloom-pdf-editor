@@ -38,11 +38,56 @@ export function getRunBounds(run: TextRun): { x: number; y: number; width: numbe
   return { x: run.x, y: run.y, width: run.width, height: run.height || run.fontSize || 12 };
 }
 
+/** Strip subset prefix (ABCDEF+) from a PDF BaseFont name. */
+export function stripPdfFontPrefix(baseFont: string): string {
+  const plus = baseFont.indexOf('+');
+  return plus >= 0 ? baseFont.slice(plus + 1) : baseFont;
+}
+
+/**
+ * Map a PDF resource name (F1, F2, …) / BaseFont to a sidebar-friendly family.
+ * Prefer embedded BaseFont; never show raw resource ids like "F2" when we can map them.
+ */
+export function getDisplayFontFamily(fontName: string, fontData?: FontData): string {
+  const raw = stripPdfFontPrefix(fontData?.baseFont || fontName || '');
+  const lower = raw.toLowerCase();
+
+  if (!raw || /^f\d+$/i.test(raw)) return 'Helvetica';
+  if (lower.includes('arial black')) return 'Arial Black';
+  if (lower.includes('arial')) return 'Arial';
+  if (lower.includes('helv')) return 'Helvetica';
+  if (lower.includes('times') || lower.includes('roman') || lower.includes('cmr')) return 'Times New Roman';
+  if (lower.includes('courier') || lower.includes('mono')) return 'Courier New';
+  if (lower.includes('georgia')) return 'Georgia';
+  if (lower.includes('verdana')) return 'Verdana';
+  if (lower.includes('trebuchet')) return 'Trebuchet MS';
+  if (lower.includes('palatino') || lower.includes('palladio')) return 'Palatino';
+  if (lower.includes('garamond')) return 'Garamond';
+  if (lower.includes('comic')) return 'Comic Sans MS';
+  if (lower.includes('impact')) return 'Impact';
+  if (lower.includes('tahoma')) return 'Tahoma';
+  if (lower.includes('calibri')) return 'Calibri';
+  if (lower.includes('cambria')) return 'Cambria';
+  if (lower.includes('consolas')) return 'Consolas';
+  if (lower.includes('segoe')) return 'Segoe UI';
+  if (lower.includes('roboto')) return 'Roboto';
+  if (lower.includes('montserrat')) return 'Montserrat';
+  if (lower.includes('inter')) return 'Inter';
+  if (lower.includes('lato')) return 'Lato';
+  if (lower.includes('opensans') || lower.includes('open sans')) return 'Open Sans';
+
+  // Drop style suffixes for display (Bold/Italic/…)
+  const cleaned = raw
+    .replace(/[-,]?(Bold|Italic|Oblique|Regular|Medium|Light|Black|SemiBold|BoldItalic|BoldOblique)+$/i, '')
+    .replace(/MT$/i, '')
+    .trim();
+  return cleaned || 'Helvetica';
+}
+
 /** Build CSS font family + weight/style for overlay text preview. */
 export function getOverlayFontFamily(fontName: string, fontData?: FontData): string {
   if (fontData?.fontBytes && fontData.baseFont) {
-    const plus = fontData.baseFont.indexOf('+');
-    const stripped = plus >= 0 ? fontData.baseFont.slice(plus + 1) : fontData.baseFont;
+    const stripped = stripPdfFontPrefix(fontData.baseFont);
     return `"${stripped}", "${fontData.baseFont}", serif`;
   }
   const lower = (fontData?.baseFont || fontName).toLowerCase();

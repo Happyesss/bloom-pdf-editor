@@ -32,7 +32,18 @@ import {
 } from '../types';
 import { resolveRef } from '../parser/parser';
 import { loadFont, type FontData, charCodeToUnicode } from '../fonts/font-parser';
+import { ensureFallbackFont } from '../fonts/font-augmentation';
 import { serializeToString } from './stream-compiler';
+
+/** Visual size for Tf when switching to the Helvetica fallback. */
+function runFontSize(run: TextRun): number {
+  if (run.glyphs.length > 0) {
+    const tRm = run.glyphs[0].tRm;
+    const fromTm = Math.hypot(tRm.a, tRm.b) || Math.hypot(tRm.c, tRm.d);
+    if (fromTm > 0.5) return fromTm;
+  }
+  return run.fontSize > 0.5 ? run.fontSize : 12;
+}
 
 // ─── Edit operations ────────────────────────────────────────────────────────
 
@@ -90,10 +101,18 @@ export function applyTextEdits(
     // Load font data for encoding
     const fontData = loadFontForRun(edit.targetRun, page, objects);
 
-    // Encode the new text using the font's encoding
-    const encoded = encodeTextForFont(edit.newText, fontData);
+    // Encode with the run's font; subset/CID fonts often can't encode typed ASCII (`.` → missing/`?`)
+    let encoded = encodeTextForFont(edit.newText, fontData);
+    let useFallbackFont: string | null = null;
 
-    if (encoded.missing.length > 0) {
+    if (isEncodingLossy(edit.newText, encoded, fontData)) {
+      useFallbackFont = ensureFallbackFont(page, objects);
+      encoded = encodeTextWinAnsi(edit.newText);
+      needsFontAugmentation = true;
+      if (encoded.missing.length > 0) {
+        missingCharCodes.push(...encoded.missing);
+      }
+    } else if (encoded.missing.length > 0) {
       needsFontAugmentation = true;
       missingCharCodes.push(...encoded.missing);
     }
@@ -118,15 +137,16 @@ export function applyTextEdits(
     const sourceInstructionIndices = rawIndices.map(i => i + indexOffset);
 
     if (sourceInstructionIndices.length > 1) {
-      applyGroupedTextEdit(
+      const wrote = applyGroupedTextEdit(
         instructions,
         sourceInstructionIndices,
         edit.targetRun.text,
         edit.newText,
-        fontData,
-        page,
-        objects,
+        encoded,
+        useFallbackFont,
+        edit.targetRun,
       );
+      indexOffset += wrote;
       continue;
     }
 
@@ -163,18 +183,23 @@ export function applyTextEdits(
       continue;
     }
 
-    // Replace the operand in the matched instruction
+    // Always replace with a single string. Smart TJ fragment remapping corrupts
+    // edits when fragment byte lengths ≠ unicode lengths (common on resumes).
     if (matched.instruction.operator === 'TJ') {
-      // Smart TJ editing — preserve spacing pattern from original array
-      const oldArr = matched.instruction.operands[0];
-      if (oldArr instanceof PDFArray) {
-        const newArr = buildSmartTJArray(oldArr, edit.targetRun.text, edit.newText, encoded.pdfString, fontData);
-        matched.instruction.operands = [newArr];
-      } else {
-        matched.instruction.operands = [new PDFArray([encoded.pdfString])];
-      }
+      matched.instruction.operands = [new PDFArray([encoded.pdfString])];
     } else {
       matched.instruction.operands = [encoded.pdfString];
+    }
+
+    // Switch to Helvetica when the original subset font can't encode the typed text
+    if (useFallbackFont) {
+      const inserted = insertFontSwitchBefore(
+        instructions,
+        matched.index,
+        useFallbackFont,
+        runFontSize(edit.targetRun),
+      );
+      indexOffset += inserted;
     }
   }
 
@@ -641,11 +666,7 @@ export interface EncodedText {
  */
 export function encodeTextForFont(text: string, fontData: FontData | null): EncodedText {
   if (!fontData) {
-    // No font data — encode as Latin-1
-    return {
-      pdfString: new PDFString(text),
-      missing: [],
-    };
+    return encodeTextWinAnsi(text);
   }
 
   const missing: number[] = [];
@@ -658,12 +679,13 @@ export function encodeTextForFont(text: string, fontData: FontData | null): Enco
     for (let i = 0; i < text.length; i++) {
       const char = text[i];
       const code = reverseMap.get(char);
-      if (code !== undefined) {
+      if (code !== undefined && code !== 0) {
         hex += code.toString(16).padStart(4, '0');
       } else {
-        // Character not in font — mark as missing
+        // Character not in subset — do NOT write CID 0 (.notdef / invisible)
         missing.push(char.codePointAt(0)!);
-        hex += '0000'; // placeholder
+        // Keep hex length aligned so caller can detect lossiness; real bytes replaced via fallback
+        hex += '0000';
       }
     }
 
@@ -679,16 +701,20 @@ export function encodeTextForFont(text: string, fontData: FontData | null): Enco
     for (let i = 0; i < text.length; i++) {
       const char = text[i];
       const code = reverseMap.get(char);
-      if (code !== undefined) {
-        result += String.fromCharCode(code);
+      if (code !== undefined && code !== 0) {
+        result += String.fromCharCode(code & 0xff);
       } else {
-        // Try direct charCode (Latin-1)
         const cp = char.codePointAt(0)!;
-        if (cp < 256) {
+        // Subset fonts often omit `.` / digits from ToUnicode — mark missing so we
+        // fall back to Helvetica instead of writing `?` or invisible glyphs.
+        if (fontData.toUnicode.size > 0) {
+          missing.push(cp);
+          result += '?';
+        } else if (cp < 256) {
           result += char;
         } else {
           missing.push(cp);
-          result += '?'; // placeholder
+          result += '?';
         }
       }
     }
@@ -698,6 +724,104 @@ export function encodeTextForFont(text: string, fontData: FontData | null): Enco
       missing,
     };
   }
+}
+
+/** True for bullet / list-marker code points (and dingbat PUA stand-ins). */
+function isBulletLike(cp: number): boolean {
+  return (
+    cp === 0x2022 || cp === 0x2023 || cp === 0x2043 || cp === 0x2219
+    || cp === 0x25cf || cp === 0x25cb || cp === 0x25e6 || cp === 0x25aa
+    || cp === 0x25ab || cp === 0x00b7 || cp === 0x2024 || cp === 0xfe61
+    || cp === 0xff65 || (cp >= 0xf000 && cp <= 0xf0ff)
+  );
+}
+
+/** WinAnsi / Latin-1 encode for Helvetica fallback — keeps `.` `a-z` etc. intact. */
+export function encodeTextWinAnsi(text: string): EncodedText {
+  const missing: number[] = [];
+  let result = '';
+  for (let i = 0; i < text.length; i++) {
+    const cp = text.codePointAt(i)!;
+    if (cp > 0xffff) {
+      i++; // skip trailing surrogate
+    }
+    if (isBulletLike(cp)) {
+      result += '-';
+      continue;
+    }
+    if (cp <= 0xff) {
+      result += String.fromCharCode(cp);
+    } else {
+      missing.push(cp);
+      // Best-effort ASCII substitutes for common punctuation
+      if (cp === 0x2018 || cp === 0x2019) result += "'";
+      else if (cp === 0x201c || cp === 0x201d) result += '"';
+      else if (cp === 0x2013 || cp === 0x2014) result += '-';
+      else if (cp === 0x2026) result += '...';
+      else result += '?';
+    }
+  }
+  return { pdfString: new PDFString(result), missing };
+}
+
+/** True when encoding dropped/replaced glyphs the user typed (causes missing text / `?`). */
+function isEncodingLossy(
+  text: string,
+  encoded: EncodedText,
+  fontData: FontData | null,
+): boolean {
+  if (!text) return false;
+  if (encoded.missing.length > 0) return true;
+  if (!fontData) return false;
+
+  if (fontData.isComposite && encoded.pdfString instanceof PDFHexString) {
+    const hex = encoded.pdfString.hex.replace(/\s/g, '');
+    for (let i = 0; i + 3 < hex.length; i += 4) {
+      if (hex.slice(i, i + 4) === '0000') return true;
+    }
+  }
+
+  if (encoded.pdfString instanceof PDFString) {
+    const out = encoded.pdfString.value;
+    const n = Math.min(text.length, out.length);
+    for (let i = 0; i < n; i++) {
+      if (text[i] !== '?' && out[i] === '?') return true;
+    }
+    if (out.length !== text.length) return true;
+  }
+
+  return false;
+}
+
+/** Insert ` /Font size Tf ` before a text-showing op. Returns number of ops inserted. */
+function insertFontSwitchBefore(
+  instructions: CSInstruction[],
+  textIndex: number,
+  fontKey: string,
+  visualSize: number,
+): number {
+  if (textIndex < 0 || textIndex >= instructions.length) return 0;
+
+  // Prefer the existing Tf size. Resumes often use `1 Tf` + scaled Tm — if we
+  // inject absolute visual size while Tm still scales, text becomes huge.
+  let size = Number.isFinite(visualSize) && visualSize > 0 ? visualSize : 12;
+  for (let i = textIndex - 1; i >= 0; i--) {
+    if (instructions[i].operator === 'BT') break;
+    if (instructions[i].operator === 'Tf' && instructions[i].operands.length >= 2) {
+      const cur = instructions[i].operands[1];
+      if (cur instanceof PDFNumber && cur.value > 0) {
+        size = cur.value;
+      }
+      break;
+    }
+  }
+
+  instructions.splice(textIndex, 0, {
+    operator: 'Tf',
+    operands: [new PDFName(fontKey), new PDFNumber(size)],
+    offset: 0,
+  });
+  return 1;
 }
 
 function buildReverseUnicodeMap(fontData: FontData): Map<string, number> {
@@ -803,70 +927,65 @@ function insertEraseRectForRun(
 // ─── Grouped text edit (multi-instruction spans) ────────────────────────────
 
 /**
- * Distribute new text across multiple source instructions proportionally,
- * preserving each instruction's operator (Tj/TJ) and spacing arrays.
+ * Replace text for a run that spans multiple Tj/TJ instructions.
+ *
+ * Important: put the FULL new string on the first text-showing op and clear
+ * siblings. Proportional splits left undecoded/old fragments in place and
+ * produced doubled/interleaved text (e.g. "PRxxxOFESSIONAL EXPERIENCEfgOFESSIONAL…").
+ *
+ * @returns number of instructions inserted (font switch)
  */
 function applyGroupedTextEdit(
   instructions: CSInstruction[],
   sourceIndices: number[],
-  oldText: string,
-  newText: string,
-  fontData: FontData | null,
-  page: PDFPageInfo,
-  objects: Map<string, PDFObject>,
-): void {
+  _oldText: string,
+  _newText: string,
+  encoded: EncodedText,
+  fallbackFont: string | null,
+  run: TextRun,
+): number {
   const sortedIndices = Array.from(new Set(sourceIndices)).sort((a, b) => a - b);
-  const segments: { index: number; text: string }[] = [];
-
+  let primaryIdx = -1;
   for (let i = 0; i < sortedIndices.length; i++) {
     const idx = sortedIndices[i];
     const inst = instructions[idx];
-    if (!inst) continue;
-
-    const fontName = findFontNameForInstruction(instructions, idx);
-    const decoded = decodeInstructionText(inst, fontName, page, objects);
-    if (decoded !== null) {
-      segments.push({ index: idx, text: decoded });
+    if (inst && isTextShowingOperator(inst.operator)) {
+      primaryIdx = idx;
+      break;
     }
   }
+  if (primaryIdx < 0) return 0;
 
-  if (segments.length === 0) return;
+  const empty = new PDFString('');
+  const primary = instructions[primaryIdx];
 
-  const totalOldLen = segments.reduce((sum, s) => sum + s.text.length, 0);
-  let newPos = 0;
+  if (primary.operator === 'TJ') {
+    primary.operands = [new PDFArray([encoded.pdfString])];
+  } else {
+    primary.operands = [encoded.pdfString];
+  }
 
-  for (let i = 0; i < segments.length; i++) {
-    const seg = segments[i];
-    const inst = instructions[seg.index];
-    if (!inst) continue;
-
-    let segNewText: string;
-    if (i === segments.length - 1) {
-      segNewText = newText.substring(newPos);
-    } else if (totalOldLen > 0) {
-      const ratio = seg.text.length / totalOldLen;
-      const segLen = Math.round(ratio * newText.length);
-      segNewText = newText.substring(newPos, newPos + segLen);
-      newPos += segLen;
-    } else {
-      const evenLen = Math.floor(newText.length / segments.length);
-      segNewText = newText.substring(newPos, newPos + evenLen);
-      newPos += evenLen;
-    }
-
-    const encoded = encodeTextForFont(segNewText, fontData);
-
+  for (let i = 0; i < sortedIndices.length; i++) {
+    const idx = sortedIndices[i];
+    if (idx === primaryIdx) continue;
+    const inst = instructions[idx];
+    if (!inst || !isTextShowingOperator(inst.operator)) continue;
     if (inst.operator === 'TJ') {
-      const oldArr = inst.operands[0];
-      if (oldArr instanceof PDFArray) {
-        inst.operands = [buildSmartTJArray(oldArr, seg.text, segNewText, encoded.pdfString, fontData)];
-      } else {
-        inst.operands = [new PDFArray([encoded.pdfString])];
-      }
+      inst.operands = [new PDFArray([empty])];
     } else {
-      inst.operands = [encoded.pdfString];
+      inst.operands = [empty];
     }
   }
+
+  if (fallbackFont) {
+    return insertFontSwitchBefore(
+      instructions,
+      primaryIdx,
+      fallbackFont,
+      runFontSize(run),
+    );
+  }
+  return 0;
 }
 
 function findFontNameForInstruction(instructions: CSInstruction[], index: number): string {

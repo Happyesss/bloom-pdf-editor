@@ -6,6 +6,8 @@ import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from
 export interface OverlaySegmentStyle {
   text: string;
   fontFamily: string;
+  /** Optional per-segment size (CSS px). Falls back to box fontSizeCss. */
+  fontSizeCss?: number;
   fontWeight: string;
   fontStyle: string;
   underline: boolean;
@@ -162,8 +164,11 @@ export function EditableLineBox(props: EditableLineBoxProps) {
   }, [scaleX, text.length]);
 
   // Match PDF glyph width like the canvas renderer (ctx.scale(ratio, 1)).
+  // Grow the box as the user types / changes font size.
   useLayoutEffect(() => {
-    const sessionKey = `${left},${top},${naturalWidth},${naturalHeight}`;
+    // Freeze horizontal scale once per edit session (position + initial natural width).
+    // Font-size changes recalculate content width but keep the same scaleX.
+    const sessionKey = `${left},${top},${Math.round(naturalWidth)}`;
     if (sessionKeyRef.current !== sessionKey) {
       sessionKeyRef.current = sessionKey;
       frozenScaleX.current = null;
@@ -173,21 +178,22 @@ export function EditableLineBox(props: EditableLineBoxProps) {
     if (!el) return;
     rebuildCharEnds();
     const measured = el.offsetWidth;
-    if (measured < 0.5 || naturalWidth < 0.5) {
-      setAutoWidth(Math.max(naturalWidth, 40));
+    if (measured < 0.5) {
+      setAutoWidth(Math.max(naturalWidth, fontSizeCss * 0.6, 40));
       return;
     }
 
-    if (frozenScaleX.current == null) {
+    if (frozenScaleX.current == null && naturalWidth > 0.5) {
       const ratio = naturalWidth / measured;
       frozenScaleX.current = Math.max(0.55, Math.min(1.85, ratio));
     }
-    const sx = frozenScaleX.current;
+    const sx = frozenScaleX.current ?? 1;
     setScaleX(Math.abs(sx - 1) > 0.005 ? sx : 1);
 
     const contentCss = measured * sx;
-    const grown = Math.ceil(Math.max(naturalWidth, contentCss));
-    setAutoWidth(Math.max(grown, 40));
+    // Always track typed content; pad so the caret isn't flush against the border.
+    const grown = Math.ceil(contentCss + Math.max(6, fontSizeCss * 0.25));
+    setAutoWidth(Math.max(grown, naturalWidth, 40));
 
     // Recompute ends after scale settles
     requestAnimationFrame(() => rebuildCharEnds());
@@ -224,8 +230,9 @@ export function EditableLineBox(props: EditableLineBoxProps) {
     }
   }, [caretStart, caretEnd, text, textRef]);
 
-  const width = manualWidth ?? Math.max(autoWidth, naturalWidth);
-  const height = manualHeight ?? naturalHeight;
+  // Manual resize sets a floor; content can still grow past it while typing.
+  const width = Math.max(autoWidth, manualWidth ?? naturalWidth);
+  const height = Math.max(naturalHeight, manualHeight ?? 0);
 
   const onPointerMove = useCallback((e: PointerEvent) => {
     const mode = dragMode.current;
@@ -316,6 +323,7 @@ export function EditableLineBox(props: EditableLineBoxProps) {
           key={i}
           style={{
             fontFamily: seg.fontFamily,
+            fontSize: seg.fontSizeCss ?? fontSizeCss,
             fontWeight: seg.fontWeight,
             fontStyle: seg.fontStyle,
             color: forMeasure ? 'transparent' : seg.color,
@@ -462,6 +470,10 @@ export function EditableLineBox(props: EditableLineBoxProps) {
         value={text}
         onInput={onTextInput}
         onKeyDown={onKeyDown}
+        onSelect={(e) => {
+          const el = e.currentTarget;
+          onSelect?.(el.selectionStart ?? 0, el.selectionEnd ?? 0);
+        }}
         onBlur={onBlur}
         rows={1}
         aria-label="Edit line"

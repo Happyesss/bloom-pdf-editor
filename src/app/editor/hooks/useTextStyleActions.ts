@@ -35,6 +35,7 @@ export function useTextStyleActions(
 
     const style: TextStylePatch = {};
     if (patch.fontSize != null) style.fontSize = patch.fontSize;
+    if (patch.fontFamily != null) style.fontFamily = patch.fontFamily;
     if (patch.color != null) {
       style.color = hexToRGB(patch.color);
     }
@@ -51,14 +52,8 @@ export function useTextStyleActions(
     if (sel) {
       start = Math.max(0, Math.min(sel.start, selectedLine.text.length));
       end = Math.max(start, Math.min(sel.end, selectedLine.text.length));
-      // Collapsed caret → style only the run under the caret (Word-like)
-      if (end <= start) {
-        const seg = engine.segmentAtIndex(selectedLine, start);
-        if (seg) {
-          start = seg.startIndex;
-          end = seg.endIndex;
-        }
-      }
+      // Collapsed caret with no selection → do not restyle existing text
+      if (end <= start) return;
     }
 
     await engine.applyStyleToSelectionOnPage(

@@ -1,10 +1,11 @@
 import React, { MutableRefObject } from 'react';
 import {
   Type, TextCursorInput, Image, PenTool, Highlighter, Eraser, MousePointer2,
-  X, Trash2, Bold, Italic, Underline, AlignLeft, AlignCenter, AlignRight, Minus, Plus, Stamp, Link2
+  X, Trash2, Bold, Italic, Underline, AlignLeft, AlignCenter, AlignRight, Minus, Plus, Stamp, Link2,
+  PenLine, Star, Copy, Lock, Unlock, RotateCw, KeyRound, ShieldCheck,
 } from 'lucide-react';
 import type { EditorTool } from '../types';
-import type { TextRun, ImageItem, PathItem, AcroFormWidget } from '@/engine';
+import type { TextRun, ImageItem, PathItem, AcroFormWidget, VisualSignature, SignatureLibraryEntry, SignatureField, ManagedIdentity, ValidationReport, LtvStatus, ManagedSignature, RevisionViewEntry } from '@/engine';
 
 interface PropertiesSidebarProps {
   activeTool: EditorTool;
@@ -118,6 +119,45 @@ interface PropertiesSidebarProps {
   setWatermarkLivePreview?: (v: boolean) => void;
   watermarkBlendMode?: string;
   setWatermarkBlendMode?: (v: string) => void;
+
+  // Visual signatures
+  signatureLibraryEntries?: SignatureLibraryEntry[];
+  activeLibraryId?: string | null;
+  setActiveLibraryId?: (id: string | null) => void;
+  selectedSignatureId?: string | null;
+  selectedSignature?: VisualSignature | null;
+  onOpenSignatureCreate?: () => void;
+  onSignatureDelete?: (id: string) => void;
+  onSignatureOpacity?: (id: string, opacity: number) => void;
+  onSignatureLockToggle?: (id: string) => void;
+  onSignatureRotate?: (id: string, degrees: number) => void;
+  onLibraryRename?: (id: string, name: string) => void;
+  onLibraryDelete?: (id: string) => void;
+  onLibraryDuplicate?: (id: string) => void;
+  onLibraryFavorite?: (id: string) => void;
+  pdfSignatureFields?: SignatureField[];
+  selectedPdfSigFieldId?: string | null;
+  setSelectedPdfSigFieldId?: (id: string | null) => void;
+  createFieldMode?: boolean;
+  setCreateFieldMode?: (v: boolean) => void;
+  onPlaceIntoSelectedField?: () => void;
+  // Phase 9 — certificates / crypto sign
+  certificateIdentities?: ManagedIdentity[];
+  selectedCertificateId?: string | null;
+  onOpenCertificateImport?: () => void;
+  onSelectCertificate?: (id: string | null) => void;
+  onCryptographicSign?: () => void;
+  cryptoSignBusy?: boolean;
+  // Phase 10–14
+  enableTimestamp?: boolean;
+  setEnableTimestamp?: (v: boolean) => void;
+  onValidateSignatures?: () => void;
+  validationBusy?: boolean;
+  validationReport?: ValidationReport | null;
+  onEnableLtv?: () => void;
+  ltvStatus?: LtvStatus | null;
+  managedSignatures?: ManagedSignature[];
+  revisionEntries?: RevisionViewEntry[];
 }
 
 export function PropertiesSidebar(props: PropertiesSidebarProps) {
@@ -158,10 +198,35 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
     hasScannedWatermarks, detectedWatermarksCount = 0, onScanWatermarks,
     onApplyWatermark, onRemoveWatermarks, onCancelScan,
     watermarkLivePreview = true, setWatermarkLivePreview,
-    watermarkBlendMode = 'Normal', setWatermarkBlendMode
+    watermarkBlendMode = 'Normal', setWatermarkBlendMode,
+    signatureLibraryEntries = [],
+    activeLibraryId = null, setActiveLibraryId,
+    selectedSignatureId = null, selectedSignature = null,
+    onOpenSignatureCreate,
+    onSignatureDelete, onSignatureOpacity, onSignatureLockToggle, onSignatureRotate,
+    onLibraryRename, onLibraryDelete, onLibraryDuplicate, onLibraryFavorite,
+    pdfSignatureFields = [],
+    selectedPdfSigFieldId = null, setSelectedPdfSigFieldId,
+    createFieldMode = false, setCreateFieldMode,
+    onPlaceIntoSelectedField,
+    certificateIdentities = [],
+    selectedCertificateId = null,
+    onOpenCertificateImport,
+    onSelectCertificate,
+    onCryptographicSign,
+    cryptoSignBusy = false,
+    enableTimestamp = false,
+    setEnableTimestamp,
+    onValidateSignatures,
+    validationBusy = false,
+    validationReport = null,
+    onEnableLtv,
+    ltvStatus = null,
+    managedSignatures = [],
+    revisionEntries = [],
   } = props;
 
-  if (!['text', 'addtext', 'draw', 'highlight', 'erase', 'select', 'watermark'].includes(activeTool)) return null;
+  if (!['text', 'addtext', 'draw', 'highlight', 'erase', 'select', 'watermark', 'sign'].includes(activeTool)) return null;
 
   const FONT_FAMILIES = [
     'Helvetica',
@@ -1200,6 +1265,362 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 </div>
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* SIGNATURE PROPERTIES */}
+      {activeTool === 'sign' && (
+        <div className="flex flex-col h-full bg-zinc-900/95 animate-in fade-in slide-in-from-left-4 duration-300">
+          <div className="p-4 pb-2">
+            <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-zinc-400 uppercase">
+              <PenLine size={14} />
+              Signature
+            </div>
+            <p className="text-[10px] text-zinc-500 mt-1">
+              Click the page to place. Create or pick a library signature first.
+            </p>
+          </div>
+
+          <div className="px-4 pb-3 space-y-2">
+            <button
+              type="button"
+              onClick={onOpenSignatureCreate}
+              className="w-full flex items-center justify-center gap-2 py-2 rounded-md bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold transition-colors"
+            >
+              <PenLine size={14} /> Create signature
+            </button>
+            <button
+              type="button"
+              onClick={() => setCreateFieldMode?.(!createFieldMode)}
+              className={`w-full flex items-center justify-center gap-2 py-2 rounded-md text-xs font-semibold transition-colors border ${
+                createFieldMode
+                  ? 'bg-emerald-600/20 border-emerald-500/50 text-emerald-300'
+                  : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-700'
+              }`}
+            >
+              {createFieldMode ? 'Click page to place field…' : 'Create PDF signature field'}
+            </button>
+          </div>
+
+          {pdfSignatureFields.length > 0 && (
+            <div className="px-4 pb-3 space-y-2 border-b border-zinc-700/50">
+              <div className="text-[10px] font-bold tracking-widest text-zinc-400 uppercase">
+                PDF fields on page
+              </div>
+              {pdfSignatureFields.map((field) => {
+                const active = selectedPdfSigFieldId === field.id;
+                return (
+                  <button
+                    key={field.id}
+                    type="button"
+                    onClick={() => setSelectedPdfSigFieldId?.(field.id)}
+                    className={`w-full text-left rounded-md border px-2 py-1.5 text-[11px] transition-colors ${
+                      active
+                        ? 'border-emerald-500 bg-emerald-500/10 text-emerald-200'
+                        : 'border-zinc-700 text-zinc-300 hover:border-zinc-500'
+                    }`}
+                  >
+                    <div className="font-medium truncate">{field.fieldName}</div>
+                    <div className="text-[10px] text-zinc-500">
+                      {field.signed ? 'Signed' : 'Unsigned'}
+                      {field.hasAppearance ? ' · has /AP' : ''}
+                    </div>
+                  </button>
+                );
+              })}
+              {selectedPdfSigFieldId && (
+                <button
+                  type="button"
+                  onClick={onPlaceIntoSelectedField}
+                  className="w-full py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-semibold"
+                >
+                  Place library signature into field
+                </button>
+              )}
+            </div>
+          )}
+
+          <div className="px-4 pb-3 space-y-2 border-b border-zinc-700/50">
+            <div className="text-[10px] font-bold tracking-widest text-zinc-400 uppercase flex items-center gap-1.5">
+              <KeyRound size={12} /> Certificate
+            </div>
+            <button
+              type="button"
+              onClick={onOpenCertificateImport}
+              className="w-full flex items-center justify-center gap-2 py-2 rounded-md bg-zinc-800 border border-zinc-700 text-zinc-200 hover:bg-zinc-700 text-xs font-semibold"
+            >
+              <KeyRound size={14} /> Import / manage certificates
+            </button>
+            {certificateIdentities.length === 0 ? (
+              <p className="text-[11px] text-zinc-500">
+                Import a PEM/P12 identity before digitally signing.
+              </p>
+            ) : (
+              <div className="space-y-1.5">
+                {certificateIdentities.map((id) => {
+                  const active = selectedCertificateId === id.id;
+                  return (
+                    <button
+                      key={id.id}
+                      type="button"
+                      onClick={() => onSelectCertificate?.(id.id)}
+                      className={`w-full text-left rounded-md border px-2 py-1.5 text-[11px] transition-colors ${
+                        active
+                          ? 'border-blue-500 bg-blue-500/10 text-blue-100'
+                          : 'border-zinc-700 text-zinc-300 hover:border-zinc-500'
+                      }`}
+                    >
+                      <div className="font-medium truncate">{id.label}</div>
+                      <div className="text-[10px] text-zinc-500">
+                        {id.hasPrivateKey ? 'Ready to sign' : 'Cert only — re-import key'}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            {selectedPdfSigFieldId && (
+              <button
+                type="button"
+                disabled={cryptoSignBusy}
+                onClick={onCryptographicSign}
+                className="w-full flex items-center justify-center gap-2 py-2 rounded-md bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white text-xs font-semibold"
+              >
+                <ShieldCheck size={14} />
+                {cryptoSignBusy ? 'Signing…' : 'Digitally sign selected field'}
+              </button>
+            )}
+            <label className="flex items-center gap-2 text-[11px] text-zinc-400 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={enableTimestamp}
+                onChange={(e) => setEnableTimestamp?.(e.target.checked)}
+                className="rounded border-zinc-600"
+              />
+              Request RFC 3161 timestamp (TSA)
+            </label>
+          </div>
+
+          <div className="px-4 pb-3 space-y-2 border-b border-zinc-700/50">
+            <div className="text-[10px] font-bold tracking-widest text-zinc-400 uppercase flex items-center gap-1.5">
+              <ShieldCheck size={12} /> Validation & LTV
+            </div>
+            <button
+              type="button"
+              disabled={validationBusy}
+              onClick={onValidateSignatures}
+              className="w-full py-1.5 rounded-md bg-zinc-800 border border-zinc-700 hover:bg-zinc-700 disabled:opacity-50 text-zinc-200 text-[11px] font-semibold"
+            >
+              {validationBusy ? 'Validating…' : 'Validate all signatures'}
+            </button>
+            {validationReport && (
+              <div className="rounded-md border border-zinc-700 bg-zinc-800/50 p-2 space-y-1.5">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="text-zinc-400">Document</span>
+                  <span
+                    className={
+                      validationReport.documentStatus === 'Valid'
+                        ? 'text-emerald-400 font-semibold'
+                        : validationReport.documentStatus === 'Modified'
+                          ? 'text-red-400 font-semibold'
+                          : 'text-amber-400 font-semibold'
+                    }
+                  >
+                    {validationReport.documentStatus}
+                  </span>
+                </div>
+                <div className="text-[10px] text-zinc-500">
+                  {validationReport.signatures.length} signature(s) · {validationReport.revisionCount} revision(s)
+                </div>
+                {validationReport.signatures.map((s) => (
+                  <div key={s.fieldId} className="text-[10px] border-t border-zinc-700/60 pt-1">
+                    <div className="flex justify-between gap-2">
+                      <span className="text-zinc-300 truncate">{s.fieldName}</span>
+                      <span
+                        className={
+                          s.status === 'Valid'
+                            ? 'text-emerald-400'
+                            : s.status === 'Modified' || s.status === 'Revoked'
+                              ? 'text-red-400'
+                              : 'text-amber-400'
+                        }
+                      >
+                        {s.status}
+                      </span>
+                    </div>
+                    <div className="text-zinc-500 truncate">{s.summary}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={onEnableLtv}
+              className="w-full py-1.5 rounded-md bg-zinc-800 border border-zinc-700 hover:bg-zinc-700 text-zinc-200 text-[11px] font-semibold"
+            >
+              Enable LTV (embed DSS)
+            </button>
+            {ltvStatus && (
+              <p className="text-[10px] text-zinc-500">{ltvStatus.summary}</p>
+            )}
+          </div>
+
+          {(managedSignatures.length > 0 || revisionEntries.length > 0) && (
+            <div className="px-4 pb-3 space-y-2 border-b border-zinc-700/50">
+              <div className="text-[10px] font-bold tracking-widest text-zinc-400 uppercase">
+                Signatures & revisions
+              </div>
+              {managedSignatures.map((m) => (
+                <button
+                  key={m.field.id}
+                  type="button"
+                  onClick={() => setSelectedPdfSigFieldId?.(m.field.id)}
+                  className="w-full text-left rounded-md border border-zinc-700 px-2 py-1.5 text-[11px] text-zinc-300 hover:border-zinc-500"
+                >
+                  <div className="font-medium truncate">
+                    #{m.index + 1} {m.signerName || m.field.fieldName}
+                  </div>
+                  <div className="text-[10px] text-zinc-500 truncate">
+                    {m.signingTime || 'No time'} · {m.reason || 'No reason'}
+                    {m.validation ? ` · ${m.validation.status}` : ''}
+                  </div>
+                </button>
+              ))}
+              {revisionEntries.length > 0 && (
+                <div className="text-[10px] text-zinc-500 space-y-0.5">
+                  {revisionEntries.map((r) => (
+                    <div key={r.revision.index}>
+                      Rev {r.revision.index + 1}: xref @{r.revision.xrefOffset}
+                      {r.signatureFieldIds.length
+                        ? ` · ${r.signatureFieldIds.length} sig`
+                        : ''}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {selectedSignature && (
+            <div className="px-4 pb-4 space-y-3 border-b border-zinc-700/50">
+              <div className="text-[10px] font-bold tracking-widest text-zinc-400 uppercase">Selected</div>
+              <div className="space-y-1.5">
+                <label className="text-[11px] text-zinc-300">Opacity</label>
+                <input
+                  type="range"
+                  min={10}
+                  max={100}
+                  value={Math.round(selectedSignature.opacity * 100)}
+                  onChange={(e) =>
+                    onSignatureOpacity?.(selectedSignature.id, Number(e.target.value) / 100)
+                  }
+                  className="w-full"
+                />
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  className="flex-1 flex items-center justify-center gap-1 py-1.5 text-[11px] rounded bg-zinc-800 border border-zinc-700 text-zinc-200 hover:bg-zinc-700"
+                  onClick={() =>
+                    onSignatureRotate?.(
+                      selectedSignature.id,
+                      (selectedSignature.rotation + 15) % 360,
+                    )
+                  }
+                >
+                  <RotateCw size={12} /> Rotate
+                </button>
+                <button
+                  type="button"
+                  className="flex-1 flex items-center justify-center gap-1 py-1.5 text-[11px] rounded bg-zinc-800 border border-zinc-700 text-zinc-200 hover:bg-zinc-700"
+                  onClick={() => onSignatureLockToggle?.(selectedSignature.id)}
+                >
+                  {selectedSignature.locked ? <Unlock size={12} /> : <Lock size={12} />}
+                  {selectedSignature.locked ? 'Unlock' : 'Lock'}
+                </button>
+                <button
+                  type="button"
+                  className="flex items-center justify-center gap-1 px-2 py-1.5 text-[11px] rounded bg-red-600/20 border border-red-500/40 text-red-300 hover:bg-red-600/30"
+                  onClick={() => onSignatureDelete?.(selectedSignature.id)}
+                >
+                  <Trash2 size={12} />
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div className="p-4 flex-1 overflow-y-auto space-y-2">
+            <div className="text-[10px] font-bold tracking-widest text-zinc-400 uppercase mb-2">
+              Library
+            </div>
+            {signatureLibraryEntries.length === 0 && (
+              <p className="text-[11px] text-zinc-500">No saved signatures yet.</p>
+            )}
+            {signatureLibraryEntries.map((entry) => {
+              const active = activeLibraryId === entry.id;
+              return (
+                <div
+                  key={entry.id}
+                  className={`rounded-lg border p-2 cursor-pointer transition-colors ${
+                    active
+                      ? 'border-blue-500 bg-blue-500/10'
+                      : 'border-zinc-700 hover:border-zinc-500 bg-zinc-800/40'
+                  }`}
+                  onClick={() => setActiveLibraryId?.(entry.id)}
+                >
+                  <div className="h-12 rounded bg-white flex items-center justify-center overflow-hidden mb-2">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={entry.imageDataUrl}
+                      alt={entry.name}
+                      className="max-h-full max-w-full object-contain"
+                    />
+                  </div>
+                  <input
+                    value={entry.name}
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={(e) => onLibraryRename?.(entry.id, e.target.value)}
+                    className="w-full bg-transparent text-[11px] text-zinc-200 outline-none border-b border-transparent focus:border-zinc-600"
+                  />
+                  <div className="flex items-center gap-1 mt-1.5">
+                    <button
+                      type="button"
+                      title="Favorite"
+                      className={`p-1 rounded ${entry.favorite ? 'text-amber-400' : 'text-zinc-500 hover:text-zinc-300'}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onLibraryFavorite?.(entry.id);
+                      }}
+                    >
+                      <Star size={12} fill={entry.favorite ? 'currentColor' : 'none'} />
+                    </button>
+                    <button
+                      type="button"
+                      title="Duplicate"
+                      className="p-1 rounded text-zinc-500 hover:text-zinc-300"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onLibraryDuplicate?.(entry.id);
+                      }}
+                    >
+                      <Copy size={12} />
+                    </button>
+                    <button
+                      type="button"
+                      title="Delete"
+                      className="p-1 rounded text-zinc-500 hover:text-red-400 ml-auto"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onLibraryDelete?.(entry.id);
+                      }}
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}

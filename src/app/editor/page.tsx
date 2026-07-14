@@ -7,7 +7,7 @@ import { X, Loader2, ChevronLeft, Image, Type } from 'lucide-react';
 
 // We import types only — the engine modules are loaded dynamically
 // because they require browser APIs (canvas, DecompressionStream)
-import type { PDFDocumentData, RenderResult, TextRun, TextLine, ImageItem, PathItem, DisplayItem, TextWatermark, ImageWatermark, Watermark, DetectedWatermark, AcroFormWidget, BloomPage, DetectedTable } from '@/engine';
+import type { PDFDocumentData, RenderResult, TextRun, TextLine, ImageItem, PathItem, DisplayItem, TextWatermark, ImageWatermark, Watermark, DetectedWatermark, AcroFormWidget, BloomPage, DetectedTable, VisualSignature, SignatureLibraryEntry, SignatureField, ManagedIdentity, ValidationReport, LtvStatus, ManagedSignature, RevisionViewEntry } from '@/engine';
 
 import type { EditorTool, ToolDef, PathType, DrawnPath, FloatingText, FloatingImage } from './types';
 import { TOOLS } from './types';
@@ -16,7 +16,7 @@ import {
   hitTestTextLine, findNearestTextLine, caretIndexFromLineX,
   getLineBounds, getOverlayFontFamily, getDisplayFontFamily,
 } from './utils';
-import { buildDisplayListIndex, hitTestDisplayList, isSelectableDisplayItem, TransactionStack, deleteObject, visualFontSize, resolveRunStyleFlags, transformObject, applyObjectTransform, distributeTextChangeToSegments, segmentAtIndex } from '@/engine';
+import { buildDisplayListIndex, hitTestDisplayList, isSelectableDisplayItem, TransactionStack, deleteObject, visualFontSize, resolveRunStyleFlags, transformObject, applyObjectTransform, distributeTextChangeToSegments, segmentAtIndex, createVisualSignature, hitTestSignature, moveSignature, resizeSignature, rotateSignature, setSignatureOpacity, setSignatureLocked, deleteSignature, updateSignature, SignatureHistory, getSignatureLibrary, DEFAULT_SIGNATURE_SIZE, detectSignatureFieldsOnPage, hitTestSignatureField, createSignatureFieldAtPoint, applySignatureFieldAppearanceAsync, getCertificateManager, signDocumentCryptographic, validateDocumentSignatures, enableLongTermValidation, getLtvStatus, listManagedSignatures, buildRevisionViewer, lockSignaturesAfterSigning, pushRecentSignatureId, orderLibraryByRecent, SIGNATURE_SHORTCUTS } from '@/engine';
 import type { QuadTree, SelectableItem, EditableObject } from '@/engine';
 import { findMatchingFlowLine } from './flowLineMatch';
 
@@ -26,6 +26,9 @@ import { PropertiesSidebar } from './components/PropertiesSidebar';
 import { EditableLineBox, type OverlaySegmentStyle } from './components/EditableLineBox';
 import { LinkPopover, type LinkPopoverMode } from './components/LinkPopover';
 import { EmbeddedImageOverlay } from './components/EmbeddedImageOverlay';
+import { SignatureOverlay } from './components/SignatureOverlay';
+import { SignatureCreateDialog, type SignatureCreateResult } from './components/SignatureCreateDialog';
+import { CertificateImportDialog } from './components/CertificateImportDialog';
 import { WatermarkPreview } from './components/WatermarkPreview';
 import { ThumbnailsSidebar } from './components/ThumbnailsSidebar';
 import { FindReplacePanel } from './components/FindReplacePanel';
@@ -241,15 +244,16 @@ export default function EditorPage() {
   const [detectedTables, setDetectedTables] = useState<DetectedTable[]>([]);
   const [activeTableId, setActiveTableId] = useState<string | null>(null);
 
-  // Undo/redo via TransactionStack
+  // Undo/redo via TransactionStack (+ visual signature history)
   const txStackRef = useRef(new TransactionStack());
+  const signatureHistoryRef = useRef(new SignatureHistory());
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
   const undoSnapshotRef = useRef<{ pageIndex: number; contentBytes: Uint8Array } | null>(null);
 
   const syncTxState = useCallback(() => {
-    setCanUndo(txStackRef.current.canUndo());
-    setCanRedo(txStackRef.current.canRedo());
+    setCanUndo(txStackRef.current.canUndo() || signatureHistoryRef.current.canUndo());
+    setCanRedo(txStackRef.current.canRedo() || signatureHistoryRef.current.canRedo());
   }, []);
   const [textFontFamily, setTextFontFamily] = useState('Helvetica');
   const [textFontSize, setTextFontSize] = useState(12);
@@ -263,6 +267,45 @@ export default function EditorPage() {
   const [isDirty, setIsDirty] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [showExportPanel, setShowExportPanel] = useState(false);
+
+  // Visual signatures (Phases 1–3) — overlay only, no PDF write
+  const [signatures, setSignatures] = useState<VisualSignature[]>([]);
+  const [selectedSignatureId, setSelectedSignatureId] = useState<string | null>(null);
+  const [signatureLibraryEntries, setSignatureLibraryEntries] = useState<SignatureLibraryEntry[]>([]);
+  const [activeLibraryId, setActiveLibraryId] = useState<string | null>(null);
+  const [signatureCreateOpen, setSignatureCreateOpen] = useState(false);
+  const [pdfSignatureFields, setPdfSignatureFields] = useState<SignatureField[]>([]);
+  const [selectedPdfSigFieldId, setSelectedPdfSigFieldId] = useState<string | null>(null);
+  /** When true, next empty-page click creates an AcroForm Sig field instead of an overlay. */
+  const [createFieldMode, setCreateFieldMode] = useState(false);
+  const [certificateImportOpen, setCertificateImportOpen] = useState(false);
+  const [certificateIdentities, setCertificateIdentities] = useState<ManagedIdentity[]>([]);
+  const [selectedCertificateId, setSelectedCertificateId] = useState<string | null>(null);
+  const [cryptoSignBusy, setCryptoSignBusy] = useState(false);
+  const [enableTimestamp, setEnableTimestamp] = useState(false);
+  const [validationBusy, setValidationBusy] = useState(false);
+  const [validationReport, setValidationReport] = useState<ValidationReport | null>(null);
+  const [ltvStatus, setLtvStatus] = useState<LtvStatus | null>(null);
+  const [managedSignatures, setManagedSignatures] = useState<ManagedSignature[]>([]);
+  const [revisionEntries, setRevisionEntries] = useState<RevisionViewEntry[]>([]);
+  const signaturesRef = useRef<VisualSignature[]>([]);
+  signaturesRef.current = signatures;
+
+  const refreshSignatureLibrary = useCallback(() => {
+    setSignatureLibraryEntries(orderLibraryByRecent(getSignatureLibrary().list()));
+  }, []);
+
+  const pushSignatureSnapshot = useCallback((next: VisualSignature[], label: string) => {
+    setSignatures(next);
+    signatureHistoryRef.current.push(next, label);
+    syncTxState();
+    setIsDirty(true);
+  }, [syncTxState]);
+
+  useEffect(() => {
+    refreshSignatureLibrary();
+    signatureHistoryRef.current.seed([], 'init');
+  }, [refreshSignatureLibrary]);
 
   // ── Refs (declared early for hooks that need them) ──
   const canvasContainerRef = useRef<HTMLDivElement>(null);
@@ -672,6 +715,19 @@ export default function EditorPage() {
           }
         } catch {
           if (!cancelled) setFormFields([]);
+        }
+
+        try {
+          const sigFields = detectSignatureFieldsOnPage(doc!, currentPage);
+          if (!cancelled) {
+            setPdfSignatureFields(sigFields);
+            if (selectedPdfSigFieldId) {
+              const still = sigFields.find((f) => f.id === selectedPdfSigFieldId);
+              if (!still) setSelectedPdfSigFieldId(null);
+            }
+          }
+        } catch {
+          if (!cancelled) setPdfSignatureFields([]);
         }
 
         // Re-sync editing line only when not in overlay preview mode
@@ -1262,6 +1318,23 @@ export default function EditorPage() {
 
   // ── Undo ──
   const handleUndo = useCallback(async () => {
+    const sigPeek = signatureHistoryRef.current.peek();
+    const pdfPeek = txStackRef.current.peek();
+    const preferSig =
+      signatureHistoryRef.current.canUndo() &&
+      (!pdfPeek || !txStackRef.current.canUndo() ||
+        (sigPeek != null && pdfPeek != null && sigPeek.timestamp >= pdfPeek.timestamp));
+
+    if (preferSig) {
+      const next = signatureHistoryRef.current.undo();
+      if (next) {
+        setSignatures(next);
+        setSelectedSignatureId(null);
+        syncTxState();
+        return;
+      }
+    }
+
     if (!doc || !engineRef.current) return;
     const entry = txStackRef.current.undo();
     if (!entry) return;
@@ -1283,9 +1356,26 @@ export default function EditorPage() {
   }, [doc, currentPage, setEditingLine, syncTxState]);
 
   const handleRedo = useCallback(async () => {
+    if (signatureHistoryRef.current.canRedo() && (activeTool === 'sign' || selectedSignatureId || !txStackRef.current.canRedo())) {
+      const next = signatureHistoryRef.current.redo();
+      if (next) {
+        setSignatures(next);
+        syncTxState();
+        return;
+      }
+    }
+
     if (!doc || !engineRef.current) return;
     const entry = txStackRef.current.redo();
-    if (!entry) return;
+    if (!entry) {
+      // Fallback: signature redo
+      const next = signatureHistoryRef.current.redo();
+      if (next) {
+        setSignatures(next);
+        syncTxState();
+      }
+      return;
+    }
     try {
       const engine = engineRef.current;
       const page = doc.pages[entry.pageIndex];
@@ -1301,13 +1391,185 @@ export default function EditorPage() {
     } catch (e) {
       console.error('[Editor] Redo failed:', e);
     }
-  }, [doc, currentPage, setEditingLine, syncTxState]);
+  }, [doc, currentPage, setEditingLine, syncTxState, activeTool, selectedSignatureId]);
 
   const handleFormFieldSelect = useCallback((field: AcroFormWidget) => {
     setSelectedFormField(field);
     setFormFieldDraft(typeof field.value === 'string' ? field.value : '');
     setActiveTool('select');
   }, []);
+
+  /** Place active library signature into a PDF /FT Sig field (writes /AP). */
+  const placeLibrarySignatureIntoField = useCallback(async (field: SignatureField) => {
+    if (!doc) return;
+    const lib = getSignatureLibrary();
+    let entry = activeLibraryId ? lib.get(activeLibraryId) : null;
+    if (!entry) {
+      const list = lib.list();
+      entry = list.find((e) => e.favorite) ?? list[0] ?? null;
+    }
+    if (!entry) {
+      setSignatureCreateOpen(true);
+      return;
+    }
+    try {
+      await applySignatureFieldAppearanceAsync(doc, field.ref, {
+        width: field.rect.width,
+        height: field.rect.height,
+        imageDataUrl: entry.imageDataUrl,
+        typedName: entry.typedText || entry.name,
+        date: new Date().toLocaleDateString(),
+        backgroundColor: [1, 1, 1],
+        borderWidth: 1,
+        borderColor: [0.2, 0.25, 0.35],
+      });
+      // Also keep a visual overlay aligned to the field for immediate feedback
+      const overlay = createVisualSignature({
+        pageIndex: field.pageIndex,
+        x: field.rect.x + field.rect.width / 2,
+        y: field.rect.y + field.rect.height / 2,
+        appearanceId: entry.id,
+        appearanceType:
+          entry.source === 'draw' ? 'drawn' : entry.source === 'typed' ? 'typed' : 'uploaded',
+        width: field.rect.width,
+        height: field.rect.height,
+      });
+      const withoutOverlapping = signaturesRef.current.filter(
+        (s) =>
+          !(
+            s.pageIndex === field.pageIndex &&
+            Math.abs(s.x - overlay.x) < 2 &&
+            Math.abs(s.y - overlay.y) < 2
+          ),
+      );
+      pushSignatureSnapshot([...withoutOverlapping, overlay], 'place-in-field');
+      setPdfSignatureFields(detectSignatureFieldsOnPage(doc, currentPage));
+      setSelectedPdfSigFieldId(field.id);
+      setActiveLibraryId(entry.id);
+      setIsDirty(true);
+      setRenderKey((k) => k + 1);
+    } catch (err) {
+      console.error('[Editor] Place signature in field failed:', err);
+      setError(`Place signature failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, [doc, activeLibraryId, currentPage, pushSignatureSnapshot]);
+
+  const refreshCertificateIdentities = useCallback(() => {
+    const mgr = getCertificateManager();
+    setCertificateIdentities(mgr.list());
+    setSelectedCertificateId(mgr.getSelected()?.id ?? null);
+  }, []);
+
+  useEffect(() => {
+    const t = window.setTimeout(refreshCertificateIdentities, 80);
+    return () => window.clearTimeout(t);
+  }, [refreshCertificateIdentities]);
+
+  const handleSelectCertificate = useCallback((id: string | null) => {
+    getCertificateManager().select(id);
+    setSelectedCertificateId(id);
+  }, []);
+
+  const handleCryptographicSign = useCallback(async () => {
+    if (!doc || !selectedPdfSigFieldId) {
+      setError('Select a PDF signature field first.');
+      return;
+    }
+    const field = pdfSignatureFields.find((f) => f.id === selectedPdfSigFieldId);
+    if (!field) {
+      setError('Signature field not found.');
+      return;
+    }
+    if (field.signed) {
+      setError('This field is already signed.');
+      return;
+    }
+    const mgr = getCertificateManager();
+    if (selectedCertificateId) mgr.select(selectedCertificateId);
+    const keyMat = mgr.getSelectedKey();
+    const identity = mgr.getSelected();
+    if (!keyMat?.privateKey) {
+      setCertificateImportOpen(true);
+      setError('Import a certificate with a private key to digitally sign.');
+      return;
+    }
+    setCryptoSignBusy(true);
+    setError(null);
+    try {
+      const leafDer = mgr.getSelectedLeafDer() ?? undefined;
+      const result = await signDocumentCryptographic(doc, field.ref, keyMat.privateKey, {
+        reason: 'Document approval',
+        name: identity?.leaf?.subject.commonName ?? identity?.label ?? 'Signer',
+        hashAlgorithm: 'sha256',
+        contentsSize: 8192,
+        certificateDer: leafDer ?? undefined,
+        appearanceText: identity?.leaf?.subject.commonName ?? identity?.label ?? 'Signed',
+        enableTimestamp,
+      });
+      doc.rawBytes = result.bytes;
+      setPdfSignatureFields(detectSignatureFieldsOnPage(doc, currentPage));
+      pushSignatureSnapshot(
+        lockSignaturesAfterSigning(signaturesRef.current, field.pageIndex),
+        'lock-after-sign',
+      );
+      if (activeLibraryId) pushRecentSignatureId(activeLibraryId);
+      setManagedSignatures(listManagedSignatures(doc));
+      setRevisionEntries(buildRevisionViewer(doc).revisions);
+      setLtvStatus(getLtvStatus(doc));
+      setIsDirty(true);
+      setRenderKey((k) => k + 1);
+      if (result.timestampError) {
+        console.warn('[Editor] Timestamp fallback:', result.timestampError);
+      }
+    } catch (err) {
+      console.error('[Editor] Cryptographic sign failed:', err);
+      setError(`Digital sign failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setCryptoSignBusy(false);
+    }
+  }, [doc, selectedPdfSigFieldId, pdfSignatureFields, selectedCertificateId, currentPage, enableTimestamp, pushSignatureSnapshot, activeLibraryId]);
+
+  const refreshMultiSigPanel = useCallback(() => {
+    if (!doc) {
+      setManagedSignatures([]);
+      setRevisionEntries([]);
+      setLtvStatus(null);
+      return;
+    }
+    setManagedSignatures(listManagedSignatures(doc));
+    setRevisionEntries(buildRevisionViewer(doc).revisions);
+    setLtvStatus(getLtvStatus(doc));
+  }, [doc]);
+
+  useEffect(() => {
+    refreshMultiSigPanel();
+  }, [refreshMultiSigPanel, pdfSignatureFields]);
+
+  const handleValidateSignatures = useCallback(async () => {
+    if (!doc) return;
+    setValidationBusy(true);
+    try {
+      const report = await validateDocumentSignatures(doc, { allowSelfSigned: true });
+      setValidationReport(report);
+      refreshMultiSigPanel();
+    } catch (err) {
+      setError(`Validation failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setValidationBusy(false);
+    }
+  }, [doc, refreshMultiSigPanel]);
+
+  const handleEnableLtv = useCallback(() => {
+    if (!doc) return;
+    try {
+      enableLongTermValidation(doc);
+      setLtvStatus(getLtvStatus(doc));
+      setIsDirty(true);
+      refreshMultiSigPanel();
+    } catch (err) {
+      setError(`LTV failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, [doc, refreshMultiSigPanel]);
 
   const handleFormFieldChange = useCallback((value: string) => {
     setFormFieldDraft(value);
@@ -1555,6 +1817,19 @@ export default function EditorPage() {
         blurTimeoutRef.current = null;
       }
 
+      // Signature hit-test (above page contents)
+      {
+        const sigHit = hitTestSignature(signaturesRef.current, currentPage, pdfX, pdfY);
+        if (sigHit) {
+          if (editingLine) void handleEditSubmit(false);
+          setSelectedSignatureId(sigHit.id);
+          setSelectedDisplayItem(null);
+          setSelectedLine(null);
+          setActiveTool('sign');
+          return;
+        }
+      }
+
       // Click a form field box → select it for editing
       if (formFields.length > 0 && engineRef.current) {
         const formHit = engineRef.current.hitTestFormField(formFields, pdfX, pdfY);
@@ -1666,6 +1941,7 @@ export default function EditorPage() {
         }
         setActiveFloatingTextId(null);
         setActiveFloatingImageId(null);
+        setSelectedSignatureId(null);
       }
     } else if (activeTool === 'addtext') {
       if (blurTimeoutRef.current) {
@@ -1716,8 +1992,74 @@ export default function EditorPage() {
           console.warn('[Editor] Highlight annotation failed:', err);
         }
       }
+    } else if (activeTool === 'sign') {
+      // Click existing PDF signature field → place library signature into /AP
+      const pdfSigHit = hitTestSignatureField(pdfSignatureFields, pdfX, pdfY);
+      if (pdfSigHit) {
+        setSelectedPdfSigFieldId(pdfSigHit.id);
+        setSelectedSignatureId(null);
+        setSelectedDisplayItem(null);
+        void placeLibrarySignatureIntoField(pdfSigHit);
+        return;
+      }
+
+      // Select existing visual overlay signature
+      const hit = hitTestSignature(signaturesRef.current, currentPage, pdfX, pdfY);
+      if (hit) {
+        setSelectedSignatureId(hit.id);
+        setSelectedDisplayItem(null);
+        setSelectedPdfSigFieldId(null);
+        return;
+      }
+
+      // Create AcroForm signature field mode
+      if (createFieldMode && doc) {
+        try {
+          const created = createSignatureFieldAtPoint(doc, currentPage, pdfX, pdfY, {
+            withPlaceholderAppearance: true,
+          });
+          setPdfSignatureFields(detectSignatureFieldsOnPage(doc, currentPage));
+          setSelectedPdfSigFieldId(created.id);
+          setCreateFieldMode(false);
+          setIsDirty(true);
+          setRenderKey((k) => k + 1);
+        } catch (err) {
+          console.error('[Editor] Create signature field failed:', err);
+          setError(`Create signature field failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        return;
+      }
+
+      const lib = getSignatureLibrary();
+      let entry = activeLibraryId ? lib.get(activeLibraryId) : null;
+      if (!entry) {
+        const list = lib.list();
+        entry = list.find((e) => e.favorite) ?? list[0] ?? null;
+      }
+      if (!entry) {
+        setSignatureCreateOpen(true);
+        return;
+      }
+
+      const maxW = DEFAULT_SIGNATURE_SIZE.width;
+      const scaleFit = Math.min(1, maxW / Math.max(entry.width, 1));
+      const w = Math.max(40, entry.width * scaleFit);
+      const h = Math.max(24, entry.height * scaleFit);
+      const sig = createVisualSignature({
+        pageIndex: currentPage,
+        x: pdfX,
+        y: pdfY,
+        appearanceId: entry.id,
+        appearanceType:
+          entry.source === 'draw' ? 'drawn' : entry.source === 'typed' ? 'typed' : 'uploaded',
+        width: w,
+        height: h,
+      });
+      pushSignatureSnapshot([...signaturesRef.current, sig], 'add-signature');
+      setSelectedSignatureId(sig.id);
+      setActiveLibraryId(entry.id);
     }
-  }, [renderResult, doc, currentPage, scale, activeTool, editingLine, handleEditSubmit, beginEditSession, displayItems, textFontSize, textColor, textFontFamily, highlightColor, formFields, handleFormFieldSelect, linksHighlighted, linkPopoverMode, resolveLinkDisplay]);
+  }, [renderResult, doc, currentPage, scale, activeTool, editingLine, handleEditSubmit, beginEditSession, displayItems, textFontSize, textColor, textFontFamily, highlightColor, formFields, handleFormFieldSelect, linksHighlighted, linkPopoverMode, resolveLinkDisplay, activeLibraryId, pushSignatureSnapshot, pdfSignatureFields, createFieldMode, placeLibrarySignatureIntoField]);
 
   // Double-click in select mode → enter text edit
   const handleCanvasDoubleClick = useCallback((e: React.MouseEvent) => {
@@ -2760,6 +3102,81 @@ export default function EditorPage() {
     }
   }, [doc, watermarkType, watermarkText, watermarkFontName, watermarkOpacity, watermarkRotation, watermarkSize, watermarkPosition, watermarkMosaic, watermarkPageFrom, watermarkPageTo, watermarkLayer, watermarkColor, watermarkShapeColor, watermarkShapeType, watermarkImageBytes, watermarkImageDims, watermarkImageFile, watermarkBlendMode]);
 
+  // ── Signature handlers ──
+  const resolveSignatureImage = useCallback((sig: VisualSignature): string | null => {
+    const entry = getSignatureLibrary().get(sig.appearanceId);
+    return entry?.imageDataUrl ?? null;
+  }, []);
+
+  const handleSignatureSelect = useCallback((id: string) => {
+    setSelectedSignatureId(id);
+    setSelectedDisplayItem(null);
+  }, []);
+
+  const handleSignatureMove = useCallback((id: string, dx: number, dy: number) => {
+    const next = updateSignature(signaturesRef.current, id, (s) => moveSignature(s, dx, dy));
+    pushSignatureSnapshot(next, 'move-signature');
+  }, [pushSignatureSnapshot]);
+
+  const handleSignatureResize = useCallback((id: string, width: number, height: number) => {
+    const next = updateSignature(signaturesRef.current, id, (s) => resizeSignature(s, width, height));
+    pushSignatureSnapshot(next, 'resize-signature');
+  }, [pushSignatureSnapshot]);
+
+  const handleSignatureRotate = useCallback((id: string, degrees: number) => {
+    const next = updateSignature(signaturesRef.current, id, (s) => rotateSignature(s, degrees));
+    pushSignatureSnapshot(next, 'rotate-signature');
+  }, [pushSignatureSnapshot]);
+
+  const handleSignatureDelete = useCallback((id: string) => {
+    const next = deleteSignature(signaturesRef.current, id);
+    pushSignatureSnapshot(next, 'delete-signature');
+    if (selectedSignatureId === id) setSelectedSignatureId(null);
+  }, [pushSignatureSnapshot, selectedSignatureId]);
+
+  const handleSignatureOpacity = useCallback((id: string, opacity: number) => {
+    const next = updateSignature(signaturesRef.current, id, (s) => setSignatureOpacity(s, opacity));
+    pushSignatureSnapshot(next, 'opacity-signature');
+  }, [pushSignatureSnapshot]);
+
+  const handleSignatureLockToggle = useCallback((id: string) => {
+    const next = updateSignature(signaturesRef.current, id, (s) => setSignatureLocked(s, !s.locked));
+    pushSignatureSnapshot(next, 'lock-signature');
+  }, [pushSignatureSnapshot]);
+
+  const handleSignatureCreateSave = useCallback((result: SignatureCreateResult) => {
+    const entry = getSignatureLibrary().add({
+      ...result.entry,
+      favorite: false,
+    });
+    refreshSignatureLibrary();
+    setActiveLibraryId(entry.id);
+  }, [refreshSignatureLibrary]);
+
+  const handleLibraryRename = useCallback((id: string, name: string) => {
+    getSignatureLibrary().rename(id, name);
+    refreshSignatureLibrary();
+  }, [refreshSignatureLibrary]);
+
+  const handleLibraryDelete = useCallback((id: string) => {
+    getSignatureLibrary().delete(id);
+    if (activeLibraryId === id) setActiveLibraryId(null);
+    refreshSignatureLibrary();
+  }, [activeLibraryId, refreshSignatureLibrary]);
+
+  const handleLibraryDuplicate = useCallback((id: string) => {
+    const dup = getSignatureLibrary().duplicate(id);
+    if (dup) {
+      setActiveLibraryId(dup.id);
+      refreshSignatureLibrary();
+    }
+  }, [refreshSignatureLibrary]);
+
+  const handleLibraryFavorite = useCallback((id: string) => {
+    getSignatureLibrary().toggleFavorite(id);
+    refreshSignatureLibrary();
+  }, [refreshSignatureLibrary]);
+
   const handleScanWatermarks = useCallback(() => {
     if (!doc || !engineRef.current) return;
     try {
@@ -3115,23 +3532,37 @@ export default function EditorPage() {
         setActiveTool('draw');
       } else if (e.key === 'e' || e.key === 'E') {
         if (!e.metaKey && !e.ctrlKey) setActiveTool('erase');
+      } else if (e.key === 's' || e.key === 'S') {
+        if (!e.metaKey && !e.ctrlKey && !e.shiftKey) setActiveTool('sign');
+      } else if ((e.key === 'v' || e.key === 'V') && e.shiftKey && !e.metaKey && !e.ctrlKey) {
+        // SIGNATURE_SHORTCUTS.validate
+        if (activeTool === 'sign') {
+          e.preventDefault();
+          void handleValidateSignatures();
+        }
+      } else if ((e.key === 'Delete' || e.key === 'Backspace') && selectedSignatureId) {
+        e.preventDefault();
+        handleSignatureDelete(selectedSignatureId);
+      } else if (e.key === 'w' || e.key === 'W') {
+        if (!e.metaKey && !e.ctrlKey) setActiveTool('watermark');
       }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [goToPrev, goToNext, zoomIn, zoomOut, editingLine]);
+  }, [goToPrev, goToNext, zoomIn, zoomOut, editingLine, selectedSignatureId, handleSignatureDelete, activeTool, handleValidateSignatures]);
 
   const eraserSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${eraserSize}" height="${eraserSize}" viewBox="0 0 ${eraserSize} ${eraserSize}"><circle cx="${eraserSize / 2}" cy="${eraserSize / 2}" r="${eraserSize / 2 - 1}" fill="rgba(255,255,255,0.4)" stroke="black" stroke-width="1"/></svg>`;
   const eraserCursorUrl = `url('data:image/svg+xml;utf8,${encodeURIComponent(eraserSvg)}') ${eraserSize / 2} ${eraserSize / 2}, auto`;
 
   const cursorForTool = isPanning ? 'grabbing'
-    : spacePanHeld || (scale > 1 && !['draw', 'highlight', 'erase'].includes(activeTool)) ? 'grab'
+    : spacePanHeld || (scale > 1 && !['draw', 'highlight', 'erase', 'sign'].includes(activeTool)) ? 'grab'
     : activeTool === 'text' ? 'text'
       : activeTool === 'draw' ? 'crosshair'
         : activeTool === 'highlight' ? 'pointer'
           : activeTool === 'erase' ? eraserCursorUrl
-            : activeTool === 'select' ? 'grab'
-              : 'default';
+            : activeTool === 'sign' ? 'crosshair'
+              : activeTool === 'select' ? 'grab'
+                : 'default';
 
   const isPanIgnoreTarget = useCallback((target: EventTarget | null) => {
     if (!(target instanceof Element)) return false;
@@ -3499,6 +3930,45 @@ export default function EditorPage() {
           onScanWatermarks={handleScanWatermarks}
           onRemoveWatermarks={handleConfirmRemoveWatermarks}
           onCancelScan={handleCancelScan}
+          // Signature tool
+          signatureLibraryEntries={signatureLibraryEntries}
+          activeLibraryId={activeLibraryId}
+          setActiveLibraryId={setActiveLibraryId}
+          selectedSignatureId={selectedSignatureId}
+          selectedSignature={signatures.find((s) => s.id === selectedSignatureId) ?? null}
+          onOpenSignatureCreate={() => setSignatureCreateOpen(true)}
+          onSignatureDelete={handleSignatureDelete}
+          onSignatureOpacity={handleSignatureOpacity}
+          onSignatureLockToggle={handleSignatureLockToggle}
+          onSignatureRotate={handleSignatureRotate}
+          onLibraryRename={handleLibraryRename}
+          onLibraryDelete={handleLibraryDelete}
+          onLibraryDuplicate={handleLibraryDuplicate}
+          onLibraryFavorite={handleLibraryFavorite}
+          pdfSignatureFields={pdfSignatureFields}
+          selectedPdfSigFieldId={selectedPdfSigFieldId}
+          setSelectedPdfSigFieldId={setSelectedPdfSigFieldId}
+          createFieldMode={createFieldMode}
+          setCreateFieldMode={setCreateFieldMode}
+          onPlaceIntoSelectedField={() => {
+            const field = pdfSignatureFields.find((f) => f.id === selectedPdfSigFieldId);
+            if (field) void placeLibrarySignatureIntoField(field);
+          }}
+          certificateIdentities={certificateIdentities}
+          selectedCertificateId={selectedCertificateId}
+          onOpenCertificateImport={() => setCertificateImportOpen(true)}
+          onSelectCertificate={handleSelectCertificate}
+          onCryptographicSign={() => void handleCryptographicSign()}
+          cryptoSignBusy={cryptoSignBusy}
+          enableTimestamp={enableTimestamp}
+          setEnableTimestamp={setEnableTimestamp}
+          onValidateSignatures={() => void handleValidateSignatures()}
+          validationBusy={validationBusy}
+          validationReport={validationReport}
+          onEnableLtv={handleEnableLtv}
+          ltvStatus={ltvStatus}
+          managedSignatures={managedSignatures}
+          revisionEntries={revisionEntries}
         />
 
         <input
@@ -3667,6 +4137,77 @@ export default function EditorPage() {
                 />
               );
             })()}
+
+            {/* Visual signatures — render above page contents */}
+            {renderResult && doc && signatures.filter((s) => s.pageIndex === currentPage).map((sig) => {
+              const page = doc.pages[currentPage];
+              const { mediaBox } = page;
+              return (
+                <SignatureOverlay
+                  key={sig.id}
+                  signature={sig}
+                  imageDataUrl={resolveSignatureImage(sig)}
+                  scale={scale}
+                  selected={selectedSignatureId === sig.id}
+                  toCss={(b) => {
+                    const tl = pdfToCanvas(
+                      b.x, b.y + b.height,
+                      scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
+                    );
+                    const br = pdfToCanvas(
+                      b.x + b.width, b.y,
+                      scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
+                    );
+                    return {
+                      left: Math.min(tl.cssX, br.cssX),
+                      top: Math.min(tl.cssY, br.cssY),
+                      width: Math.abs(br.cssX - tl.cssX),
+                      height: Math.abs(br.cssY - tl.cssY),
+                    };
+                  }}
+                  onSelect={handleSignatureSelect}
+                  onCommitMove={handleSignatureMove}
+                  onCommitResize={handleSignatureResize}
+                  onCommitRotate={handleSignatureRotate}
+                  onDelete={handleSignatureDelete}
+                  onDeselect={() => setSelectedSignatureId(null)}
+                />
+              );
+            })}
+
+            {/* PDF AcroForm signature field widgets */}
+            {(activeTool === 'sign' || selectedPdfSigFieldId) && renderResult && doc &&
+              pdfSignatureFields.map((field) => {
+                const page = doc.pages[currentPage];
+                const { mediaBox } = page;
+                const tl = pdfToCanvas(
+                  field.rect.x, field.rect.y + field.rect.height,
+                  scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
+                );
+                const br = pdfToCanvas(
+                  field.rect.x + field.rect.width, field.rect.y,
+                  scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
+                );
+                const selected = selectedPdfSigFieldId === field.id;
+                return (
+                  <div
+                    key={`pdf-sig-${field.id}`}
+                    className={`absolute z-35 pointer-events-none border-2 border-dashed ${
+                      selected ? 'border-emerald-400 bg-emerald-400/10' : 'border-sky-400/80 bg-sky-400/5'
+                    }`}
+                    style={{
+                      left: Math.min(tl.cssX, br.cssX),
+                      top: Math.min(tl.cssY, br.cssY),
+                      width: Math.abs(br.cssX - tl.cssX),
+                      height: Math.abs(br.cssY - tl.cssY),
+                    }}
+                  >
+                    <span className="absolute -top-5 left-0 text-[9px] px-1 rounded bg-sky-700 text-white whitespace-nowrap">
+                      {field.fieldName}{field.signed ? ' · signed' : field.hasAppearance ? ' · AP' : ''}
+                    </span>
+                  </div>
+                );
+              })}
 
             {floatingTexts.map(ft => {
               const { cssX, cssY } = pdfToCanvas(
@@ -4174,6 +4715,20 @@ export default function EditorPage() {
           </div>
         </div>
       )}
+
+      <SignatureCreateDialog
+        open={signatureCreateOpen}
+        onOpenChange={setSignatureCreateOpen}
+        onSave={handleSignatureCreateSave}
+      />
+      <CertificateImportDialog
+        open={certificateImportOpen}
+        onOpenChange={setCertificateImportOpen}
+        onChange={(list) => {
+          setCertificateIdentities(list);
+          setSelectedCertificateId(getCertificateManager().getSelected()?.id ?? null);
+        }}
+      />
 
       {/* ── Export Panel ── */}
       <ExportPanel

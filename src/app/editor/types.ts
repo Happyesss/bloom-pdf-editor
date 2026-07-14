@@ -6,6 +6,7 @@ import {
   PenTool, 
   Eraser,
   Stamp,
+  PenLine,
   LucideIcon
 } from 'lucide-react';
 
@@ -25,6 +26,7 @@ export const TOOLS: ToolDef[] = [
   { id: 'draw',      label: 'Draw',      icon: PenTool,  shortcut: 'D' },
   { id: 'erase',     label: 'Erase',     icon: Eraser,  shortcut: 'E' },
   { id: 'watermark', label: 'Watermark', icon: Stamp,   shortcut: 'W' },
+  { id: 'sign',      label: 'Sign',      icon: PenLine, shortcut: 'S' },
 ];
 
 export type PathType = 'draw' | 'highlight';

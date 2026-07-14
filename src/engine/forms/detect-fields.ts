@@ -62,6 +62,10 @@ function buildWidget(
   let value: string | boolean | string[] | null = null;
   if (v instanceof PDFString || v instanceof PDFName) value = strVal(v);
   else if (v instanceof PDFArray) value = v.items.map(i => strVal(i));
+  else if (v instanceof PDFRef) {
+    // Signature fields store /V → Sig dictionary ref
+    value = fieldType === 'Sig' ? `[Sig:${v.toKey()}]` : null;
+  }
 
   const mk = dict.get('MK');
   const mkDict = mk instanceof PDFRef ? resolveRef(mk, objects) : mk;
@@ -163,6 +167,9 @@ function walkField(
   let value: string | boolean | string[] | null = null;
   if (v instanceof PDFString || v instanceof PDFName) value = strVal(v);
   else if (v instanceof PDFArray) value = v.items.map(i => strVal(i));
+  else if (v instanceof PDFRef && ft === 'Sig') {
+    value = `[Sig:${v.toKey()}]`;
+  }
 
   return {
     ref: fieldRef,

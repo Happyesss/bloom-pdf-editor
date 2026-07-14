@@ -338,7 +338,7 @@ export async function buildFullXref(data: Uint8Array): Promise<XRefTable> {
  * Check if the data at the given offset starts a traditional xref table
  * (starts with "xref" keyword) vs an xref stream (starts with object definition).
  */
-function isTraditionalXref(data: Uint8Array, offset: number): boolean {
+export function isTraditionalXref(data: Uint8Array, offset: number): boolean {
   // Skip whitespace
   let pos = offset;
   while (pos < data.length && (data[pos] === 0x20 || data[pos] === 0x0a || data[pos] === 0x0d || data[pos] === 0x09)) {

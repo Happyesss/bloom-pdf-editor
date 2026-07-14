@@ -1,0 +1,447 @@
+Implement Phase 1 of the Bloom PDF Signature Engine. [DONE]
+
+Objective:
+Build the signature tool infrastructure for visual signatures.
+
+Requirements:
+
+1. Add a new Signature tool to the editor toolbar.
+
+2. Clicking on a page should create a new Signature object.
+
+3. Create a Signature model containing:
+   - id
+   - pageIndex
+   - x
+   - y
+   - width
+   - height
+   - rotation
+   - opacity
+   - locked
+   - appearanceType
+   - appearanceId
+
+4. Signature objects should:
+   - render above page contents
+   - support selection
+   - support moving
+   - support resizing
+   - support rotation
+   - support delete
+   - support undo/redo
+
+5. Integrate with the existing editor selection system.
+
+6. Follow the current architecture used for text, image, watermark, and annotation objects.
+
+Constraints:
+- No digital signing yet.
+- No PDF writing changes.
+- No external libraries.
+- Maintain existing coding style.
+
+Deliverables:
+- Signature model
+- Signature tool
+- Rendering support
+- Editor interactions
+- Unit tests
+
+Implement Phase 2. [DONE]
+
+Objective:
+Allow users to create signatures.
+
+Support three creation methods:
+
+1. Draw signature
+   - Mouse
+   - Touch
+   - Pen
+   - Smooth bezier paths
+
+2. Upload signature
+   - PNG
+   - JPG
+   - SVG
+
+3. Typed signature
+   - Built-in fonts
+   - Adjustable font size
+   - Color picker
+
+Store signatures in an internal Signature Library.
+
+Signature library should support:
+- rename
+- delete
+- duplicate
+- favorites
+
+Signature appearance should preserve transparency.
+
+Constraints:
+- Browser only
+- No backend
+- No external APIs
+
+Deliverables:
+- Signature creation dialog
+- Signature library
+- Drawing engine
+- Import engine
+- Typed signature engine
+
+Implement Phase 3. [DONE]
+
+Objective:
+Generate Acrobat-style signature appearances.
+
+Appearance should support:
+
+Background
+Border
+Logo
+Signature image
+Typed name
+Date
+Reason
+Location
+Contact info
+
+Users should be able to:
+
+Show/hide every component.
+
+Customize:
+- colors
+- font
+- border
+- padding
+- alignment
+
+Generate the appearance as a reusable appearance object.
+
+Rendering should remain vector where possible.
+
+Constraints:
+- Appearance must be reusable.
+- Appearance generation should be independent of rendering.
+
+Deliverables:
+- Appearance builder
+- Appearance renderer
+- Appearance templates
+
+Implement Phase 4. [DONE]
+
+Objective:
+Support PDF Signature Fields.
+
+Implement:
+
+AcroForm parser
+
+Widget annotations
+
+Signature fields
+
+Field hierarchy
+
+Field lookup
+
+Support existing PDFs containing signature fields.
+
+Allow users to:
+
+Click existing fields
+
+Place signatures
+
+Create new signature fields
+
+Maintain compatibility with the existing parser.
+
+Deliverables:
+- AcroForm parser
+- Signature field model
+- Widget rendering
+
+
+Implement Phase 5. [DONE]
+
+Generate valid PDF appearance streams.
+
+Every signature field should generate:
+
+/AP
+
+Normal appearance
+
+Bounding box
+
+Resources
+
+Transformation matrix
+
+Appearance stream should be generated using existing PDF object infrastructure.
+
+Do not rasterize unless necessary.
+
+Deliverables:
+- Appearance stream generator
+- Resource manager
+- Appearance serializer
+
+
+Implement Phase 6. [DONE]
+
+Objective:
+Support Incremental PDF Updates.
+
+Never rewrite the original document.
+
+Append:
+
+new objects
+
+new xref
+
+new trailer
+
+Maintain compatibility with:
+
+existing parser
+
+object resolver
+
+xref parser
+
+Ensure:
+
+all object offsets remain valid
+
+multiple revisions are supported
+
+Deliverables:
+- Incremental writer
+- Revision manager
+- Offset manager
+
+Implement Phase 7. [DONE]
+
+Objective:
+Generate cryptographically valid PDF signatures.
+
+Implement:
+
+SHA-256
+
+SHA-384
+
+SHA-512
+
+RSA
+
+ECDSA
+
+PKCS#7 CMS
+
+Signature dictionary
+
+Contents placeholder
+
+ByteRange generation
+
+Hash calculation
+
+Signing pipeline
+
+Use WebCrypto where possible.
+
+No external crypto libraries unless unavoidable.
+
+Deliverables:
+- Signature generator
+- CMS builder
+- Hash engine
+
+Implement Phase 8. [DONE]
+
+Generate correct ByteRange values.
+
+Process:
+
+Reserve Contents placeholder.
+
+Serialize PDF.
+
+Calculate byte ranges.
+
+Hash all bytes except Contents.
+
+Generate CMS signature.
+
+Insert signature.
+
+Validate offsets.
+
+Support very large PDFs.
+
+Deliverables:
+- ByteRange calculator
+- Signature injector
+- Finalizer
+
+Implement Phase 9. [DONE]
+
+Implement certificate management.
+
+Support:
+
+PFX
+
+P12
+
+PEM
+
+DER
+
+Import certificates.
+
+Extract:
+
+private key
+
+public key
+
+certificate chain
+
+Display certificate information.
+
+Allow users to select certificates before signing.
+
+Deliverables:
+- Certificate manager
+- Import dialog
+- Certificate parser
+
+Implement Phase 10. [DONE]
+
+Validate signed PDFs.
+
+Verify:
+
+ByteRange
+
+Hash
+
+CMS signature
+
+Certificate chain
+
+Expiration
+
+Issuer
+
+Root trust
+
+Report:
+
+Valid
+
+Modified
+
+Unknown
+
+Expired
+
+Revoked (placeholder)
+
+Display Acrobat-style validation UI.
+
+Deliverables:
+- Validation engine
+- Validation report
+
+Implement Phase 11. [DONE]
+
+Support RFC 3161 timestamping.
+
+Implement:
+
+Timestamp request
+
+Timestamp response
+
+Embed timestamp token into CMS.
+
+Support configurable TSA URLs.
+
+Fallback gracefully if TSA is unavailable.
+
+Deliverables:
+- Timestamp client
+- Timestamp parser
+
+Implement Phase 12. [DONE]
+
+Support multiple signatures.
+
+Each signature should:
+
+Use incremental updates.
+
+Never invalidate previous signatures.
+
+Maintain revision history.
+
+Allow users to view every signature independently.
+
+Deliverables:
+- Multi-signature manager
+- Revision viewer
+
+Implement Phase 13. [DONE]
+
+Support Long-Term Validation.
+
+Embed:
+
+OCSP responses
+
+CRLs
+
+Certificate chains
+
+Implement DSS dictionary.
+
+Allow validation without network access.
+
+Deliverables:
+- LTV engine
+- DSS builder
+
+Implement Phase 14. [DONE]
+
+Add professional UX comparable to Adobe Acrobat.
+
+Features:
+
+- Signature Properties panel
+- Appearance presets
+- Signature Library manager
+- Recent signatures
+- Drag-and-drop placement
+- Alignment guides
+- Keyboard shortcuts
+- Context menus
+- Lock after signing
+- Signature summary panel
+- Validation badges
+- Accessibility support
+- High-DPI rendering
+- Performance optimizations for large PDFs
+
+Ensure the implementation integrates cleanly with the existing Bloom PDF Engine architecture and remains dependency-light.

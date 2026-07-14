@@ -14,10 +14,7 @@
  *   <new_xref_offset>
  *   %%EOF
  *
- * Benefits:
- *   - Preserves digital signatures on unchanged content
- *   - Much faster than full serialization for large documents
- *   - Maintains edit history (previous versions are accessible)
+ * Phase 6: OffsetManager + RevisionManager integration; multi-revision support.
  */
 
 import {
@@ -32,27 +29,61 @@ import {
 } from '../types';
 import { serializeIndirectObject, concatBytes } from '../editor/stream-compiler';
 import { findStartXref } from '../parser/xref';
+import { OffsetManager, type ObjectKey } from './offset-manager';
+import { RevisionManager, listRevisions } from './revision-manager';
+
+export interface IncrementalWriteResult {
+  /** Complete PDF bytes (original + this update). Never rewrites original prefix. */
+  bytes: Uint8Array;
+  /** Absolute offsets of objects written in this update. */
+  writtenOffsets: Map<ObjectKey, number>;
+  /** Byte offset of the new xref table. */
+  xrefOffset: number;
+  /** Previous xref offset stored in /Prev. */
+  prevXrefOffset: number;
+  /** Trailer /Size. */
+  size: number;
+  /** Length of the original prefix that was preserved. */
+  originalLength: number;
+}
+
+export interface IncrementalWriteOptions {
+  offsetManager?: OffsetManager;
+  revisionManager?: RevisionManager;
+}
 
 // ─── Incremental save ───────────────────────────────────────────────────────
 
 /**
  * Save a document incrementally — append only changed objects.
- *
- * @param doc The document data (with modifications applied to objects map)
- * @param modifiedKeys Set of object keys that were modified
- * @param newObjects Map of new objects that were created (key → object)
- * @returns Complete PDF file bytes (original + incremental update)
+ * Never rewrites the original document bytes.
  */
 export function saveIncremental(
   doc: PDFDocumentData,
   modifiedKeys: Set<string>,
   newObjects?: Map<string, PDFObject>,
+  options?: IncrementalWriteOptions,
 ): Uint8Array {
-  const originalBytes = doc.rawBytes;
-  const chunks: Uint8Array[] = [];
+  return appendIncrementalUpdate(doc, modifiedKeys, newObjects, options).bytes;
+}
 
-  // Start appending after the original file
+/**
+ * Append an incremental update and return offset/revision metadata.
+ */
+export function appendIncrementalUpdate(
+  doc: PDFDocumentData,
+  modifiedKeys: Set<string>,
+  newObjects?: Map<string, PDFObject>,
+  options?: IncrementalWriteOptions,
+): IncrementalWriteResult {
+  const originalBytes = doc.rawBytes;
+  if (!originalBytes || originalBytes.length === 0) {
+    throw new Error('Incremental update requires doc.rawBytes (original PDF)');
+  }
+
+  const chunks: Uint8Array[] = [];
   let currentOffset = originalBytes.length;
+  const originalLength = originalBytes.length;
 
   // Ensure the original ends cleanly (add newline if needed)
   if (originalBytes[originalBytes.length - 1] !== 0x0a) {
@@ -60,8 +91,7 @@ export function saveIncremental(
     currentOffset += 1;
   }
 
-  // Track offsets for the incremental xref
-  const newOffsets = new Map<string, number>();
+  const newOffsets = new Map<ObjectKey, number>();
 
   // Write modified objects
   const modKeys = Array.from(modifiedKeys);
@@ -85,6 +115,9 @@ export function saveIncremental(
     const newEntries = Array.from(newObjects.entries());
     for (let i = 0; i < newEntries.length; i++) {
       const [key, obj] = newEntries[i];
+      // Skip if already written as modified
+      if (newOffsets.has(key)) continue;
+
       const parts = key.split('_');
       const objNum = parseInt(parts[0], 10);
       const genNum = parseInt(parts[1], 10);
@@ -94,7 +127,6 @@ export function saveIncremental(
       chunks.push(objBytes);
       currentOffset += objBytes.length;
 
-      // Also add to the document's object map
       doc.objects.set(key, obj);
     }
   }
@@ -106,20 +138,25 @@ export function saveIncremental(
   currentOffset += xrefBytes.length;
 
   // Build trailer
-  const prevXrefOffset = findStartXref(originalBytes);
+  let prevXrefOffset = 0;
+  try {
+    prevXrefOffset = findStartXref(originalBytes);
+  } catch {
+    prevXrefOffset = 0;
+  }
   const size = getMaxObjNum(doc) + 1;
 
   const trailerDict = new PDFDict();
   trailerDict.set('Size', new PDFNumber(size));
 
-  // Copy Root and Info from original trailer
-  const root = doc.xref.trailerDict.getRef('Root');
+  const root =
+    doc.xref?.trailerDict?.getRef?.('Root') ??
+    findCatalogRef(doc);
   if (root) trailerDict.set('Root', root);
 
-  const info = doc.xref.trailerDict.get('Info');
+  const info = doc.xref?.trailerDict?.get?.('Info');
   if (info) trailerDict.set('Info', info);
 
-  // /Prev points to the previous xref offset
   trailerDict.set('Prev', new PDFNumber(prevXrefOffset));
 
   const trailerStr = trailerDictToString(trailerDict);
@@ -127,15 +164,101 @@ export function saveIncremental(
     `trailer\n${trailerStr}\nstartxref\n${xrefOffset}\n%%EOF\n`,
   );
   chunks.push(trailerBytes);
+  currentOffset += trailerBytes.length;
 
-  // Concatenate: original + incremental update
-  return concatBytes(originalBytes, ...chunks);
+  const bytes = concatBytes(originalBytes, ...chunks);
+
+  // Update managers
+  const revIndex = (options?.revisionManager?.count ?? 0);
+  options?.offsetManager?.recordBatch(newOffsets, revIndex, bytes.length);
+  options?.revisionManager?.pushRevision({
+    xrefOffset,
+    prevOffset: prevXrefOffset,
+    size,
+    fileLength: bytes.length,
+    root: root ?? null,
+  });
+
+  // Keep doc.rawBytes in sync for subsequent incremental appends
+  doc.rawBytes = bytes;
+
+  return {
+    bytes,
+    writtenOffsets: newOffsets,
+    xrefOffset,
+    prevXrefOffset,
+    size,
+    originalLength,
+  };
 }
+
+/**
+ * Session helper: tracks dirty keys and appends updates without rewriting history.
+ */
+export class IncrementalUpdateSession {
+  readonly offsets: OffsetManager;
+  readonly revisions: RevisionManager;
+  private dirty = new Set<ObjectKey>();
+  private created = new Map<ObjectKey, PDFObject>();
+
+  constructor(private doc: PDFDocumentData) {
+    this.offsets = new OffsetManager(doc.rawBytes?.length ?? 0);
+    this.revisions = new RevisionManager(doc.rawBytes);
+    if (doc.xref?.entries) {
+      const seed: { key: string; offset: number; objNum: number; genNum: number }[] = [];
+      for (const [key, entry] of doc.xref.entries) {
+        seed.push({
+          key,
+          offset: entry.offset,
+          objNum: entry.objNum,
+          genNum: entry.genNum,
+        });
+      }
+      this.offsets.seedFromXref(seed, 0);
+    }
+  }
+
+  markModified(key: ObjectKey): void {
+    this.dirty.add(key);
+  }
+
+  markModifiedRef(ref: PDFRef): void {
+    this.dirty.add(ref.toKey());
+  }
+
+  addNewObject(ref: PDFRef, obj: PDFObject): void {
+    const key = ref.toKey();
+    this.doc.objects.set(key, obj);
+    this.created.set(key, obj);
+    this.dirty.add(key);
+  }
+
+  /** Append a revision containing all dirty objects since last commit. */
+  commit(): IncrementalWriteResult {
+    if (!this.doc.rawBytes?.length) {
+      throw new Error('Document has no rawBytes for incremental commit');
+    }
+    const result = appendIncrementalUpdate(
+      this.doc,
+      this.dirty,
+      this.created,
+      { offsetManager: this.offsets, revisionManager: this.revisions },
+    );
+    this.dirty.clear();
+    this.created.clear();
+    return result;
+  }
+
+  listRevisions() {
+    return this.revisions.list();
+  }
+}
+
+export { listRevisions, OffsetManager, RevisionManager };
 
 // ─── Incremental xref ───────────────────────────────────────────────────────
 
 function buildIncrementalXref(offsets: Map<string, number>): Uint8Array {
-  // Group entries into contiguous subsections
   const entries: { objNum: number; genNum: number; offset: number }[] = [];
 
   const offsetEntries = Array.from(offsets.entries());
@@ -149,10 +272,8 @@ function buildIncrementalXref(offsets: Map<string, number>): Uint8Array {
     });
   }
 
-  // Sort by object number
   entries.sort((a, b) => a.objNum - b.objNum);
 
-  // Group into subsections
   const subsections: { start: number; entries: typeof entries }[] = [];
   let currentSub: typeof entries = [];
   let expectedNext = -1;
@@ -170,7 +291,6 @@ function buildIncrementalXref(offsets: Map<string, number>): Uint8Array {
     subsections.push({ start: currentSub[0].objNum, entries: currentSub });
   }
 
-  // Build xref output
   const lines: string[] = ['xref'];
 
   for (const sub of subsections) {
@@ -186,6 +306,20 @@ function buildIncrementalXref(offsets: Map<string, number>): Uint8Array {
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
+
+function findCatalogRef(doc: PDFDocumentData): PDFRef | null {
+  // Prefer trailer Root; else scan for Catalog
+  for (const [key, obj] of doc.objects) {
+    if (obj instanceof PDFDict) {
+      const type = obj.get('Type');
+      if (type instanceof PDFName && type.name === 'Catalog') {
+        const parts = key.split('_');
+        return new PDFRef(parseInt(parts[0], 10), parseInt(parts[1] ?? '0', 10));
+      }
+    }
+  }
+  return null;
+}
 
 function getMaxObjNum(doc: PDFDocumentData): number {
   let max = 0;
@@ -214,3 +348,7 @@ function stringToBytes(str: string): Uint8Array {
   }
   return bytes;
 }
+
+// Silence unused imports that may be needed by consumers re-exporting types
+void PDFArray;
+void PDFStream;

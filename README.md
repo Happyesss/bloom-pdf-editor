@@ -1,36 +1,41 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# PDF Editor + Bloom Document Intelligence
+
+Next.js PDF editor. Structure-preserving conversion (DOCX, XLSX, PPTX, HTML, Markdown, EPUB, …) runs **inside Next.js Route Handlers** via the `@bloom/document-engine` package — no second process, URL, or API key for local use.
 
 ## Getting Started
 
-First, run the development server:
-
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+npm --prefix server install   # engine deps (once)
+npm run dev                   # builds engine → starts Next
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Bloom runs **inside Next.js** (same process):
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```
+Browser → /api/bloom/* (Route Handlers) → server/dist (compiled engine)
+```
 
-## Learn More
+No `BLOOM_ENGINE_URL`, no API key, no second terminal.
 
-To learn more about Next.js, take a look at the following resources:
+The `server/` folder holds the conversion library + its Vitest suite. Optional standalone HTTP (`npm run server:dev` on :8787) is only for Docker/ops — not required for the editor.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Convert a PDF
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+1. Upload a PDF → editor.
+2. Toolbar → **Export** → **Document convert**.
+3. Pick a format → convert → download.
 
-## Deploy on Vercel
+**Images & text** in the same panel still export client-side (PNG / JPEG / SVG render / plain text).
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Architecture
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```
+Browser (client)
+  → /api/bloom/*  (Next.js Route Handlers, server-only)
+  → @bloom/document-engine  (in-process: queue + UDM + exporters)
+```
+
+See [`server/README.md`](server/README.md) for engine phases and Docker.

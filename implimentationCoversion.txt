@@ -1,0 +1,5232 @@
+# Bloom Document Intelligence Engine
+
+====================================================
+PROGRESS
+====================================================
+
+Phase 1  — COMPLETE
+Phase 2  — COMPLETE
+Phase 3  — COMPLETE
+Phase 4  — COMPLETE
+Phase 5  — COMPLETE
+Phase 6  — COMPLETE
+Phase 7  — COMPLETE
+Phase 8  — COMPLETE
+Phase 9  — COMPLETE
+Phase 10 — COMPLETE
+Phase 11 — COMPLETE
+Phase 12 — COMPLETE
+Phase 13 — COMPLETE
+Phase 14 — COMPLETE
+Phase 15 — COMPLETE
+
+# Phase 1 — Core Architecture & Infrastructure
+STATUS: COMPLETE
+
+====================================================
+OBJECTIVE
+====================================================
+
+Build the complete backend architecture for the Bloom Document Intelligence Engine.
+
+This engine will eventually support:
+
+• PDF → DOCX
+• PDF → XLSX
+• PDF → PPTX
+• PDF → HTML
+• PDF → Markdown
+• PDF → EPUB
+
+The engine should NEVER convert directly to any format.
+
+Instead, everything must go through an Intermediate Document Model (IDM).
+
+Architecture:
+
+                Upload
+                   │
+                   ▼
+          API Gateway
+                   │
+                   ▼
+        Document Processing Engine
+                   │
+      ┌────────────┴─────────────┐
+      │                          │
+ PDF Parser              OCR Pipeline
+      │                          │
+      └────────────┬─────────────┘
+                   ▼
+          Layout Analysis Engine
+                   ▼
+        Intermediate Document Model
+                   ▼
+      ┌────────┬────────┬────────┐
+      ▼        ▼        ▼
+    DOCX     XLSX      PPTX
+
+====================================================
+SERVER ARCHITECTURE
+====================================================
+
+Use Node.js + TypeScript.
+
+Project structure:
+
+server/
+ ├── api/
+ ├── workers/
+ ├── queues/
+ ├── engines/
+ │      ├── parser/
+ │      ├── layout/
+ │      ├── ocr/
+ │      ├── idm/
+ │      ├── exporter/
+ │      └── common/
+ ├── storage/
+ ├── cache/
+ ├── jobs/
+ ├── telemetry/
+ ├── utils/
+ └── tests/
+
+====================================================
+MODULES
+====================================================
+
+Create the following engines.
+
+DocumentEngine
+
+JobManager
+
+LayoutEngine
+
+ParserEngine
+
+OCRManager
+
+IntermediateDocumentEngine
+
+ExportManager
+
+StorageManager
+
+CacheManager
+
+TelemetryManager
+
+ConfigurationManager
+
+====================================================
+JOB SYSTEM
+====================================================
+
+Every uploaded document becomes a Job.
+
+States
+
+Uploaded
+
+Queued
+
+Parsing
+
+OCR
+
+Layout Analysis
+
+IDM Generation
+
+Export
+
+Packaging
+
+Completed
+
+Failed
+
+Cancelled
+
+====================================================
+DOCUMENT PIPELINE
+====================================================
+
+Every conversion follows:
+
+Upload
+
+↓
+
+Create Job
+
+↓
+
+Store Original
+
+↓
+
+Parse PDF
+
+↓
+
+Generate Layout Objects
+
+↓
+
+Build IDM
+
+↓
+
+Export
+
+↓
+
+Return File
+
+====================================================
+INTERMEDIATE DOCUMENT MODEL
+====================================================
+
+Create the root document model.
+
+Document
+
+Sections
+
+Pages
+
+Blocks
+
+Paragraphs
+
+Runs
+
+Images
+
+Tables
+
+Lists
+
+Headers
+
+Footers
+
+Footnotes
+
+Bookmarks
+
+Metadata
+
+The IDM must be independent from PDF.
+
+Future exporters should only read the IDM.
+
+====================================================
+API
+====================================================
+
+POST /convert
+
+GET /jobs/:id
+
+GET /download/:id
+
+DELETE /jobs/:id
+
+====================================================
+DELIVERABLES
+====================================================
+
+✔ Folder Structure
+
+✔ Dependency Injection
+
+✔ Job Queue
+
+✔ Worker Infrastructure
+
+✔ Base Interfaces
+
+✔ IDM Skeleton
+
+✔ API
+
+✔ Tests
+
+====================================================
+CONSTRAINTS
+====================================================
+
+No conversion logic yet.
+
+No OCR.
+
+No layout detection.
+
+No DOCX generation.
+
+Only architecture.
+
+Follow SOLID.
+
+Everything modular.
+
+Future exporters should require zero parser knowledge.
+
+# Bloom Document Intelligence Engine
+# Phase 2 — PDF Parsing & Object Extraction
+STATUS: COMPLETE
+
+====================================================
+OBJECTIVE
+====================================================
+
+Implement the PDF Parsing Engine.
+
+The parser should extract every meaningful object from the PDF and convert them into a neutral internal representation.
+
+Do NOT perform layout analysis.
+
+Do NOT merge text.
+
+Do NOT build paragraphs.
+
+Do NOT export.
+
+Only extract objects.
+
+====================================================
+INPUT
+====================================================
+
+PDF Document
+
+====================================================
+OUTPUT
+====================================================
+
+Raw Object Graph
+
+====================================================
+PIPELINE
+====================================================
+
+PDF
+
+↓
+
+Parse Objects
+
+↓
+
+Resolve References
+
+↓
+
+Decode Streams
+
+↓
+
+Extract Resources
+
+↓
+
+Generate Raw Objects
+
+====================================================
+OBJECT TYPES
+====================================================
+
+Extract:
+
+Characters
+
+Glyphs
+
+Fonts
+
+Text Runs
+
+Text Matrices
+
+Images
+
+Vector Paths
+
+Bezier Curves
+
+Rectangles
+
+Lines
+
+Circles
+
+Annotations
+
+Links
+
+Bookmarks
+
+AcroForms
+
+Layers
+
+Metadata
+
+Embedded Files
+
+Color Spaces
+
+Patterns
+
+Shadings
+
+Transparency
+
+Blend Modes
+
+Clip Paths
+
+Transformations
+
+====================================================
+FOR EACH TEXT CHARACTER STORE
+====================================================
+
+Unicode
+
+Glyph ID
+
+X
+
+Y
+
+Width
+
+Height
+
+Rotation
+
+Font Name
+
+Font Size
+
+Font Weight
+
+Italic
+
+Fill Color
+
+Stroke Color
+
+Character Spacing
+
+Word Spacing
+
+Rendering Mode
+
+Writing Direction
+
+====================================================
+FOR EACH IMAGE STORE
+====================================================
+
+Image Type
+
+Width
+
+Height
+
+DPI
+
+Compression
+
+Color Space
+
+Transparency
+
+Bounding Box
+
+Rotation
+
+Transform Matrix
+
+====================================================
+FOR EACH VECTOR STORE
+====================================================
+
+Path Commands
+
+Stroke Width
+
+Stroke Color
+
+Fill Color
+
+Dash Pattern
+
+Join Style
+
+Cap Style
+
+Opacity
+
+Transform Matrix
+
+====================================================
+FOR EACH PAGE STORE
+====================================================
+
+Width
+
+Height
+
+Rotation
+
+Crop Box
+
+Media Box
+
+Bleed Box
+
+Trim Box
+
+Art Box
+
+Resources
+
+====================================================
+OBJECT GRAPH
+====================================================
+
+Build an object graph.
+
+Every object must have:
+
+Unique ID
+
+Parent
+
+Children
+
+Bounding Box
+
+Page
+
+Transform
+
+Z Index
+
+====================================================
+SPATIAL INDEX
+====================================================
+
+Create a page spatial index.
+
+Support:
+
+Nearest Object
+
+Objects in Rectangle
+
+Objects by Layer
+
+Objects by Type
+
+Future layout engine must query this index.
+
+====================================================
+RAW DOCUMENT MODEL
+====================================================
+
+Create:
+
+RawDocument
+
+RawPage
+
+RawCharacter
+
+RawWord
+
+RawTextRun
+
+RawImage
+
+RawVector
+
+RawAnnotation
+
+RawForm
+
+RawBookmark
+
+====================================================
+PERFORMANCE
+====================================================
+
+Support
+
+1000+ page PDFs
+
+Streaming parsing
+
+Lazy loading
+
+Incremental parsing
+
+Parallel page parsing
+
+Low memory allocations
+
+====================================================
+TESTS
+====================================================
+
+Test with
+
+Academic Papers
+
+Invoices
+
+Books
+
+Magazines
+
+Scanned PDFs
+
+CAD Drawings
+
+Government Forms
+
+Complex Vector PDFs
+
+====================================================
+DELIVERABLES
+====================================================
+
+✔ Parser
+
+✔ Object Graph
+
+✔ Spatial Index
+
+✔ Raw Document Model
+
+✔ Tests
+
+====================================================
+CONSTRAINTS
+====================================================
+
+No paragraph detection.
+
+No tables.
+
+No OCR.
+
+No reading order.
+
+No export.
+
+Only extraction.
+
+The output of this phase becomes the input for the Layout Analysis Engine in Phase 3.
+
+# Bloom Document Intelligence Engine
+# Phase 3 — Layout Analysis Engine
+STATUS: COMPLETE
+
+====================================================
+OBJECTIVE
+====================================================
+
+Implement the Layout Analysis Engine.
+
+This is the most important phase of the entire Document Intelligence Engine.
+
+The objective is to transform the Raw Object Graph generated by the parser into logical page regions.
+
+This phase MUST NOT perform export.
+
+This phase MUST NOT build Word documents.
+
+This phase MUST NOT generate paragraphs.
+
+Only analyze layout.
+
+The Layout Engine should work identically regardless of whether the output will eventually become DOCX, XLSX, PPTX, HTML, Markdown or EPUB.
+
+====================================================
+INPUT
+====================================================
+
+RawDocument
+
+↓
+
+Raw Pages
+
+↓
+
+Raw Objects
+
+====================================================
+OUTPUT
+====================================================
+
+LayoutDocument
+
+====================================================
+LAYOUT PIPELINE
+====================================================
+
+Raw Objects
+
+↓
+
+Normalize Coordinates
+
+↓
+
+Spatial Index Construction
+
+↓
+
+Object Clustering
+
+↓
+
+Whitespace Analysis
+
+↓
+
+Page Segmentation
+
+↓
+
+Region Classification
+
+↓
+
+Reading Order Graph
+
+↓
+
+Layout Graph
+
+====================================================
+STEP 1 — PAGE NORMALIZATION
+====================================================
+
+Normalize
+
+Rotation
+
+Coordinates
+
+Scale
+
+Transforms
+
+Writing Direction
+
+MediaBox
+
+CropBox
+
+Create a normalized coordinate system.
+
+====================================================
+STEP 2 — SPATIAL INDEX
+====================================================
+
+Create page spatial indexes.
+
+Support
+
+Nearest Neighbor
+
+Objects Inside Rectangle
+
+Objects Intersecting Rectangle
+
+Objects by Type
+
+Objects by Layer
+
+Objects by Font
+
+Objects by Style
+
+Future engines must query this index instead of scanning pages.
+
+====================================================
+STEP 3 — OBJECT CLUSTERING
+====================================================
+
+Group nearby objects.
+
+Implement clustering based on
+
+Horizontal Distance
+
+Vertical Distance
+
+Baseline Alignment
+
+Font Similarity
+
+Color Similarity
+
+Rotation
+
+Bounding Box Overlap
+
+Cluster
+
+Characters
+
+Words
+
+Images
+
+Vectors
+
+Annotations
+
+====================================================
+STEP 4 — WHITESPACE ANALYSIS
+====================================================
+
+Detect
+
+Margins
+
+Columns
+
+Paragraph Gaps
+
+Table Gaps
+
+Image Separation
+
+Floating Objects
+
+Whitespace Rivers
+
+Use whitespace as one of the strongest layout signals.
+
+====================================================
+STEP 5 — PAGE SEGMENTATION
+====================================================
+
+Segment every page into logical regions.
+
+Possible regions
+
+Header
+
+Footer
+
+Paragraph
+
+Title
+
+Heading
+
+Caption
+
+Image
+
+Table
+
+Sidebar
+
+Footnote
+
+Endnote
+
+Watermark
+
+Background
+
+Margin Note
+
+Form Area
+
+Unknown
+
+====================================================
+STEP 6 — REGION CLASSIFICATION
+====================================================
+
+For every detected region calculate
+
+Bounding Box
+
+Confidence
+
+Reading Priority
+
+Object Density
+
+Text Density
+
+Whitespace Density
+
+Average Font
+
+Average Font Size
+
+Dominant Alignment
+
+Rotation
+
+Writing Direction
+
+====================================================
+STEP 7 — READING ORDER GRAPH
+====================================================
+
+Construct a directed graph representing reading flow.
+
+Support
+
+Single Column
+
+Double Column
+
+Triple Column
+
+Magazine Layouts
+
+Academic Papers
+
+Books
+
+Forms
+
+Invoices
+
+Brochures
+
+Mixed Layouts
+
+Do not simply sort by Y coordinate.
+
+====================================================
+STEP 8 — LAYOUT GRAPH
+====================================================
+
+Create
+
+LayoutDocument
+
+↓
+
+LayoutPage
+
+↓
+
+LayoutRegion
+
+↓
+
+LayoutBlocks
+
+Each node should contain
+
+Unique ID
+
+Bounding Box
+
+Children
+
+Parent
+
+Reading Order Index
+
+Confidence
+
+====================================================
+ALGORITHMS
+====================================================
+
+Implement modular interfaces for
+
+XY-Cut
+
+Recursive Page Segmentation
+
+Whitespace Projection
+
+Docstrum-style clustering
+
+Connected Component Analysis
+
+Projection Profiles
+
+Graph-based Reading Order
+
+Voronoi Neighbor Analysis
+
+R-Tree Spatial Queries
+
+The architecture must allow swapping algorithms later without changing public APIs.
+
+====================================================
+PERFORMANCE
+====================================================
+
+Support
+
+1000+ pages
+
+Streaming
+
+Parallel Page Analysis
+
+Memory Efficient Processing
+
+Worker Pool Execution
+
+====================================================
+TEST DOCUMENTS
+====================================================
+
+Academic Papers
+
+Invoices
+
+Financial Statements
+
+Books
+
+Magazines
+
+Forms
+
+Scanned PDFs
+
+Brochures
+
+CAD Drawings
+
+Government Documents
+
+====================================================
+DELIVERABLES
+====================================================
+
+✔ Layout Engine
+
+✔ Layout Graph
+
+✔ Region Detector
+
+✔ Reading Order Graph
+
+✔ Spatial Index
+
+✔ Tests
+
+====================================================
+CONSTRAINTS
+====================================================
+
+Do NOT detect tables.
+
+Do NOT detect paragraphs.
+
+Do NOT infer styles.
+
+Do NOT export.
+
+Do NOT perform OCR.
+
+The output of this phase becomes the input for the Document Reconstruction Engine.
+
+# Bloom Document Intelligence Engine
+# Phase 4 — Intermediate Document Model (IDM) Reconstruction Engine
+STATUS: COMPLETE
+
+====================================================
+OBJECTIVE
+====================================================
+
+Implement the Intermediate Document Model (IDM).
+
+The IDM is the heart of the entire conversion platform.
+
+No exporter should ever access PDF objects directly.
+
+Every exporter (DOCX, XLSX, PPTX, HTML, Markdown, EPUB) must consume only the IDM.
+
+====================================================
+INPUT
+====================================================
+
+LayoutDocument
+
+====================================================
+OUTPUT
+====================================================
+
+Intermediate Document Model
+
+====================================================
+PIPELINE
+====================================================
+
+Layout Graph
+
+↓
+
+Reading Order
+
+↓
+
+Logical Structure Detection
+
+↓
+
+Document Reconstruction
+
+↓
+
+Intermediate Document Model
+
+====================================================
+DOCUMENT MODEL
+====================================================
+
+Create
+
+Document
+
+↓
+
+Sections
+
+↓
+
+Pages
+
+↓
+
+Content Blocks
+
+↓
+
+Paragraphs
+
+↓
+
+Runs
+
+↓
+
+Words
+
+↓
+
+Characters
+
+Also support
+
+Images
+
+Tables (Placeholder)
+
+Lists (Placeholder)
+
+Headers
+
+Footers
+
+Footnotes
+
+Endnotes
+
+Bookmarks
+
+Metadata
+
+Hyperlinks
+
+Page Breaks
+
+Section Breaks
+
+Floating Objects
+
+====================================================
+RECONSTRUCTION
+====================================================
+
+Merge layout regions into logical content.
+
+Create document hierarchy.
+
+Infer
+
+Section Boundaries
+
+Page Relationships
+
+Logical Grouping
+
+Content Ownership
+
+====================================================
+BLOCK TYPES
+====================================================
+
+Support
+
+Paragraph
+
+Title
+
+Heading
+
+Caption
+
+Image
+
+Table Placeholder
+
+List Placeholder
+
+Header
+
+Footer
+
+Sidebar
+
+Footnote
+
+Code Block
+
+Quote
+
+Unknown
+
+====================================================
+TEXT RECONSTRUCTION
+====================================================
+
+Merge
+
+Characters
+
+↓
+
+Words
+
+↓
+
+Runs
+
+Preserve
+
+Unicode
+
+Font
+
+Font Size
+
+Bold
+
+Italic
+
+Underline
+
+Strike
+
+Superscript
+
+Subscript
+
+Text Color
+
+Background Color
+
+Character Spacing
+
+Word Spacing
+
+Writing Direction
+
+Rotation
+
+====================================================
+IMAGE MODEL
+====================================================
+
+Every image should contain
+
+Unique ID
+
+Width
+
+Height
+
+Bounding Box
+
+Rotation
+
+Opacity
+
+Anchor Type
+
+Wrapping Type
+
+Original Resource
+
+Resolution
+
+Compression
+
+====================================================
+STRUCTURAL GRAPH
+====================================================
+
+Maintain relationships
+
+Parent
+
+Children
+
+Previous
+
+Next
+
+Page
+
+Section
+
+Reading Order
+
+Logical Order
+
+====================================================
+STYLE PLACEHOLDERS
+====================================================
+
+Store style candidates but do not classify.
+
+Examples
+
+Possible Heading
+
+Possible Caption
+
+Possible Quote
+
+Possible List
+
+Possible Table
+
+These will be finalized in later phases.
+
+====================================================
+IDM RULES
+====================================================
+
+The IDM must be
+
+Format Independent
+
+Editable
+
+Serializable
+
+Immutable after generation
+
+Versioned
+
+Extensible
+
+====================================================
+SERIALIZATION
+====================================================
+
+Allow exporting the IDM to
+
+JSON
+
+Binary
+
+Compressed Binary
+
+Future Database Storage
+
+====================================================
+API
+====================================================
+
+Expose
+
+LoadDocument()
+
+SaveDocument()
+
+Traverse()
+
+FindNode()
+
+FindChildren()
+
+FindParent()
+
+Search()
+
+====================================================
+PERFORMANCE
+====================================================
+
+Support
+
+1000+ Pages
+
+Streaming Reconstruction
+
+Parallel Reconstruction
+
+Lazy Node Loading
+
+Low Memory Usage
+
+====================================================
+TESTS
+====================================================
+
+Verify
+
+Document Tree Integrity
+
+Parent/Child Consistency
+
+Reading Order
+
+Serialization
+
+Deserialization
+
+Traversal
+
+Node Lookup
+
+====================================================
+DELIVERABLES
+====================================================
+
+✔ Intermediate Document Model
+
+✔ Reconstruction Engine
+
+✔ Document Tree
+
+✔ Traversal API
+
+✔ Serialization
+
+✔ Tests
+
+====================================================
+CONSTRAINTS
+====================================================
+
+Do NOT classify headings.
+
+Do NOT detect tables.
+
+Do NOT generate DOCX.
+
+Do NOT generate PPTX.
+
+Do NOT generate XLSX.
+
+Do NOT infer styles.
+
+Do NOT perform OCR.
+
+This phase establishes the canonical document representation that every later engine will consume.
+
+# Bloom Document Intelligence Engine
+# Phase 5 — Typography & Style Analysis Engine
+STATUS: COMPLETE
+
+====================================================
+OBJECTIVE
+====================================================
+
+Implement the Typography & Style Analysis Engine.
+
+The objective is to identify the visual styles used throughout the document without assigning semantic meanings such as Heading 1 or Title.
+
+This engine analyzes typography, spacing, alignment, emphasis, colors, and layout consistency.
+
+It produces reusable style profiles that later phases will classify into semantic document styles.
+
+This phase does NOT generate paragraphs.
+
+This phase does NOT detect tables.
+
+This phase does NOT export.
+
+====================================================
+INPUT
+====================================================
+
+Intermediate Document Model (IDM)
+
+====================================================
+OUTPUT
+====================================================
+
+Style Graph
+
+Style Profiles
+
+Typography Map
+
+====================================================
+PIPELINE
+====================================================
+
+Intermediate Document Model
+
+↓
+
+Collect Typography Statistics
+
+↓
+
+Cluster Similar Styles
+
+↓
+
+Generate Style Profiles
+
+↓
+
+Analyze Layout Consistency
+
+↓
+
+Generate Style Graph
+
+====================================================
+ANALYZE
+====================================================
+
+Font Family
+
+Font Size
+
+Bold
+
+Italic
+
+Underline
+
+Strike
+
+Superscript
+
+Subscript
+
+Font Weight
+
+Letter Spacing
+
+Word Spacing
+
+Line Height
+
+Paragraph Spacing
+
+Text Color
+
+Background Color
+
+Opacity
+
+Writing Direction
+
+Rotation
+
+====================================================
+ALIGNMENT ANALYSIS
+====================================================
+
+Detect
+
+Left
+
+Center
+
+Right
+
+Justified
+
+Mixed Alignment
+
+Indentation
+
+First Line Indent
+
+Hanging Indent
+
+====================================================
+SPACING ANALYSIS
+====================================================
+
+Calculate
+
+Average Character Spacing
+
+Average Word Spacing
+
+Average Line Height
+
+Paragraph Gap
+
+Section Gap
+
+Page Margins
+
+Column Gaps
+
+====================================================
+STYLE CLUSTERING
+====================================================
+
+Automatically cluster similar typography into Style Profiles.
+
+Example
+
+Style Profile A
+
+Font: Times New Roman
+
+16pt
+
+Bold
+
+Centered
+
+Large Margin
+
+Style Profile B
+
+Arial
+
+11pt
+
+Regular
+
+Left
+
+Normal Line Height
+
+Each profile should have
+
+Unique ID
+
+Confidence
+
+Occurrence Count
+
+====================================================
+STYLE GRAPH
+====================================================
+
+Create relationships between styles.
+
+Determine
+
+Parent Style
+
+Derived Style
+
+Sibling Styles
+
+Inheritance
+
+Usage Frequency
+
+====================================================
+DOCUMENT TYPOGRAPHY REPORT
+====================================================
+
+Generate
+
+Primary Fonts
+
+Secondary Fonts
+
+Color Palette
+
+Dominant Font Sizes
+
+Common Alignments
+
+Style Frequency
+
+====================================================
+API
+====================================================
+
+AnalyzeTypography()
+
+GetStyleProfiles()
+
+GetTypographyStatistics()
+
+FindStyle()
+
+====================================================
+PERFORMANCE
+====================================================
+
+Support
+
+1000+ Pages
+
+Streaming Analysis
+
+Parallel Processing
+
+Worker Pool Execution
+
+====================================================
+TESTS
+====================================================
+
+Books
+
+Invoices
+
+Scientific Papers
+
+Magazines
+
+Government Documents
+
+Business Reports
+
+====================================================
+DELIVERABLES
+====================================================
+
+✔ Typography Analyzer
+
+✔ Style Graph
+
+✔ Style Profiles
+
+✔ Typography Statistics
+
+✔ Tests
+
+====================================================
+CONSTRAINTS
+====================================================
+
+Do NOT classify Heading 1.
+
+Do NOT classify Title.
+
+Do NOT classify Lists.
+
+Do NOT classify Captions.
+
+Only identify visual styles.
+
+These semantic classifications will happen in the next phase.
+
+# Bloom Document Intelligence Engine
+# Phase 6 — Semantic Structure & Paragraph Reconstruction Engine
+STATUS: COMPLETE
+
+====================================================
+OBJECTIVE
+====================================================
+
+Implement the Semantic Structure Engine.
+
+This engine converts visual layout into logical document structure.
+
+Using the Layout Graph, Reading Order Graph, and Style Profiles, reconstruct the document as editable content.
+
+This is one of the most important stages of the engine.
+
+====================================================
+INPUT
+====================================================
+
+Intermediate Document Model
+
++
+
+Layout Graph
+
++
+
+Reading Order Graph
+
++
+
+Style Profiles
+
+====================================================
+OUTPUT
+====================================================
+
+Semantic Document Model
+
+====================================================
+PIPELINE
+====================================================
+
+Reading Order
+
+↓
+
+Paragraph Reconstruction
+
+↓
+
+Heading Detection
+
+↓
+
+List Detection
+
+↓
+
+Section Detection
+
+↓
+
+Caption Detection
+
+↓
+
+Quote Detection
+
+↓
+
+Code Block Detection
+
+↓
+
+Semantic Graph
+
+====================================================
+PARAGRAPH RECONSTRUCTION
+====================================================
+
+Merge text runs into complete paragraphs.
+
+Detect
+
+Paragraph Boundaries
+
+Paragraph Continuation
+
+Hyphenated Words
+
+Soft Line Breaks
+
+Hard Line Breaks
+
+Wrapped Lines
+
+Page Break Continuations
+
+Maintain
+
+Indentation
+
+Alignment
+
+Spacing
+
+====================================================
+HEADING DETECTION
+====================================================
+
+Classify
+
+Document Title
+
+Subtitle
+
+Heading 1
+
+Heading 2
+
+Heading 3
+
+Heading 4
+
+Heading 5
+
+Heading 6
+
+Determine hierarchy automatically.
+
+====================================================
+LIST DETECTION
+====================================================
+
+Detect
+
+Bullet Lists
+
+Numbered Lists
+
+Alphabetic Lists
+
+Roman Numerals
+
+Nested Lists
+
+Checkbox Lists
+
+Determine
+
+Indentation Level
+
+List Hierarchy
+
+List Style
+
+====================================================
+CAPTION DETECTION
+====================================================
+
+Detect captions belonging to
+
+Images
+
+Tables
+
+Charts
+
+Figures
+
+====================================================
+QUOTE DETECTION
+====================================================
+
+Detect
+
+Block Quotes
+
+Indented Quotes
+
+Highlighted Quotes
+
+====================================================
+CODE BLOCK DETECTION
+====================================================
+
+Detect
+
+Monospaced Text
+
+Programming Code
+
+Console Output
+
+Terminal Blocks
+
+====================================================
+SECTION DETECTION
+====================================================
+
+Build document hierarchy.
+
+Document
+
+↓
+
+Section
+
+↓
+
+Subsection
+
+↓
+
+Paragraph
+
+↓
+
+Run
+
+====================================================
+HYPERLINK ANALYSIS
+====================================================
+
+Detect
+
+External URLs
+
+Internal Links
+
+Bookmarks
+
+Cross References
+
+Email Addresses
+
+====================================================
+SEMANTIC GRAPH
+====================================================
+
+Create graph
+
+Document
+
+↓
+
+Sections
+
+↓
+
+Headings
+
+↓
+
+Paragraphs
+
+↓
+
+Lists
+
+↓
+
+Captions
+
+↓
+
+Quotes
+
+↓
+
+Code Blocks
+
+↓
+
+Images
+
+Every node should contain
+
+Unique ID
+
+Parent
+
+Children
+
+Reading Order
+
+Semantic Type
+
+Confidence Score
+
+====================================================
+QUALITY SCORES
+====================================================
+
+Assign confidence
+
+Heading
+
+Paragraph
+
+List
+
+Caption
+
+Quote
+
+Code Block
+
+Section
+
+====================================================
+API
+====================================================
+
+DetectHeadings()
+
+DetectLists()
+
+BuildSemanticTree()
+
+ReconstructParagraphs()
+
+GenerateSemanticModel()
+
+====================================================
+PERFORMANCE
+====================================================
+
+Support
+
+1000+ Pages
+
+Streaming Processing
+
+Parallel Page Analysis
+
+Worker Pool
+
+====================================================
+TESTS
+====================================================
+
+Books
+
+Research Papers
+
+Invoices
+
+Business Reports
+
+Manuals
+
+Magazines
+
+Legal Documents
+
+====================================================
+DELIVERABLES
+====================================================
+
+✔ Semantic Structure Engine
+
+✔ Paragraph Reconstruction
+
+✔ Heading Detection
+
+✔ List Detection
+
+✔ Semantic Tree
+
+✔ Confidence Scores
+
+✔ Tests
+
+====================================================
+CONSTRAINTS
+====================================================
+
+Do NOT detect tables.
+
+Do NOT export DOCX.
+
+Do NOT export XLSX.
+
+Do NOT export PPTX.
+
+Do NOT perform OCR.
+
+The output of this phase becomes the primary input for the Table Detection Engine and all future export engines.
+
+# Bloom Document Intelligence Engine
+# Phase 7 — Table Detection & Reconstruction Engine
+STATUS: COMPLETE
+
+====================================================
+OBJECTIVE
+====================================================
+
+Implement the Table Detection & Reconstruction Engine.
+
+This is one of the most complex components of the entire Document Intelligence Engine.
+
+The objective is to reconstruct native editable tables from PDF content.
+
+The engine must detect tables even when no borders exist.
+
+The output should be a logical table model independent of DOCX, XLSX, or HTML.
+
+Do NOT export.
+
+Do NOT generate Word tables.
+
+Only reconstruct logical tables.
+
+====================================================
+INPUT
+====================================================
+
+Semantic Document Model
+
++
+
+Style Graph
+
++
+
+Layout Graph
+
++
+
+Raw Object Graph
+
+====================================================
+OUTPUT
+====================================================
+
+Logical Table Model
+
+====================================================
+PIPELINE
+====================================================
+
+Candidate Detection
+
+↓
+
+Grid Detection
+
+↓
+
+Row Detection
+
+↓
+
+Column Detection
+
+↓
+
+Cell Detection
+
+↓
+
+Merged Cell Detection
+
+↓
+
+Header Detection
+
+↓
+
+Table Reconstruction
+
+↓
+
+Table Graph
+
+====================================================
+TABLE DETECTION
+====================================================
+
+Detect tables using
+
+Whitespace Alignment
+
+Text Alignment
+
+Vertical Projection
+
+Horizontal Projection
+
+Border Detection
+
+Vector Line Detection
+
+Implicit Grid Detection
+
+Repeated Baselines
+
+Column Alignment
+
+====================================================
+TABLE TYPES
+====================================================
+
+Support
+
+Bordered Tables
+
+Borderless Tables
+
+Financial Tables
+
+Academic Tables
+
+Invoice Tables
+
+Nested Tables
+
+Rotated Tables
+
+Multi-page Tables
+
+====================================================
+GRID RECONSTRUCTION
+====================================================
+
+Identify
+
+Rows
+
+Columns
+
+Grid Lines
+
+Missing Borders
+
+Cell Boundaries
+
+Grid Intersections
+
+====================================================
+CELL DETECTION
+====================================================
+
+For every cell detect
+
+Bounding Box
+
+Text
+
+Images
+
+Vectors
+
+Alignment
+
+Padding
+
+Margins
+
+Rotation
+
+Background Color
+
+Border Style
+
+====================================================
+MERGED CELLS
+====================================================
+
+Detect
+
+Row Span
+
+Column Span
+
+Multiple Row Merge
+
+Multiple Column Merge
+
+====================================================
+HEADER DETECTION
+====================================================
+
+Detect
+
+Header Rows
+
+Footer Rows
+
+Group Headers
+
+Repeated Headers
+
+Column Headers
+
+====================================================
+COLUMN ANALYSIS
+====================================================
+
+Detect
+
+Column Width
+
+Minimum Width
+
+Maximum Width
+
+Alignment
+
+Numeric Columns
+
+Text Columns
+
+Date Columns
+
+Currency Columns
+
+Percentage Columns
+
+====================================================
+ROW ANALYSIS
+====================================================
+
+Detect
+
+Height
+
+Header Row
+
+Body Row
+
+Summary Row
+
+Alternating Styles
+
+====================================================
+TABLE GRAPH
+====================================================
+
+Create
+
+Table
+
+↓
+
+Rows
+
+↓
+
+Cells
+
+↓
+
+Content
+
+Maintain
+
+Unique ID
+
+Parent
+
+Children
+
+Row Index
+
+Column Index
+
+Span
+
+Confidence
+
+====================================================
+TABLE RELATIONSHIPS
+====================================================
+
+Support
+
+Nested Tables
+
+Adjacent Tables
+
+Split Tables
+
+Continued Tables
+
+Multi-page Tables
+
+====================================================
+QUALITY SCORES
+====================================================
+
+Assign confidence
+
+Table
+
+Row
+
+Column
+
+Cell
+
+Merged Cell
+
+Header
+
+====================================================
+API
+====================================================
+
+DetectTables()
+
+BuildGrid()
+
+MergeCells()
+
+AnalyzeColumns()
+
+AnalyzeRows()
+
+GenerateLogicalTable()
+
+====================================================
+PERFORMANCE
+====================================================
+
+Support
+
+1000+ Page PDFs
+
+Streaming
+
+Parallel Detection
+
+Worker Pool
+
+Memory Efficient Processing
+
+====================================================
+TESTS
+====================================================
+
+Invoices
+
+Financial Statements
+
+Academic Papers
+
+Government Reports
+
+Bank Statements
+
+Forms
+
+Engineering Drawings
+
+====================================================
+DELIVERABLES
+====================================================
+
+✔ Table Detection Engine
+
+✔ Logical Table Model
+
+✔ Grid Reconstruction
+
+✔ Cell Graph
+
+✔ Confidence Scores
+
+✔ Tests
+
+====================================================
+CONSTRAINTS
+====================================================
+
+Do NOT generate DOCX tables.
+
+Do NOT generate Excel sheets.
+
+Only reconstruct editable logical tables.
+
+The output becomes the input for all export engines.
+
+# Bloom Document Intelligence Engine
+# Phase 8 — Graphics, Images & Drawing Reconstruction Engine
+STATUS: COMPLETE
+
+====================================================
+OBJECTIVE
+====================================================
+
+Implement the Graphics Reconstruction Engine.
+
+The objective is to reconstruct every non-text graphical object into a reusable intermediate representation.
+
+The engine must preserve editability whenever possible.
+
+Rasterize only when reconstruction is impossible.
+
+Do NOT export.
+
+====================================================
+INPUT
+====================================================
+
+Semantic Document Model
+
++
+
+Layout Graph
+
++
+
+Raw Object Graph
+
+====================================================
+OUTPUT
+====================================================
+
+Graphics Model
+
+====================================================
+PIPELINE
+====================================================
+
+Image Detection
+
+↓
+
+Vector Detection
+
+↓
+
+Chart Detection
+
+↓
+
+Shape Detection
+
+↓
+
+Grouping
+
+↓
+
+Wrapping Analysis
+
+↓
+
+Graphics Model
+
+====================================================
+IMAGE DETECTION
+====================================================
+
+Support
+
+JPEG
+
+PNG
+
+JPX
+
+JBIG2
+
+CCITT
+
+TIFF
+
+Bitmap
+
+Transparent Images
+
+Masked Images
+
+Soft Masks
+
+====================================================
+IMAGE ANALYSIS
+====================================================
+
+Extract
+
+Resolution
+
+Width
+
+Height
+
+Rotation
+
+Opacity
+
+Compression
+
+Bounding Box
+
+Transform Matrix
+
+Color Space
+
+ICC Profile
+
+Transparency
+
+====================================================
+VECTOR DETECTION
+====================================================
+
+Support
+
+Lines
+
+Rectangles
+
+Rounded Rectangles
+
+Circles
+
+Ellipses
+
+Polygons
+
+Bezier Curves
+
+Paths
+
+Compound Paths
+
+Clipping Paths
+
+====================================================
+VECTOR STYLE
+====================================================
+
+Preserve
+
+Stroke
+
+Fill
+
+Opacity
+
+Dash Pattern
+
+Join Style
+
+Cap Style
+
+Gradient
+
+Pattern
+
+Blend Mode
+
+Transform Matrix
+
+====================================================
+CHART DETECTION
+====================================================
+
+Detect
+
+Bar Charts
+
+Pie Charts
+
+Line Charts
+
+Area Charts
+
+Scatter Charts
+
+Flow Diagrams
+
+SmartArt-like Structures
+
+Mark as editable chart candidates.
+
+====================================================
+SHAPE GROUPING
+====================================================
+
+Detect grouped graphics.
+
+Maintain hierarchy.
+
+Support
+
+Group
+
+Ungroup
+
+Nested Groups
+
+====================================================
+TEXT WRAPPING
+====================================================
+
+Detect
+
+Inline
+
+Square
+
+Tight
+
+Behind Text
+
+In Front of Text
+
+Floating
+
+Anchored
+
+====================================================
+IMAGE CAPTIONS
+====================================================
+
+Associate captions with
+
+Images
+
+Charts
+
+Figures
+
+Drawings
+
+====================================================
+DRAWING MODEL
+====================================================
+
+Create
+
+Graphic
+
+↓
+
+Image
+
+↓
+
+Vector
+
+↓
+
+Chart
+
+↓
+
+Shape Group
+
+Maintain
+
+Unique ID
+
+Bounding Box
+
+Layer
+
+Rotation
+
+Opacity
+
+Anchor
+
+Wrapping
+
+====================================================
+RESOURCE MANAGEMENT
+====================================================
+
+Deduplicate
+
+Images
+
+Patterns
+
+Gradients
+
+Reusable Graphics
+
+====================================================
+QUALITY SCORES
+====================================================
+
+Assign confidence
+
+Image
+
+Vector
+
+Chart
+
+Shape
+
+Grouping
+
+Wrapping
+
+====================================================
+API
+====================================================
+
+DetectImages()
+
+DetectVectors()
+
+AnalyzeCharts()
+
+GroupGraphics()
+
+GenerateGraphicsModel()
+
+====================================================
+PERFORMANCE
+====================================================
+
+Support
+
+Large Documents
+
+Streaming Processing
+
+Parallel Analysis
+
+Low Memory Usage
+
+====================================================
+TESTS
+====================================================
+
+Marketing Brochures
+
+CAD Drawings
+
+Scientific Papers
+
+Business Reports
+
+Presentation PDFs
+
+Architectural Plans
+
+====================================================
+DELIVERABLES
+====================================================
+
+✔ Graphics Reconstruction Engine
+
+✔ Graphics Model
+
+✔ Chart Detection
+
+✔ Shape Detection
+
+✔ Wrapping Analysis
+
+✔ Tests
+
+====================================================
+CONSTRAINTS
+====================================================
+
+Do NOT rasterize unless reconstruction is impossible.
+
+Do NOT export.
+
+The Graphics Model must be reusable by DOCX, PPTX, HTML, SVG, and future export engines.
+
+Every graphical object should preserve as much semantic information as possible rather than becoming a flat image.
+
+# Bloom Document Intelligence Engine
+# Phase 9 — Document Structure Intelligence Engine
+STATUS: COMPLETE
+
+====================================================
+OBJECTIVE
+====================================================
+
+Implement the Document Structure Intelligence Engine.
+
+The objective is to identify document-wide structures that span multiple pages and cannot be determined from a single page.
+
+This engine transforms the reconstructed document into a complete logical publication.
+
+The output must be format-independent.
+
+No export.
+
+====================================================
+INPUT
+====================================================
+
+Semantic Document Model
+
++
+
+Table Model
+
++
+
+Graphics Model
+
+====================================================
+OUTPUT
+====================================================
+
+Document Structure Model
+
+====================================================
+PIPELINE
+====================================================
+
+Semantic Model
+
+↓
+
+Header Detection
+
+↓
+
+Footer Detection
+
+↓
+
+Page Number Detection
+
+↓
+
+Footnote Detection
+
+↓
+
+Endnote Detection
+
+↓
+
+Cross Reference Detection
+
+↓
+
+Bookmark Detection
+
+↓
+
+TOC Detection
+
+↓
+
+Section Hierarchy
+
+↓
+
+Document Structure Model
+
+====================================================
+HEADER DETECTION
+====================================================
+
+Detect repeating regions.
+
+Support
+
+Running Headers
+
+Odd Page Headers
+
+Even Page Headers
+
+First Page Header
+
+Chapter Headers
+
+Section Headers
+
+====================================================
+FOOTER DETECTION
+====================================================
+
+Detect
+
+Running Footers
+
+Copyright
+
+Confidential
+
+Company Footer
+
+Revision Footer
+
+Version Footer
+
+====================================================
+PAGE NUMBER DETECTION
+====================================================
+
+Support
+
+Arabic
+
+Roman
+
+Alphabetic
+
+Mixed
+
+Restart Numbering
+
+Hidden Page Numbers
+
+====================================================
+FOOTNOTE DETECTION
+====================================================
+
+Detect
+
+Footnote References
+
+Footnote Bodies
+
+Multi-page Footnotes
+
+Footnote Continuations
+
+====================================================
+ENDNOTE DETECTION
+====================================================
+
+Detect
+
+Endnote References
+
+Endnote Pages
+
+Grouped Endnotes
+
+====================================================
+BOOKMARK DETECTION
+====================================================
+
+Extract
+
+Outline
+
+Bookmarks
+
+Hierarchy
+
+Internal Links
+
+====================================================
+TABLE OF CONTENTS
+====================================================
+
+Detect
+
+Generated TOC
+
+Manual TOC
+
+Leader Dots
+
+Page References
+
+Heading Links
+
+====================================================
+HYPERLINK ANALYSIS
+====================================================
+
+Detect
+
+External URLs
+
+Internal Links
+
+Cross References
+
+Email Addresses
+
+Named Destinations
+
+====================================================
+SECTION ANALYSIS
+====================================================
+
+Build
+
+Document
+
+↓
+
+Part
+
+↓
+
+Chapter
+
+↓
+
+Section
+
+↓
+
+Subsection
+
+↓
+
+Paragraph
+
+====================================================
+DOCUMENT METADATA
+====================================================
+
+Analyze
+
+Title
+
+Author
+
+Subject
+
+Keywords
+
+Language
+
+Creation Date
+
+Modification Date
+
+Producer
+
+Creator
+
+====================================================
+DOCUMENT RELATIONSHIPS
+====================================================
+
+Maintain
+
+Previous
+
+Next
+
+Parent
+
+Children
+
+Reference Links
+
+Section Links
+
+====================================================
+QUALITY SCORES
+====================================================
+
+Assign confidence to
+
+Headers
+
+Footers
+
+Page Numbers
+
+Footnotes
+
+TOC
+
+Bookmarks
+
+Cross References
+
+====================================================
+API
+====================================================
+
+DetectHeaders()
+
+DetectFooters()
+
+DetectFootnotes()
+
+DetectTOC()
+
+BuildDocumentStructure()
+
+====================================================
+PERFORMANCE
+====================================================
+
+Support
+
+1000+ Pages
+
+Streaming
+
+Parallel Processing
+
+====================================================
+DELIVERABLES
+====================================================
+
+✔ Document Structure Engine
+
+✔ Header/Footer Detection
+
+✔ TOC Detection
+
+✔ Bookmark Graph
+
+✔ Cross Reference Graph
+
+✔ Tests
+
+====================================================
+CONSTRAINTS
+====================================================
+
+Do NOT export.
+
+Do NOT perform OCR.
+
+Output only the Document Structure Model.
+
+# Bloom Document Intelligence Engine
+# Phase 10 — OCR & Recognition Fusion Engine
+STATUS: COMPLETE
+
+====================================================
+OBJECTIVE
+====================================================
+
+Implement OCR integration.
+
+This engine is responsible for scanned PDFs and hybrid PDFs.
+
+It combines OCR results with the parser output.
+
+The objective is to produce one unified document regardless of whether the PDF is digital or scanned.
+
+====================================================
+INPUT
+====================================================
+
+Raw Object Graph
+
++
+
+Semantic Document Model
+
++
+
+Images
+
++
+
+Scanned Pages
+
+====================================================
+OUTPUT
+====================================================
+
+Recognition Model
+
+====================================================
+PIPELINE
+====================================================
+
+Page Classification
+
+↓
+
+OCR Detection
+
+↓
+
+Image Preprocessing
+
+↓
+
+OCR Recognition
+
+↓
+
+Language Detection
+
+↓
+
+Text Fusion
+
+↓
+
+Confidence Analysis
+
+↓
+
+Recognition Model
+
+====================================================
+PAGE CLASSIFICATION
+====================================================
+
+Determine
+
+Digital PDF
+
+Scanned PDF
+
+Hybrid PDF
+
+Photo PDF
+
+Fax
+
+Mixed Content
+
+====================================================
+IMAGE PREPROCESSING
+====================================================
+
+Support
+
+Deskew
+
+Rotation
+
+Noise Removal
+
+Contrast Enhancement
+
+Binarization
+
+Adaptive Threshold
+
+Perspective Correction
+
+Border Removal
+
+====================================================
+OCR
+====================================================
+
+Support
+
+Multiple Languages
+
+Mixed Languages
+
+Vertical Text
+
+RTL Languages
+
+Latin
+
+CJK
+
+Arabic
+
+Hindi
+
+Symbols
+
+Mathematics
+
+====================================================
+TEXT FUSION
+====================================================
+
+Merge OCR output with parser output.
+
+Rules
+
+Prefer parser text when confidence is higher.
+
+Use OCR only when parser cannot recover text.
+
+Never duplicate text.
+
+====================================================
+FONT ESTIMATION
+====================================================
+
+Estimate
+
+Font Family
+
+Font Size
+
+Bold
+
+Italic
+
+Underline
+
+Rotation
+
+Alignment
+
+====================================================
+CONFIDENCE MODEL
+====================================================
+
+Assign confidence to
+
+Character
+
+Word
+
+Paragraph
+
+Page
+
+Document
+
+====================================================
+HANDWRITING
+====================================================
+
+Support architecture for
+
+Printed Text
+
+Handwritten Text
+
+Mixed Documents
+
+Leave handwriting recognition pluggable.
+
+====================================================
+IMAGE REGION ANALYSIS
+====================================================
+
+Detect
+
+Text Regions
+
+Graphics
+
+Tables
+
+Photos
+
+Signatures
+
+Logos
+
+Barcodes
+
+QR Codes
+
+====================================================
+LANGUAGE MODEL
+====================================================
+
+Detect
+
+Primary Language
+
+Secondary Language
+
+Script
+
+Writing Direction
+
+====================================================
+RECOGNITION MODEL
+====================================================
+
+Create
+
+RecognitionDocument
+
+↓
+
+RecognitionPages
+
+↓
+
+RecognitionBlocks
+
+↓
+
+RecognitionWords
+
+↓
+
+RecognitionCharacters
+
+====================================================
+API
+====================================================
+
+AnalyzePage()
+
+RunOCR()
+
+MergeRecognition()
+
+EstimateFonts()
+
+GenerateRecognitionModel()
+
+====================================================
+PERFORMANCE
+====================================================
+
+Support
+
+GPU Acceleration
+
+Worker Pool
+
+Streaming OCR
+
+Parallel Recognition
+
+====================================================
+TESTS
+====================================================
+
+Books
+
+Invoices
+
+Receipts
+
+Government Documents
+
+Historical Documents
+
+Engineering Drawings
+
+Newspapers
+
+Magazines
+
+====================================================
+DELIVERABLES
+====================================================
+
+✔ OCR Engine
+
+✔ OCR Fusion Engine
+
+✔ Recognition Model
+
+✔ Confidence Scores
+
+✔ Tests
+
+====================================================
+CONSTRAINTS
+====================================================
+
+Do NOT generate DOCX.
+
+Do NOT generate PPTX.
+
+Do NOT generate XLSX.
+
+Output only the unified Recognition Model.
+
+This Recognition Model becomes the final input for all export engines.
+
+# Bloom Document Intelligence Engine
+# Phase 11 — DOCX Export Engine
+STATUS: COMPLETE
+
+====================================================
+OBJECTIVE
+====================================================
+
+Implement a production-grade DOCX Export Engine.
+
+The exporter must consume ONLY the Unified Document Model (UDM).
+
+The exporter must NEVER access PDF objects.
+
+The exporter must NEVER access parser data.
+
+It should reconstruct a fully editable Microsoft Word document.
+
+Maximum layout fidelity is the goal.
+
+====================================================
+INPUT
+====================================================
+
+Unified Document Model
+
+====================================================
+OUTPUT
+====================================================
+
+Microsoft Word (.docx)
+
+====================================================
+PIPELINE
+====================================================
+
+Unified Document Model
+
+↓
+
+Document Writer
+
+↓
+
+Styles Writer
+
+↓
+
+Numbering Writer
+
+↓
+
+Relationships Writer
+
+↓
+
+Media Writer
+
+↓
+
+DrawingML Writer
+
+↓
+
+Packaging
+
+↓
+
+DOCX
+
+====================================================
+OPEN XML STRUCTURE
+====================================================
+
+Generate
+
+[Content_Types].xml
+
+_rels/
+
+docProps/
+
+word/
+
+Inside word/
+
+document.xml
+
+styles.xml
+
+numbering.xml
+
+settings.xml
+
+fontTable.xml
+
+theme/
+
+media/
+
+embeddings/
+
+webSettings.xml
+
+footnotes.xml
+
+endnotes.xml
+
+comments.xml
+
+header1.xml
+
+footer1.xml
+
+rels/
+
+====================================================
+DOCUMENT WRITER
+====================================================
+
+Generate
+
+Sections
+
+Paragraphs
+
+Runs
+
+Page Breaks
+
+Section Breaks
+
+Bookmarks
+
+Hyperlinks
+
+====================================================
+PARAGRAPH EXPORT
+====================================================
+
+Preserve
+
+Alignment
+
+Indentation
+
+Spacing Before
+
+Spacing After
+
+Line Height
+
+Widow Control
+
+Keep Together
+
+Keep With Next
+
+Page Break Before
+
+====================================================
+RUN EXPORT
+====================================================
+
+Preserve
+
+Unicode
+
+Font
+
+Font Size
+
+Bold
+
+Italic
+
+Underline
+
+Strike
+
+Superscript
+
+Subscript
+
+Text Color
+
+Highlight
+
+Background
+
+Language
+
+RTL
+
+Rotation
+
+====================================================
+STYLE EXPORT
+====================================================
+
+Generate
+
+Normal
+
+Heading1
+
+Heading2
+
+Heading3
+
+Heading4
+
+Heading5
+
+Heading6
+
+Caption
+
+Quote
+
+Code
+
+Custom Styles
+
+Maintain inheritance.
+
+====================================================
+TABLE EXPORT
+====================================================
+
+Generate native Word tables.
+
+Support
+
+Merged Cells
+
+Nested Tables
+
+Borders
+
+Cell Margins
+
+Cell Shading
+
+Vertical Alignment
+
+Row Height
+
+Column Width
+
+AutoFit
+
+Repeated Header Rows
+
+====================================================
+IMAGE EXPORT
+====================================================
+
+Preserve
+
+Resolution
+
+Wrapping
+
+Anchor
+
+Rotation
+
+Cropping
+
+Transparency
+
+Position
+
+====================================================
+DRAWINGML
+====================================================
+
+Convert vectors into DrawingML whenever possible.
+
+Fallback to images only if necessary.
+
+====================================================
+LIST EXPORT
+====================================================
+
+Support
+
+Bullets
+
+Numbered Lists
+
+Nested Lists
+
+Roman Lists
+
+Alphabetic Lists
+
+Checkbox Lists
+
+====================================================
+HEADER FOOTER
+====================================================
+
+Generate
+
+Header Parts
+
+Footer Parts
+
+Page Numbers
+
+Different First Page
+
+Odd/Even Headers
+
+====================================================
+FOOTNOTE EXPORT
+====================================================
+
+Generate
+
+Footnotes
+
+Endnotes
+
+Cross References
+
+====================================================
+HYPERLINK EXPORT
+====================================================
+
+Support
+
+External Links
+
+Bookmarks
+
+Internal References
+
+====================================================
+COMMENTS
+====================================================
+
+Generate editable Word comments.
+
+====================================================
+PERFORMANCE
+====================================================
+
+Support
+
+1000+ Pages
+
+Streaming Export
+
+Incremental ZIP Creation
+
+Low Memory Usage
+
+====================================================
+VALIDATION
+====================================================
+
+Open successfully in
+
+Microsoft Word
+
+LibreOffice
+
+Google Docs
+
+Apple Pages
+
+====================================================
+DELIVERABLES
+====================================================
+
+✔ DOCX Writer
+
+✔ OpenXML Generator
+
+✔ Media Writer
+
+✔ Style Writer
+
+✔ Relationship Writer
+
+✔ Packaging Engine
+
+✔ Validation Tests
+
+====================================================
+CONSTRAINTS
+====================================================
+
+No PDF parsing.
+
+No OCR.
+
+Only consume Unified Document Model.
+
+Output should be editable.
+
+Never rasterize text.
+
+# Bloom Document Intelligence Engine
+# Phase 12 — XLSX Export Engine
+STATUS: COMPLETE
+
+====================================================
+OBJECTIVE
+====================================================
+
+Implement a production-grade Microsoft Excel Export Engine.
+
+Unlike DOCX, this engine focuses on logical tables.
+
+It must intelligently convert detected tables into native Excel worksheets.
+
+====================================================
+INPUT
+====================================================
+
+Unified Document Model
+
+====================================================
+OUTPUT
+====================================================
+
+Microsoft Excel (.xlsx)
+
+====================================================
+PIPELINE
+====================================================
+
+Unified Document Model
+
+↓
+
+Workbook Builder
+
+↓
+
+Worksheet Builder
+
+↓
+
+Table Converter
+
+↓
+
+Style Generator
+
+↓
+
+Formula Generator
+
+↓
+
+Packaging
+
+↓
+
+XLSX
+
+====================================================
+WORKBOOK
+====================================================
+
+Generate
+
+Workbook
+
+Worksheets
+
+Shared Strings
+
+Styles
+
+Relationships
+
+Content Types
+
+====================================================
+WORKSHEET DETECTION
+====================================================
+
+Support
+
+Single Worksheet
+
+Multiple Worksheets
+
+One Table Per Sheet
+
+Multiple Tables Per Sheet
+
+====================================================
+TABLE CONVERSION
+====================================================
+
+Convert
+
+Logical Tables
+
+↓
+
+Excel Cells
+
+Preserve
+
+Rows
+
+Columns
+
+Merged Cells
+
+Cell Width
+
+Cell Height
+
+Alignment
+
+Borders
+
+Background
+
+====================================================
+CELL TYPES
+====================================================
+
+Detect
+
+Text
+
+Number
+
+Currency
+
+Percentage
+
+Date
+
+Time
+
+Boolean
+
+Formula Candidate
+
+====================================================
+FORMULA DETECTION
+====================================================
+
+Infer formulas where appropriate.
+
+Examples
+
+Totals
+
+Subtotals
+
+Running Totals
+
+Simple Arithmetic
+
+Mark inferred formulas with confidence.
+
+====================================================
+CELL STYLING
+====================================================
+
+Preserve
+
+Font
+
+Bold
+
+Italic
+
+Underline
+
+Color
+
+Fill
+
+Border
+
+Alignment
+
+Number Format
+
+====================================================
+MULTI-PAGE TABLES
+====================================================
+
+Merge table fragments spanning multiple PDF pages into a single worksheet when appropriate.
+
+====================================================
+CHART EXPORT
+====================================================
+
+If charts were recognized,
+
+Convert to
+
+Excel Charts
+
+or
+
+Embed as editable graphics
+
+====================================================
+IMAGE EXPORT
+====================================================
+
+Support
+
+Cell Anchored Images
+
+Floating Images
+
+Company Logos
+
+Signatures
+
+====================================================
+NAMED RANGES
+====================================================
+
+Generate named ranges where applicable.
+
+====================================================
+FREEZE PANES
+====================================================
+
+Infer
+
+Header Rows
+
+Frozen Columns
+
+====================================================
+OPEN XML
+====================================================
+
+Generate
+
+workbook.xml
+
+worksheets/
+
+styles.xml
+
+sharedStrings.xml
+
+drawing.xml
+
+media/
+
+rels/
+
+====================================================
+PERFORMANCE
+====================================================
+
+Support
+
+Millions of Cells
+
+Streaming Workbook Generation
+
+Low Memory Usage
+
+====================================================
+VALIDATION
+====================================================
+
+Compatible with
+
+Microsoft Excel
+
+LibreOffice Calc
+
+Google Sheets
+
+Apple Numbers
+
+====================================================
+DELIVERABLES
+====================================================
+
+✔ Workbook Generator
+
+✔ Worksheet Generator
+
+✔ Table Exporter
+
+✔ Style Generator
+
+✔ Formula Inference
+
+✔ Validation Tests
+
+====================================================
+CONSTRAINTS
+====================================================
+
+Do NOT export paragraphs as spreadsheet cells.
+
+Only convert structured tabular content.
+
+Preserve editability.
+
+Avoid flattening tables into images.
+
+# Bloom Document Intelligence Engine
+# Phase 13 — PowerPoint (PPTX) Export Engine
+STATUS: COMPLETE
+
+====================================================
+OBJECTIVE
+====================================================
+
+Implement a production-grade Microsoft PowerPoint Export Engine.
+
+The exporter must convert the Unified Document Model (UDM)
+into editable PowerPoint presentations.
+
+The exporter must preserve layout while generating native
+PowerPoint objects instead of rasterized images whenever possible.
+
+The exporter must consume ONLY the Unified Document Model.
+
+====================================================
+INPUT
+====================================================
+
+Unified Document Model
+
+====================================================
+OUTPUT
+====================================================
+
+Microsoft PowerPoint (.pptx)
+
+====================================================
+PIPELINE
+====================================================
+
+Unified Document Model
+
+↓
+
+Presentation Builder
+
+↓
+
+Slide Generator
+
+↓
+
+Layout Generator
+
+↓
+
+TextBox Generator
+
+↓
+
+Shape Generator
+
+↓
+
+Image Generator
+
+↓
+
+DrawingML Generator
+
+↓
+
+Packaging
+
+↓
+
+PPTX
+
+====================================================
+SLIDE GENERATION
+====================================================
+
+Support
+
+One PDF Page → One Slide
+
+Multiple PDF Pages → One Slide
+
+Large Pages → Multiple Slides
+
+Landscape
+
+Portrait
+
+Custom Slide Size
+
+====================================================
+LAYOUT ENGINE
+====================================================
+
+Preserve
+
+Margins
+
+Alignment
+
+Object Position
+
+Anchors
+
+Rotation
+
+Grouping
+
+Layer Order
+
+====================================================
+TEXT BOX EXPORT
+====================================================
+
+Generate editable text boxes.
+
+Preserve
+
+Font
+
+Font Size
+
+Color
+
+Alignment
+
+Paragraph Spacing
+
+Indentation
+
+Bullets
+
+Numbering
+
+RTL
+
+Rotation
+
+====================================================
+SHAPE EXPORT
+====================================================
+
+Generate native PowerPoint shapes.
+
+Support
+
+Rectangle
+
+Rounded Rectangle
+
+Circle
+
+Ellipse
+
+Polygon
+
+Line
+
+Arrow
+
+Bezier Path
+
+Freeform
+
+====================================================
+IMAGE EXPORT
+====================================================
+
+Support
+
+PNG
+
+JPEG
+
+Transparency
+
+Cropping
+
+Rotation
+
+Wrapping
+
+====================================================
+TABLE EXPORT
+====================================================
+
+Generate editable PowerPoint tables.
+
+Support
+
+Merged Cells
+
+Cell Borders
+
+Alignment
+
+Shading
+
+====================================================
+SMART GROUPING
+====================================================
+
+Maintain
+
+Shape Groups
+
+Image Groups
+
+Chart Groups
+
+Nested Groups
+
+====================================================
+CHART EXPORT
+====================================================
+
+Generate editable charts whenever possible.
+
+Fallback
+
+Embedded Images
+
+====================================================
+DRAWINGML
+====================================================
+
+Generate
+
+Slides
+
+Masters
+
+Layouts
+
+Themes
+
+Relationships
+
+Media
+
+Drawings
+
+====================================================
+ANIMATIONS
+====================================================
+
+Architecture only.
+
+Leave extension points.
+
+====================================================
+PERFORMANCE
+====================================================
+
+Support
+
+Large Presentations
+
+Streaming Export
+
+Incremental Packaging
+
+====================================================
+VALIDATION
+====================================================
+
+Compatible with
+
+Microsoft PowerPoint
+
+LibreOffice Impress
+
+Google Slides
+
+Apple Keynote
+
+====================================================
+DELIVERABLES
+====================================================
+
+✔ Presentation Builder
+
+✔ Slide Generator
+
+✔ DrawingML Generator
+
+✔ Media Export
+
+✔ Packaging Engine
+
+✔ Tests
+
+====================================================
+CONSTRAINTS
+====================================================
+
+Never rasterize complete pages.
+
+Generate editable PowerPoint objects whenever possible.
+
+# Bloom Document Intelligence Engine
+# Phase 14 — Universal Export Engine
+STATUS: COMPLETE
+
+====================================================
+OBJECTIVE
+====================================================
+
+Implement all remaining document exporters.
+
+Every exporter must consume ONLY the Unified Document Model.
+
+No exporter may access PDF objects.
+
+====================================================
+SUPPORTED EXPORTS
+====================================================
+
+HTML
+
+Markdown
+
+RTF
+
+ODT
+
+EPUB
+
+Plain Text
+
+JSON
+
+XML
+
+SVG
+
+====================================================
+HTML ENGINE
+====================================================
+
+Generate
+
+Semantic HTML5
+
+Responsive Layout
+
+CSS Styles
+
+Embedded Images
+
+SVG Graphics
+
+Accessible HTML
+
+====================================================
+MARKDOWN ENGINE
+====================================================
+
+Support
+
+Headings
+
+Paragraphs
+
+Lists
+
+Tables
+
+Images
+
+Links
+
+Code Blocks
+
+Footnotes
+
+====================================================
+EPUB ENGINE
+====================================================
+
+Generate
+
+Book Structure
+
+Navigation
+
+Metadata
+
+Chapters
+
+Images
+
+Stylesheets
+
+Fonts
+
+====================================================
+RTF ENGINE
+====================================================
+
+Support
+
+Fonts
+
+Paragraphs
+
+Tables
+
+Images
+
+Lists
+
+Headers
+
+Footers
+
+====================================================
+ODT ENGINE
+====================================================
+
+Generate
+
+OpenDocument Text
+
+Styles
+
+Tables
+
+Images
+
+Metadata
+
+====================================================
+JSON ENGINE
+====================================================
+
+Export complete document tree.
+
+Useful for
+
+AI
+
+Search
+
+Analytics
+
+Future processing
+
+====================================================
+XML ENGINE
+====================================================
+
+Export
+
+Complete Document Model
+
+Styles
+
+Relationships
+
+Metadata
+
+====================================================
+SVG ENGINE
+====================================================
+
+Generate
+
+Editable SVG
+
+Vector Graphics
+
+Text
+
+Paths
+
+Gradients
+
+====================================================
+EXPORT FRAMEWORK
+====================================================
+
+Every exporter implements
+
+Initialize()
+
+Export()
+
+Validate()
+
+Package()
+
+Cleanup()
+
+====================================================
+PLUGIN ARCHITECTURE
+====================================================
+
+Allow third-party exporters.
+
+Future examples
+
+LaTeX
+
+InDesign
+
+Figma
+
+Notion
+
+Obsidian
+
+====================================================
+DELIVERABLES
+====================================================
+
+✔ HTML Export
+
+✔ Markdown Export
+
+✔ EPUB Export
+
+✔ ODT Export
+
+✔ RTF Export
+
+✔ JSON Export
+
+✔ XML Export
+
+✔ SVG Export
+
+✔ Export Plugin SDK
+
+====================================================
+CONSTRAINTS
+====================================================
+
+All exporters consume ONLY the Unified Document Model.
+
+Maintain one export architecture for every format.
+
+# Bloom Document Intelligence Engine
+# Phase 15 — Enterprise Performance, Scalability & Production Platform
+STATUS: COMPLETE
+
+====================================================
+OBJECTIVE
+====================================================
+
+Transform the engine into a production-grade
+enterprise document processing platform.
+
+Focus on
+
+Performance
+
+Scalability
+
+Reliability
+
+Monitoring
+
+Deployment
+
+====================================================
+SERVER ARCHITECTURE
+====================================================
+
+API Gateway
+
+↓
+
+Authentication
+
+↓
+
+Job Queue
+
+↓
+
+Scheduler
+
+↓
+
+Worker Pool
+
+↓
+
+Conversion Engines
+
+↓
+
+Storage
+
+↓
+
+Download Service
+
+====================================================
+QUEUE SYSTEM
+====================================================
+
+Implement
+
+Priority Queue
+
+Retry Queue
+
+Dead Letter Queue
+
+Batch Queue
+
+Scheduled Jobs
+
+Cancellation
+
+====================================================
+WORKERS
+====================================================
+
+Dedicated Workers
+
+Parser Worker
+
+OCR Worker
+
+Layout Worker
+
+Table Worker
+
+Graphics Worker
+
+DOCX Worker
+
+XLSX Worker
+
+PPTX Worker
+
+HTML Worker
+
+Packaging Worker
+
+====================================================
+SCALING
+====================================================
+
+Support
+
+Horizontal Scaling
+
+Auto Scaling
+
+Worker Autoscaling
+
+Queue Autoscaling
+
+Multi-region Deployment
+
+====================================================
+CACHE
+====================================================
+
+Redis
+
+Parsed Objects
+
+Layout Graph
+
+Style Graph
+
+Intermediate Models
+
+OCR Results
+
+Export Cache
+
+====================================================
+STORAGE
+====================================================
+
+Object Storage
+
+Temporary Files
+
+Generated Files
+
+Versioning
+
+Automatic Cleanup
+
+====================================================
+PERFORMANCE
+====================================================
+
+Implement
+
+Streaming Parsing
+
+Streaming Export
+
+Memory Pools
+
+Worker Threads
+
+Parallel Processing
+
+Incremental Serialization
+
+Lazy Loading
+
+Object Reuse
+
+Compression
+
+====================================================
+MONITORING
+====================================================
+
+Metrics
+
+Latency
+
+CPU
+
+Memory
+
+Worker Utilization
+
+Queue Depth
+
+Error Rate
+
+Conversion Time
+
+Success Rate
+
+====================================================
+LOGGING
+====================================================
+
+Structured Logging
+
+Tracing
+
+Correlation IDs
+
+Audit Logs
+
+====================================================
+FAULT TOLERANCE
+====================================================
+
+Retries
+
+Timeouts
+
+Circuit Breakers
+
+Graceful Shutdown
+
+Recovery
+
+====================================================
+SECURITY
+====================================================
+
+Authentication
+
+Authorization
+
+Rate Limiting
+
+Virus Scanning
+
+Encrypted Storage
+
+Encrypted Transport
+
+Signed URLs
+
+Sandboxed Processing
+
+====================================================
+API
+====================================================
+
+POST /jobs
+
+GET /jobs/{id}
+
+GET /jobs/{id}/status
+
+GET /jobs/{id}/download
+
+DELETE /jobs/{id}
+
+POST /batch
+
+POST /cancel
+
+====================================================
+DEPLOYMENT
+====================================================
+
+Docker
+
+Kubernetes
+
+Load Balancer
+
+CDN
+
+Redis
+
+PostgreSQL
+
+S3 Compatible Storage
+
+Monitoring Stack
+
+====================================================
+TESTING
+====================================================
+
+Unit Tests
+
+Integration Tests
+
+Golden Document Tests
+
+Visual Regression
+
+Performance Tests
+
+Load Tests
+
+Stress Tests
+
+Chaos Tests
+
+====================================================
+QUALITY TARGETS
+====================================================
+
+99.9% Success Rate
+
+1000+ Concurrent Jobs
+
+100MB+ PDFs
+
+1000+ Page PDFs
+
+Sub-second Queue Scheduling
+
+High Availability
+
+====================================================
+DELIVERABLES
+====================================================
+
+✔ Production Infrastructure
+
+✔ Queue System
+
+✔ Distributed Workers
+
+✔ Monitoring
+
+✔ Scaling
+
+✔ CI/CD
+
+✔ Security
+
+✔ Performance Optimization
+
+✔ Documentation
+
+====================================================
+CONSTRAINTS
+====================================================
+
+Every engine must remain independently deployable.
+
+Every worker must be horizontally scalable.
+
+Every exporter must consume ONLY the Unified
+Document Model.
+
+Maintain loose coupling through well-defined
+interfaces and asynchronous job orchestration.

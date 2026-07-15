@@ -1,19 +1,16 @@
 /**
- * Client-side export logic for all formats.
+ * Client-side export for editor-only formats (images + plain text).
  *
- * DOCX uses the engine's flowing-text pipeline (`exportToDocx`) — reconstructed
- * paragraphs/tables, not absolute textboxes. See `implimentation.md` for how
- * that maps to Acrobat/iLovePDF layout modes.
- *
- * Image exports (PNG/JPEG/SVG) render each page through the engine's
- * canvas renderer at the requested DPI for pixel-perfect output.
+ * Document conversion (DOCX / Markdown / XLSX / …) lives in the Bloom
+ * server engine (`server/`) via the Intermediate Document Model.
  */
 
 import type { PDFDocumentData } from '@/engine';
+import type { ConvertTarget } from '@/lib/bloom-api';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
-export type ExportFormat = 'png' | 'jpeg' | 'svg' | 'markdown' | 'txt' | 'docx';
+export type ExportFormat = 'png' | 'jpeg' | 'svg' | 'txt';
 
 export interface ExportFormatInfo {
   id: ExportFormat;
@@ -28,28 +25,6 @@ export interface ExportFormatInfo {
 }
 
 export const EXPORT_FORMATS: ExportFormatInfo[] = [
-  {
-    id: 'docx',
-    label: 'Word Document',
-    description: 'Export as .docx — layout preserved with absolute positioning',
-    extension: '.docx',
-    icon: '📄',
-    mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    supportsQuality: false,
-    supportsDpi: false,
-    supportsPageRange: true,
-  },
-  {
-    id: 'markdown',
-    label: 'Markdown',
-    description: 'Structured Markdown — headings, lists, tables, images',
-    extension: '.md',
-    icon: '📝',
-    mimeType: 'text/markdown',
-    supportsQuality: false,
-    supportsDpi: false,
-    supportsPageRange: true,
-  },
   {
     id: 'png',
     label: 'PNG Image',
@@ -75,7 +50,7 @@ export const EXPORT_FORMATS: ExportFormatInfo[] = [
   {
     id: 'svg',
     label: 'SVG Vector',
-    description: 'High-fidelity embedded raster in vector shell',
+    description: 'Page render as SVG shell (client-side)',
     extension: '.svg',
     icon: '✏️',
     mimeType: 'image/svg+xml',
@@ -86,7 +61,7 @@ export const EXPORT_FORMATS: ExportFormatInfo[] = [
   {
     id: 'txt',
     label: 'Plain Text',
-    description: 'Raw text content, no formatting',
+    description: 'Raw extracted text from the editor (client-side)',
     extension: '.txt',
     icon: '📃',
     mimeType: 'text/plain',
@@ -95,6 +70,109 @@ export const EXPORT_FORMATS: ExportFormatInfo[] = [
     supportsPageRange: true,
   },
 ];
+
+export type ConvertFormatGroup = 'office' | 'web' | 'data';
+
+export interface ConvertFormatInfo {
+  id: ConvertTarget;
+  label: string;
+  description: string;
+  extension: string;
+  group: ConvertFormatGroup;
+}
+
+export const CONVERT_FORMATS: ConvertFormatInfo[] = [
+  {
+    id: 'docx',
+    label: 'Word (DOCX)',
+    description: 'Editable Word document from document structure',
+    extension: '.docx',
+    group: 'office',
+  },
+  {
+    id: 'xlsx',
+    label: 'Excel (XLSX)',
+    description: 'Worksheets from detected tables',
+    extension: '.xlsx',
+    group: 'office',
+  },
+  {
+    id: 'pptx',
+    label: 'PowerPoint (PPTX)',
+    description: 'Editable slides from pages',
+    extension: '.pptx',
+    group: 'office',
+  },
+  {
+    id: 'odt',
+    label: 'OpenDocument',
+    description: 'ODT text package',
+    extension: '.odt',
+    group: 'office',
+  },
+  {
+    id: 'rtf',
+    label: 'Rich Text',
+    description: 'RTF with basic formatting',
+    extension: '.rtf',
+    group: 'office',
+  },
+  {
+    id: 'html',
+    label: 'HTML',
+    description: 'Semantic HTML5 from reading order',
+    extension: '.html',
+    group: 'web',
+  },
+  {
+    id: 'markdown',
+    label: 'Markdown',
+    description: 'ATX headings, lists, GFM tables',
+    extension: '.md',
+    group: 'web',
+  },
+  {
+    id: 'epub',
+    label: 'EPUB',
+    description: 'Ebook package from sections',
+    extension: '.epub',
+    group: 'web',
+  },
+  {
+    id: 'txt',
+    label: 'Plain text',
+    description: 'Reading-order text (structure convert)',
+    extension: '.txt',
+    group: 'web',
+  },
+  {
+    id: 'json',
+    label: 'JSON',
+    description: 'UDM summary tree (no heavy character arrays)',
+    extension: '.json',
+    group: 'data',
+  },
+  {
+    id: 'xml',
+    label: 'XML',
+    description: 'Well-formed document model',
+    extension: '.xml',
+    group: 'data',
+  },
+  {
+    id: 'svg',
+    label: 'SVG (structure)',
+    description: 'Editable text + vectors from UDM',
+    extension: '.svg',
+    group: 'data',
+  },
+];
+
+export const CONVERT_GROUP_LABELS: Record<ConvertFormatGroup, string> = {
+  office: 'Office',
+  web: 'Web & ebook',
+  data: 'Data',
+};
 
 export interface ExportOptions {
   format: ExportFormat;
@@ -137,19 +215,13 @@ export async function exportPageToImage(
   if (!page) throw new Error(`Page ${pageIndex} not found`);
 
   const scale = dpi / 72;
-
-  const mediaBox = page.mediaBox;
-  const pageWidth = mediaBox.width;
-  const pageHeight = mediaBox.height;
-
-  // Use engine.renderPage which returns a RenderResult with a canvas
   const result = await engine.renderPage(doc, pageIndex, { scale });
   const canvas = result.canvas;
 
   return new Promise<Blob>((resolve, reject) => {
     const mimeType = format === 'jpeg' ? 'image/jpeg' : 'image/png';
     canvas.toBlob(
-      (blob) => blob ? resolve(blob) : reject(new Error('Canvas toBlob failed')),
+      (blob) => (blob ? resolve(blob) : reject(new Error('Canvas toBlob failed'))),
       mimeType,
       format === 'jpeg' ? quality : undefined,
     );
@@ -208,10 +280,8 @@ export async function exportPageToSVG(
   const pageWidth = mediaBox.width;
   const pageHeight = mediaBox.height;
 
-  // Use engine.renderPage which returns a RenderResult with a canvas
   const result = await engine.renderPage(doc, pageIndex, { scale });
   const canvas = result.canvas;
-
   const dataUrl = canvas.toDataURL('image/png');
 
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -257,63 +327,7 @@ export async function exportToSVG(
   };
 }
 
-// ─── Text-based Exports (Markdown, TXT) ────────────────────────────────────────
-
-export async function exportToMarkdown(
-  doc: PDFDocumentData,
-  engine: typeof import('@/engine'),
-  options: ExportOptions,
-  onProgress?: (current: number, total: number) => void,
-): Promise<ExportResult> {
-  try {
-    const { assembledPages } = await engine.exportToStructure(doc, {
-      title: options.title,
-      pages: options.pages ?? undefined,
-      onProgress,
-    });
-
-    const extracted = {
-      title: options.title,
-      pages: assembledPages,
-    };
-
-    let md = engine.structureToMarkdown(extracted);
-
-    // Empty structure → plain text fallback
-    if (!md.trim() || md.trim().length < 5) {
-      const pages = options.pages ?? Array.from({ length: doc.pages.length }, (_, i) => i);
-      const parts: string[] = options.title ? [`# ${options.title}`, ''] : [];
-      for (let i = 0; i < pages.length; i++) {
-        const plain = engine.extractPagePlainText(doc, pages[i]).trim();
-        if (pages.length > 1) parts.push(`## Page ${pages[i] + 1}`, '');
-        parts.push(plain || `*(Page ${pages[i] + 1}: no extractable text)*`, '');
-        onProgress?.(i + 1, pages.length);
-      }
-      md = parts.join('\n').trimEnd() + '\n';
-    }
-
-    return {
-      blob: new Blob([md], { type: 'text/markdown;charset=utf-8' }),
-      filename: `${options.title}.md`,
-      mimeType: 'text/markdown',
-    };
-  } catch (err) {
-    console.error('[Export Markdown] Structure export failed:', err);
-    const pages = options.pages ?? Array.from({ length: doc.pages.length }, (_, i) => i);
-    const parts: string[] = options.title ? [`# ${options.title}`, ''] : [];
-    for (let i = 0; i < pages.length; i++) {
-      const plain = engine.extractPagePlainText(doc, pages[i]).trim();
-      if (pages.length > 1) parts.push(`## Page ${pages[i] + 1}`, '');
-      parts.push(plain || `*(Page ${pages[i] + 1}: export failed)*`, '');
-      onProgress?.(i + 1, pages.length);
-    }
-    return {
-      blob: new Blob([parts.join('\n').trimEnd() + '\n'], { type: 'text/markdown;charset=utf-8' }),
-      filename: `${options.title}.md`,
-      mimeType: 'text/markdown',
-    };
-  }
-}
+// ─── Plain Text ─────────────────────────────────────────────────────────────────
 
 export async function exportToPlainText(
   doc: PDFDocumentData,
@@ -337,27 +351,6 @@ export async function exportToPlainText(
   };
 }
 
-// ─── DOCX Export (flowing text via engine.exportToDocx) ─────────────────────────
-
-export async function exportToWord(
-  doc: PDFDocumentData,
-  engine: typeof import('@/engine'),
-  options: ExportOptions,
-  onProgress?: (current: number, total: number) => void,
-): Promise<ExportResult> {
-  const result = await engine.exportToDocx(doc, {
-    title: options.title || 'Export',
-    pages: options.pages ?? undefined,
-    onProgress,
-  });
-
-  return {
-    blob: result.blob,
-    filename: result.filename,
-    mimeType: result.mimeType,
-  };
-}
-
 // ─── Master Export Function ─────────────────────────────────────────────────────
 
 export async function exportDocument(
@@ -372,12 +365,8 @@ export async function exportDocument(
       return exportToImages(doc, engine, options, onProgress);
     case 'svg':
       return exportToSVG(doc, engine, options, onProgress);
-    case 'markdown':
-      return exportToMarkdown(doc, engine, options, onProgress);
     case 'txt':
       return exportToPlainText(doc, engine, options, onProgress);
-    case 'docx':
-      return exportToWord(doc, engine, options, onProgress);
     default:
       throw new Error(`Unsupported export format: ${options.format}`);
   }
@@ -410,9 +399,6 @@ export function estimateDocumentSize(doc: PDFDocumentData): SizeEstimation {
   const textContentBytes = Math.max(0, currentSizeBytes - imageContentBytes);
   const metadataBytes = Math.max(1024, pageCount * 256);
 
-  // Honest floor:
-  // - No images → almost nothing to reclaim (fonts/structure stay). ~95% of current.
-  // - With images → images can shrink a lot; text/structure still need ~70% of non-image bytes.
   let minAchievableBytes: number;
   if (imageCount === 0 || imageContentBytes === 0) {
     minAchievableBytes = Math.max(
@@ -424,11 +410,9 @@ export function estimateDocumentSize(doc: PDFDocumentData): SizeEstimation {
     const minImageBytes = Math.max(imageCount * 1500, Math.round(imageContentBytes * 0.08));
     const minTextBytes = Math.round(textContentBytes * 0.7);
     minAchievableBytes = Math.max(metadataBytes + minTextBytes + minImageBytes, 2048);
-    // Never claim below ~40% of current even for image-heavy files
     minAchievableBytes = Math.max(minAchievableBytes, Math.round(currentSizeBytes * 0.15));
   }
 
-  // Clamp: min cannot exceed current
   if (currentSizeBytes > 0) {
     minAchievableBytes = Math.min(minAchievableBytes, currentSizeBytes);
   }
@@ -466,7 +450,6 @@ export function evaluateTargetSize(
         ? `Not achievable. This PDF has no compressible images (current ${formatFileSize(currentSizeBytes)}). Minimum realistic size ≈ ${formatFileSize(minAchievableBytes)}.`
         : `Not achievable. Minimum realistic size with heavy image compression ≈ ${formatFileSize(minAchievableBytes)}.`;
   } else if (imageCount === 0) {
-    // Text-only: only a tiny shrink is ever green/yellow
     zone = 'yellow';
     message = `Limited savings possible (text/fonts). Best case ≈ ${formatFileSize(minAchievableBytes)} — will not rasterize pages (that would make the file larger).`;
   } else if (targetBytes >= currentSizeBytes * 0.55) {
@@ -593,12 +576,12 @@ function buildZip(entries: ZipEntry[]): Blob {
 }
 
 function crc32(data: Uint8Array): number {
-  let crc = 0xFFFFFFFF;
+  let crc = 0xffffffff;
   for (let i = 0; i < data.length; i++) {
     crc ^= data[i];
     for (let j = 0; j < 8; j++) {
-      crc = (crc >>> 1) ^ (crc & 1 ? 0xEDB88320 : 0);
+      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
     }
   }
-  return (crc ^ 0xFFFFFFFF) >>> 0;
+  return (crc ^ 0xffffffff) >>> 0;
 }

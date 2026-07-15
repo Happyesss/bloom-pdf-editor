@@ -392,28 +392,6 @@ export {
 } from './ocr';
 export type { ProjectionProfile, LayoutRegion, PageLayout } from './ocr';
 
-// ── Export (Phase 8) ──
-export {
-  buildSemanticPage,
-  exportPageToMarkdown,
-  structureToMarkdown,
-} from './export';
-export type {
-  SemanticPage,
-  SemanticBlock,
-  SemanticTableData,
-  SemanticTableCell,
-  ExportOptions,
-  ExportPageInput,
-  ExportLineInput,
-  ExportTableInput,
-  ExportTableCellInput,
-} from './export';
-
-// ── DOCX Export ──
-export { exportToDocx, exportToStructure } from './docx-export';
-export type { DocxExportOptions, DocxExportResult, ExtractedDocument } from './docx-export';
-
 // ── Optimize (Phase 9) ──
 export {
   garbageCollect,

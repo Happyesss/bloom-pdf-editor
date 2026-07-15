@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import { parsePDF, getPageContentBytes } from '../parser/parser';
 import { interpretPage } from '../content/interpreter';
 import { buildDocumentFlow } from '../flow';
-import { buildSemanticPage, exportPageToMarkdown } from '../export/page-export';
 import { parseAcroFormCatalog, detectFormFieldsOnPage } from '../forms/detect-fields';
 import { parseSoftMask, effectiveAlpha } from '../render/soft-mask';
 import { parseTilingPattern, isPatternColorSpace } from '../render/patterns';
@@ -123,28 +122,11 @@ describe('integration roundtrip', () => {
     expect(interpreted.displayList).toBeDefined();
   });
 
-  it('flow → export produces Markdown from text runs', () => {
+  it('flow builds lines from text runs', () => {
     const runs = [mockTextRun('Hello PDF')];
     const flow = buildDocumentFlow(runs);
     expect(flow.lines.length).toBeGreaterThan(0);
-
-    const semantic = buildSemanticPage({
-      pageIndex: 0,
-      width: 612,
-      height: 792,
-      lines: flow.lines.map(line => ({
-        text: line.text,
-        x: line.x,
-        y: line.y,
-        width: line.width,
-        height: line.height,
-        fontSize: line.fontSize,
-        bold: false,
-        italic: false,
-      })),
-    });
-    const md = exportPageToMarkdown(semantic);
-    expect(md).toContain('Hello');
+    expect(flow.lines.some((line) => line.text.includes('Hello'))).toBe(true);
   });
 
   it('detects AcroForm widgets on page', () => {

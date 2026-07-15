@@ -3271,6 +3271,16 @@ export default function EditorPage() {
   }, []);
 
 
+  /** Current edited PDF for Bloom structure conversion (Export → Document convert). */
+  const getPdfBytesForConvert = useCallback(async (): Promise<Uint8Array> => {
+    if (!doc || !engineRef.current) {
+      throw new Error('No document loaded');
+    }
+    await commitDrawingsToPdf();
+    const bytes = await engineRef.current.saveQuick(doc);
+    return bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  }, [doc, commitDrawingsToPdf]);
+
   // ── Download / Save ──
   const handleDownload = useCallback(async () => {
     if (!doc || !engineRef.current) return;
@@ -4825,6 +4835,7 @@ export default function EditorPage() {
         fileName={fileName}
         totalPages={totalPages}
         currentPage={currentPage}
+        getPdfBytes={getPdfBytesForConvert}
       />
     </div>
   );

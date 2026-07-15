@@ -43,3 +43,8 @@ next-env.d.ts
 # local scratch / extracted samples
 tmp*
 *.bin
+
+# Bloom document engine
+/server/node_modules
+/server/dist
+.bloom-storage

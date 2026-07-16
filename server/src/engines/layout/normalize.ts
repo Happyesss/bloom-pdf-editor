@@ -56,6 +56,8 @@ export class CoordinateNormalizer implements ICoordinateNormalizer {
         baseline: bbox.y,
         writingDirection: c.writingDirection,
         rotation: c.rotation + rotation,
+        sourceRunId: c.parentId,
+        sourceZIndex: c.zIndex,
       };
     });
 

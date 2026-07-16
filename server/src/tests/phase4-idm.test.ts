@@ -169,6 +169,82 @@ describe('Phase 4 — IDM Reconstruction', () => {
     expect(hits.length).toBeGreaterThanOrEqual(0); // may be in header-less body
   });
 
+  it('does not interleave characters at a run boundary when x-positions are near-tied (rounding noise)', async () => {
+    // Regression test for a bug where adjacent runs ("Architected" + "backend")
+    // got character-interleaved into "Architectebdackend" because the last
+    // character's x was, due to kerning/rounding noise, very slightly greater
+    // than the *next* run's first character's x. A naive global sort-by-x
+    // flips their relative order; extraction order must win for near-tied x.
+    const fontSize = 12;
+    const step = fontSize * 0.55;
+    const y = 500;
+    const word1 = 'Architected';
+    const word2 = 'backend';
+
+    const chars: import('./helpers/raw-fixtures.js').CharSpec[] = [];
+    for (let i = 0; i < word1.length; i++) {
+      chars.push({ ch: word1[i]!, x: 72 + i * step, y, fontSize, w: step, runId: 'runA' });
+    }
+    const lastX = 72 + (word1.length - 1) * step;
+    chars.push({ ch: ' ', x: lastX + step, y, fontSize, w: fontSize * 0.3, runId: 'runA' });
+    // Perturb: first char of word2 lands slightly BEFORE the last char of word1
+    // (simulates float rounding/kerning noise at the run boundary).
+    const perturbedStart = lastX - 1;
+    for (let i = 0; i < word2.length; i++) {
+      chars.push({ ch: word2[i]!, x: perturbedStart + i * step, y, fontSize, w: step, runId: 'runB' });
+    }
+
+    const raw = buildRawDocument([buildPage({ chars })]);
+    const layout = await new LayoutEngine().analyze(raw);
+    const idm = await new IntermediateDocumentEngine().build(raw, layout);
+
+    const text = idm.sections[0]!.pages[0]!.blocks
+      .filter((b) => 'runs' in b)
+      .flatMap((b) => ('runs' in b ? b.runs.map((r) => r.text) : []))
+      .join('');
+
+    // Correct order: "Architected" fully intact, immediately followed by "backend"
+    // intact (order preserved). The bug produced "Architectebdackend" — i.e. the
+    // trailing "d" of word1 displaced after the leading "b" of word2.
+    expect(text).toContain('Architected backend');
+    expect(text).not.toContain('Architecteb'); // bug signature: "d" displaced after "b"
+  });
+
+  it('does not interleave or reorder text when a run drifts far out of x-order (large glyph-width error)', async () => {
+    // Harsher regression test: the second run's computed start x is WAY to
+    // the left of the first run's start (simulating a large embedded-font
+    // glyph-width miscalculation — not just rounding noise). Any fix based on
+    // a fixed epsilon around x would still fail this; only trusting original
+    // extraction order for same-line runs fixes it unconditionally.
+    const fontSize = 12;
+    const step = fontSize * 0.55;
+    const y = 500;
+    const word1 = 'cutting';
+    const word2 = 'DB';
+
+    const chars: import('./helpers/raw-fixtures.js').CharSpec[] = [];
+    for (let i = 0; i < word1.length; i++) {
+      chars.push({ ch: word1[i]!, x: 72 + i * step, y, fontSize, w: step, runId: 'runA' });
+    }
+    chars.push({ ch: ' ', x: 72 + word1.length * step, y, fontSize, w: fontSize * 0.3, runId: 'runA' });
+    // word2 starts 40pt to the LEFT of word1's start — a huge, unrealistic
+    // drift far larger than any sane epsilon, yet extraction order must win.
+    for (let i = 0; i < word2.length; i++) {
+      chars.push({ ch: word2[i]!, x: 72 - 40 + i * step, y, fontSize, w: step, runId: 'runB' });
+    }
+
+    const raw = buildRawDocument([buildPage({ chars })]);
+    const layout = await new LayoutEngine().analyze(raw);
+    const idm = await new IntermediateDocumentEngine().build(raw, layout);
+
+    const text = idm.sections[0]!.pages[0]!.blocks
+      .filter((b) => 'runs' in b)
+      .flatMap((b) => ('runs' in b ? b.runs.map((r) => r.text) : []))
+      .join('');
+
+    expect(text).toContain('cutting DB');
+  });
+
   it('nodeIndex covers blocks and runs', async () => {
     const { idm } = await buildIdm();
     const block = idm.sections[0]!.pages[0]!.blocks.find((b) => 'runs' in b);

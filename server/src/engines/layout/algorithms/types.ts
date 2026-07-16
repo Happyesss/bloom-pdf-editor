@@ -36,6 +36,10 @@ export interface NormalizedChar {
   baseline: number;
   writingDirection: 'ltr' | 'rtl' | 'ttb';
   rotation: number;
+  /** Original PDF text-showing run this character came from (RawCharacter.parentId). */
+  sourceRunId: string | null;
+  /** Original page-wide paint order (RawCharacter.zIndex) — authoritative extraction order. */
+  sourceZIndex: number;
 }
 
 export interface NormalizedImage {

@@ -57,12 +57,17 @@ export function reconstructText(input: {
     });
   }
 
-  // Sort reading-ish: top-to-bottom then left-to-right (PDF y-up)
-  const sorted = [...rawChars].sort((a, b) => {
-    const dy = b.bbox.y - a.bbox.y;
-    if (Math.abs(dy) > Math.max(a.fontSize, b.fontSize) * 0.3) return dy;
-    return a.bbox.x - b.bbox.x;
-  });
+  // Sort reading-ish: top-to-bottom then left-to-right (PDF y-up) — but never
+  // reorder characters relative to each other within the same original
+  // text-showing run (RawCharacter.parentId). A run's glyphs are always
+  // painted strictly left-to-right; re-sorting individual characters by raw
+  // float x (even with an epsilon) is unsafe because a whole run's computed
+  // position can drift by more than a few points (e.g. bold glyph-width
+  // mismatches), which flips characters mid-word and produces interleaved
+  // garbage like "Architected" + "backend" -> "Architectebdackend". Instead,
+  // group into contiguous runs (order preserved verbatim inside each run) and
+  // only sort at the run level.
+  const sorted = orderCharsRunAware(rawChars);
 
   // Layout clustering often omits space glyphs from sourceObjectIds — re-insert
   // spaces from horizontal gaps so runs keep word boundaries.
@@ -75,7 +80,19 @@ export function reconstructText(input: {
         Math.abs(c.bbox.y - prev.bbox.y) <= Math.max(prev.fontSize, c.fontSize) * 0.35;
       const gap = c.bbox.x - (prev.bbox.x + prev.bbox.width);
       const spaceThreshold = Math.max(prev.fontSize, c.fontSize) * 0.25;
-      if (sameLine && gap >= spaceThreshold && prev.unicode !== ' ' && c.unicode !== ' ') {
+      const hasGapSpace = sameLine && gap >= spaceThreshold;
+      // Cross-run x-gaps can be unreliable (see orderCharsRunAware) — a run
+      // boundary with a small/negative computed gap can still be a genuine
+      // word break (e.g. a bold keyword mid-sentence). Fall back to inserting
+      // a space at a run boundary unless punctuation clearly forbids one.
+      const crossesRun = prev.parentId !== c.parentId;
+      const needsFallbackSpace =
+        sameLine &&
+        !hasGapSpace &&
+        crossesRun &&
+        isWordChar(prev.unicode) &&
+        isWordChar(c.unicode);
+      if ((hasGapSpace || needsFallbackSpace) && prev.unicode !== ' ' && c.unicode !== ' ') {
         withSpaces.push({
           ...prev,
           id: `${prev.id}_space`,
@@ -83,7 +100,7 @@ export function reconstructText(input: {
           bbox: {
             x: prev.bbox.x + prev.bbox.width,
             y: prev.bbox.y,
-            width: gap,
+            width: Math.max(gap, 0),
             height: prev.bbox.height,
           },
           glyphId: 32,
@@ -144,6 +161,59 @@ export function reconstructText(input: {
     characters,
     plainText: characters.map((c) => c.unicode).join(''),
   };
+}
+
+/** Letters/digits only — used to decide whether a run boundary is a safe place to fall back to inserting a space. */
+function isWordChar(ch: string): boolean {
+  return /[\p{L}\p{N}]/u.test(ch);
+}
+
+function orderCharsRunAware(chars: RawCharacter[]): RawCharacter[] {
+  interface CharRun {
+    chars: RawCharacter[];
+    order: number;
+    y: number;
+  }
+
+  const runs: CharRun[] = [];
+  let current: RawCharacter[] = [];
+  let currentRunKey: string | null | undefined = undefined;
+
+  const flushRun = () => {
+    if (current.length === 0) return;
+    const first = current[0]!;
+    runs.push({
+      chars: current,
+      order: first.zIndex,
+      y: first.bbox.y,
+    });
+    current = [];
+  };
+
+  for (const c of chars) {
+    const key = c.parentId ?? c.id;
+    if (current.length > 0 && key === currentRunKey) {
+      current.push(c);
+    } else {
+      flushRun();
+      current = [c];
+      currentRunKey = key;
+    }
+  }
+  flushRun();
+
+  // Runs sharing a line keep their original extraction order; x is never
+  // used to reorder (see orderCharactersRunAware in layout/clustering.ts for
+  // full rationale — glyph-width drift can be arbitrarily large and must not
+  // silently flip run/character order).
+  runs.sort((A, B) => {
+    const dy = B.y - A.y;
+    const fontSize = Math.max(A.chars[0]!.fontSize, B.chars[0]!.fontSize, 1);
+    if (Math.abs(dy) > fontSize * 0.3) return dy;
+    return A.order - B.order;
+  });
+
+  return runs.flatMap((r) => r.chars);
 }
 
 function synthesizeFromLayoutText(input: {

@@ -15,6 +15,8 @@ export interface CharSpec {
   fontName?: string;
   fontWeight?: number;
   w?: number;
+  /** Simulates the PDF text-showing run (Tj/TJ call) this character belongs to. */
+  runId?: string;
 }
 
 export function buildRawDocument(pages: RawPage[], id = 'raw_test'): RawDocument {
@@ -62,7 +64,7 @@ export function buildPage(opts: {
     const character: RawCharacter = {
       id,
       type: 'character',
-      parentId: pageId,
+      parentId: spec.runId ?? pageId,
       childIds: [],
       pageIndex: index,
       bbox,
@@ -140,7 +142,9 @@ export function buildPage(opts: {
   };
 }
 
-/** Place a word as sequential characters on a baseline. */
+let runSeq = 0;
+
+/** Place a word as sequential characters on a baseline (one simulated text run). */
 export function wordChars(
   text: string,
   x: number,
@@ -149,10 +153,11 @@ export function wordChars(
   fontName = 'Helvetica',
 ): CharSpec[] {
   const out: CharSpec[] = [];
+  const runId = `run_${runSeq++}`;
   let cursor = x;
   for (const ch of text) {
     const w = fontSize * (ch === ' ' ? 0.3 : 0.55);
-    out.push({ ch, x: cursor, y, fontSize, fontName, w });
+    out.push({ ch, x: cursor, y, fontSize, fontName, w, runId });
     cursor += w;
   }
   return out;

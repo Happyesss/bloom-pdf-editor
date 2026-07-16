@@ -137,11 +137,7 @@ function makeCluster(
 function clusterWords(characters: NormalizedChar[], pageIndex: number): ClusteredObject[] {
   if (characters.length === 0) return [];
 
-  const sorted = [...characters].sort((a, b) => {
-    const dy = b.baseline - a.baseline; // higher baseline first (PDF y-up)
-    if (Math.abs(dy) > 2) return dy;
-    return a.bbox.x - b.bbox.x;
-  });
+  const sorted = orderCharactersRunAware(characters);
 
   const words: ClusteredObject[] = [];
   let current: NormalizedChar[] = [];
@@ -192,14 +188,91 @@ function clusterWords(characters: NormalizedChar[], pageIndex: number): Clustere
   return words;
 }
 
+/**
+ * Order characters top-to-bottom / left-to-right WITHOUT ever reordering
+ * characters relative to one another within the same original text-showing
+ * run (Tj/TJ call), AND without reordering different runs that share a line
+ * by x-position at all.
+ *
+ * Rationale: a run's glyphs are always painted strictly left-to-right by
+ * construction (see content-extractor.ts). Runs on the *same visual line*
+ * are, for virtually every real-world PDF, also already emitted in
+ * left-to-right reading order in the content stream (text generators don't
+ * jump backwards mid-line). Re-deriving left-to-right order from computed
+ * float x — even with an epsilon tolerance — is unsafe: a run's x position
+ * can drift by an arbitrarily large amount relative to its true position
+ * (e.g. bold/embedded-font glyph-width table mismatches accumulating over a
+ * whole word), which silently flips whole runs or individual characters and
+ * produces interleaved garbage like "Architected" + "backend" ->
+ * "Architectebdackend". No fixed epsilon can safely bound that error.
+ *
+ * So: x is used only to build words/lines (gap detection), never to reorder.
+ * Only the vertical (baseline) position — which glyph-width errors do not
+ * affect — is used to order distinct lines relative to each other. Runs
+ * sharing a line always keep their original extraction order.
+ */
+function orderCharactersRunAware(characters: NormalizedChar[]): NormalizedChar[] {
+  interface CharRun {
+    chars: NormalizedChar[];
+    order: number;
+    baseline: number;
+  }
+
+  const runs: CharRun[] = [];
+  let current: NormalizedChar[] = [];
+  let currentRunKey: string | null | undefined | number = undefined;
+
+  const flushRun = () => {
+    if (current.length === 0) return;
+    const first = current[0]!;
+    runs.push({
+      chars: current,
+      order: first.sourceZIndex,
+      baseline: first.baseline,
+    });
+    current = [];
+  };
+
+  for (const c of characters) {
+    // Fall back to per-character grouping when sourceRunId is absent (e.g.
+    // synthesized/OCR characters) — safe no-op, behaves like before per-char.
+    const key = c.sourceRunId ?? c.id;
+    if (current.length > 0 && key === currentRunKey) {
+      current.push(c);
+    } else {
+      flushRun();
+      current = [c];
+      currentRunKey = key;
+    }
+  }
+  flushRun();
+
+  runs.sort((A, B) => {
+    const dy = B.baseline - A.baseline; // higher baseline first (PDF y-up)
+    const fontSize = Math.max(A.chars[0]!.fontSize, B.chars[0]!.fontSize, 1);
+    if (Math.abs(dy) > fontSize * 0.3) return dy;
+    return A.order - B.order; // same line: always preserve original stream order
+  });
+
+  return runs.flatMap((r) => r.chars);
+}
+
 function clusterLines(words: ClusteredObject[], pageIndex: number): ClusteredObject[] {
   if (words.length === 0) return [];
 
-  const sorted = [...words].sort((a, b) => {
+  // Same rationale as orderCharactersRunAware: words sharing a line keep
+  // their original (already-correct) order; only baseline decides line
+  // membership/ordering. Never reorder same-line words by x.
+  const indexedWords = words.map((w, i) => ({ w, i }));
+  indexedWords.sort((A, B) => {
+    const a = A.w;
+    const b = B.w;
     const dy = (b.baseline ?? b.bbox.y) - (a.baseline ?? a.bbox.y);
-    if (Math.abs(dy) > 2) return dy;
-    return a.bbox.x - b.bbox.x;
+    const fontSize = Math.max(a.style?.fontSize ?? 12, b.style?.fontSize ?? 12, 1);
+    if (Math.abs(dy) > fontSize * 0.3) return dy;
+    return A.i - B.i;
   });
+  const sorted = indexedWords.map((x) => x.w);
 
   const lines: ClusteredObject[] = [];
   let current: ClusteredObject[] = [];

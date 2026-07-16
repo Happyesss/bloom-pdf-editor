@@ -12,7 +12,7 @@
 import type { TextRun } from '../content/interpreter';
 import type { DocumentFlow, Paragraph, TextLine } from './types';
 import { greedyWrap } from './line-break';
-import { estimateTextWidth } from './metrics';
+import { estimateTextWidth, getRunBounds, visualFontSize } from './metrics';
 import { distributeTextToSegments } from './reflow';
 
 export interface LineTextEdit {
@@ -75,21 +75,54 @@ function mergeShifts(shifts: RunShift[]): RunShift[] {
 /** Shift trailing runs when an earlier segment grows or shrinks. */
 export function computeHorizontalShifts(line: TextLine, newText: string): RunShift[] {
   if (line.segments.length <= 1) return [];
+  return computeHorizontalShiftsFromEdits(line, distributeTextToSegments(line, newText));
+}
 
-  const segmentEdits = distributeTextToSegments(line, newText);
+/**
+ * Recompute each segment's dx from a left-to-right chain:
+ *   nextX = prevX + newWidth(prev) + originalGap
+ * Cumulative delta shifts (old approach) under-estimate growth on condensed
+ * resume fonts / Helvetica fallback, so trailing styled runs pile onto the
+ * edited mid-line text.
+ */
+export function computeHorizontalShiftsFromEdits(
+  line: TextLine,
+  segmentEdits: { run: TextRun; newText: string }[],
+): RunShift[] {
+  if (line.segments.length <= 1) return [];
+
   const shifts: RunShift[] = [];
+  let cursor = getRunBounds(line.segments[0].run).left;
 
   for (let i = 0; i < line.segments.length; i++) {
     const seg = line.segments[i];
-    const edit = segmentEdits.find(e => e.run === seg.run);
-    const oldW = estimateTextWidth(seg.text, seg.run);
-    const newW = estimateTextWidth(edit?.newText ?? seg.text, seg.run);
-    const segDelta = newW - oldW;
-    if (Math.abs(segDelta) < 0.01) continue;
+    const run = seg.run;
+    const edit = segmentEdits.find(e => e.run === run) ?? segmentEdits[i];
+    const newText = edit?.newText ?? seg.text;
+    const bounds = getRunBounds(run);
+    const oldW = Math.max(bounds.width, estimateTextWidth(seg.text, run), 0.01);
+    const estimated = estimateTextWidth(newText, run);
+    const scaled = oldW * (newText.length / Math.max(1, seg.text.length));
+    const fs = visualFontSize(run);
+    // When growing, never assume narrower-than-Helvetica advance — subset fonts
+    // often report tight averages that under-shift trailing runs.
+    const growFloor = newText.length > seg.text.length
+      ? newText.length * fs * 0.5
+      : 0;
+    const newW = Math.max(estimated, scaled, growFloor);
 
-    for (let j = i + 1; j < line.segments.length; j++) {
-      shifts.push({ run: line.segments[j].run, dx: segDelta, dy: 0 });
+    const dx = cursor - bounds.left;
+    if (Math.abs(dx) > 0.01) {
+      shifts.push({ run, dx, dy: 0 });
     }
+
+    let gap = 0;
+    if (i < line.segments.length - 1) {
+      const nextBounds = getRunBounds(line.segments[i + 1].run);
+      gap = nextBounds.left - bounds.right;
+      if (gap < 0) gap = fs * 0.12;
+    }
+    cursor += newW + gap;
   }
 
   return mergeShifts(shifts);

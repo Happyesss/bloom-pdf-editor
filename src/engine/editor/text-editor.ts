@@ -119,12 +119,9 @@ export function applyTextEdits(
 
     const rawIndices = edit.targetRun.sourceInstructionIndices ?? [];
 
-    // Erase only when shrinking (growing uses in-place Tj replace — no white box)
-    if (
-      edit.newText.length < edit.targetRun.text.length &&
-      edit.newText !== edit.targetRun.text &&
-      rawIndices.length > 0
-    ) {
+    // Cover original run ink before rewrite (grow or shrink). Prevents ghost
+    // glyphs when sibling fragments / subset fonts leave paint behind.
+    if (edit.newText !== edit.targetRun.text && rawIndices.length > 0) {
       const inserted = insertEraseRectForRun(
         instructions,
         edit.targetRun,
@@ -220,6 +217,8 @@ export function applyTextEdits(
 export function applyRunPositionShifts(
   contentBytes: Uint8Array,
   shifts: RunPositionShift[],
+  /** Extra runs whose sourceInstructionIndices must stay in sync when we inject ops. */
+  indexPeers: TextRun[] = [],
 ): Uint8Array {
   if (shifts.length === 0) return contentBytes;
 
@@ -233,26 +232,101 @@ export function applyRunPositionShifts(
     merged.set(s.run, prev);
   }
 
-  const shiftedOps = new Set<number>();
-
+  type ShiftItem = { textIndex: number; dx: number; dy: number; run: TextRun };
+  const items: ShiftItem[] = [];
   merged.forEach((delta, run) => {
     const indices = run.sourceInstructionIndices;
     if (!indices || indices.length === 0) return;
+    if (Math.abs(delta.dx) < 0.01 && Math.abs(delta.dy) < 0.01) return;
+    items.push({ textIndex: Math.min(...indices), dx: delta.dx, dy: delta.dy, run });
+  });
+  items.sort((a, b) => a.textIndex - b.textIndex);
 
-    const textIndex = indices[0];
-    const pos = findTextPositionInstruction(instructions, textIndex);
-    if (!pos || shiftedOps.has(pos.index)) return;
+  // Prefer in-place Tm/Td in the BT, then CTM `cm` just outside it. Resume
+  // generators often position via `cm` with a bare BT/Tj — absolute Tm inject
+  // double-counts under CTM. Last resort: absolute Tm (identity CTM).
+  const appliedToOp = new Map<number, { dx: number; dy: number }>();
+  const trackedRuns: TextRun[] = [];
+  const seen = new Set<TextRun>();
+  merged.forEach((_, run) => {
+    if (!seen.has(run)) { seen.add(run); trackedRuns.push(run); }
+  });
+  for (let p = 0; p < indexPeers.length; p++) {
+    const run = indexPeers[p];
+    if (!seen.has(run)) { seen.add(run); trackedRuns.push(run); }
+  }
+
+  const bumpIndicesFrom = (at: number, by: number) => {
+    for (let r = 0; r < trackedRuns.length; r++) {
+      const idxs = trackedRuns[r].sourceInstructionIndices;
+      if (!idxs) continue;
+      for (let k = 0; k < idxs.length; k++) {
+        if (idxs[k] >= at) idxs[k] += by;
+      }
+    }
+    for (let j = 0; j < items.length; j++) {
+      if (items[j].textIndex >= at) items[j].textIndex += by;
+    }
+    // Position-op map keys shift when we insert before them
+    const nextMap = new Map<number, { dx: number; dy: number }>();
+    appliedToOp.forEach((v, key) => {
+      nextMap.set(key >= at ? key + by : key, v);
+    });
+    appliedToOp.clear();
+    nextMap.forEach((v, key) => appliedToOp.set(key, v));
+  };
+
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (item.textIndex < 0 || item.textIndex >= instructions.length) {
+      continue;
+    }
+
+    const pos =
+      findTextPositionInstruction(instructions, item.textIndex) ??
+      findCtmPositionInstruction(instructions, item.textIndex);
+
+    if (!pos) {
+      // Last resort: absolute Tm in page space (CTM assumed identity).
+      const absX = item.run.x + item.dx;
+      const absY = item.run.y || item.run.glyphs[0]?.tRm.f || 0;
+      const insertAt = item.textIndex;
+      instructions.splice(insertAt, 0, {
+        operator: 'Tm',
+        operands: [
+          new PDFNumber(1), new PDFNumber(0), new PDFNumber(0), new PDFNumber(1),
+          new PDFNumber(absX), new PDFNumber(absY),
+        ],
+        offset: 0,
+      });
+      bumpIndicesFrom(insertAt, 1);
+      appliedToOp.set(insertAt, { dx: item.dx, dy: item.dy });
+      continue;
+    }
+
+    const already = appliedToOp.get(pos.index) ?? { dx: 0, dy: 0 };
+    const remainDx = item.dx - already.dx;
+    const remainDy = item.dy - already.dy;
+    if (Math.abs(remainDx) < 0.01 && Math.abs(remainDy) < 0.01) {
+      continue;
+    }
 
     const inst = instructions[pos.index];
-    if (pos.kind === 'Tm' && inst.operands.length >= 6) {
-      inst.operands[4] = new PDFNumber(numVal(inst.operands[4]) + delta.dx);
-      inst.operands[5] = new PDFNumber(numVal(inst.operands[5]) + delta.dy);
+    if ((pos.kind === 'Tm' || pos.kind === 'cm') && inst.operands.length >= 6) {
+      inst.operands[4] = new PDFNumber(numVal(inst.operands[4]) + remainDx);
+      inst.operands[5] = new PDFNumber(numVal(inst.operands[5]) + remainDy);
     } else if (inst.operands.length >= 2) {
-      inst.operands[0] = new PDFNumber(numVal(inst.operands[0]) + delta.dx);
-      inst.operands[1] = new PDFNumber(numVal(inst.operands[1]) + delta.dy);
+      inst.operands[0] = new PDFNumber(numVal(inst.operands[0]) + remainDx);
+      inst.operands[1] = new PDFNumber(numVal(inst.operands[1]) + remainDy);
+    } else {
+      continue;
     }
-    shiftedOps.add(pos.index);
-  });
+
+    appliedToOp.set(pos.index, {
+      dx: already.dx + remainDx,
+      dy: already.dy + remainDy,
+    });
+  }
 
   return compileInstructions(instructions);
 }
@@ -281,6 +355,46 @@ function findTextPositionInstruction(
   }
 
   return last;
+}
+
+/**
+ * CTM translate that still applies at BT. Resume streams often do:
+ *   cm  q  BT ... ET  Q
+ * so we must walk past the opening `q` (not stop there). Skip nested
+ * q/Q pairs so we don't pick a cm from an already-restored region.
+ */
+function findCtmPositionInstruction(
+  instructions: CSInstruction[],
+  textIndex: number,
+): { index: number; kind: 'cm' } | null {
+  if (textIndex < 0 || textIndex >= instructions.length) return null;
+
+  let btIndex = -1;
+  for (let i = textIndex; i >= 0; i--) {
+    if (instructions[i].operator === 'ET') return null;
+    if (instructions[i].operator === 'BT') {
+      btIndex = i;
+      break;
+    }
+  }
+  if (btIndex < 0) return null;
+
+  let nest = 0;
+  for (let i = btIndex - 1; i >= 0; i--) {
+    const op = instructions[i].operator;
+    if (op === 'Q') {
+      nest++;
+      continue;
+    }
+    if (op === 'q') {
+      if (nest > 0) nest--;
+      continue;
+    }
+    if (nest === 0 && op === 'cm' && instructions[i].operands.length >= 6) {
+      return { index: i, kind: 'cm' };
+    }
+  }
+  return null;
 }
 
 /**
@@ -875,15 +989,9 @@ function insertEraseRectForRun(
 ): number {
   if (hintIndex < 0 || hintIndex >= instructions.length) return 0;
 
-  // Only erase when shrinking or replacing — never grow the white box past
-  // the original run (that paints over neighboring glyphs/headings).
-  const oldLen = Math.max(1, run.text.length);
-  if (newText.length >= oldLen && newText.startsWith(run.text.slice(0, Math.min(3, oldLen)))) {
-    // Growing in place: skip erase; the new Tj replaces the old glyphs.
-    // Overlap risk is handled by horizontal shifts instead.
-    return 0;
-  }
-
+  // Always cover the ORIGINAL run bounds before rewriting. Growing still needs
+  // this when subset-font glyphs / sibling fragments would otherwise ghost under
+  // the replacement. Never expand the erase past the original run width.
   let btIndex = hintIndex;
   for (let i = hintIndex; i >= 0; i--) {
     if (instructions[i].operator === 'BT') {

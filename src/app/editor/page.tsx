@@ -1035,10 +1035,25 @@ export default function EditorPage() {
         baseline,
         scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
       );
-      const growW = Math.max(
-        bounds.width * scale,
-        editText.length > 0 ? editText.length * fontSizeCss * 0.55 : 0,
+      // Cover the active line plus same-baseline peers that the growing text
+      // would collide with (split title|tags cells). Keep the char-width estimate
+      // conservative — inflated factors painted huge white bands over the page.
+      const growWPdf = Math.max(
+        bounds.width,
+        editText.length > 0 ? editText.length * maxFs * 0.55 : 0,
       );
+      let coverWPdf = growWPdf;
+      const peerLines = renderResult.textLines ?? [];
+      for (let pi = 0; pi < peerLines.length; pi++) {
+        const pl = peerLines[pi];
+        if (pl.id === anchor.id) continue;
+        if (Math.abs(pl.baseline - baseline) > Math.max(2, maxFs * 0.35)) continue;
+        const peerRight = pl.x + pl.width;
+        if (pl.x < bounds.x + growWPdf + maxFs && peerRight > bounds.x) {
+          coverWPdf = Math.max(coverWPdf, peerRight - bounds.x);
+        }
+      }
+      const growW = coverWPdf * scale;
       const rx = leftPt.cssX + editOffsetCss.x;
       const ry = leftPt.cssY - ascent + editOffsetCss.y;
       const rw = editManualSize.w ?? growW;

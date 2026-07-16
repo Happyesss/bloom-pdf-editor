@@ -1021,18 +1021,27 @@ function mergeAdjacentTextRuns(displayList: DisplayItem[], rawTextRuns: TextRun[
       continue;
     }
 
-    // Merge B into A
+    // Merge B into A — must keep BOTH runs' content-stream indices so edits
+    // clear every Tj/TJ fragment. Dropping B's indices leaves ghost text
+    // (e.g. "SHASHANK …RATHOUR" + leftover " KUMAR RATHOUR").
     const mergedGlyphs = [...runA.glyphs, ...runB.glyphs];
     const mergedText = runA.text + runB.text;
     const minX = Math.min(runA.x, runB.x);
     const minY = Math.min(runA.y, runB.y);
     const maxX = Math.max(runA.x + runA.width, runB.x + runB.width);
     const maxY = Math.max(runA.y + runA.height, runB.y + runB.height);
+    const sourceInstructionIndices = [
+      ...(runA.sourceInstructionIndices ?? []),
+      ...(runB.sourceInstructionIndices ?? []),
+    ];
 
     const merged: TextRun = {
       ...runA,
       text: mergedText,
       glyphs: mergedGlyphs,
+      sourceInstructionIndices: sourceInstructionIndices.length > 0
+        ? sourceInstructionIndices
+        : undefined,
       x: minX,
       y: minY,
       width: maxX - minX,

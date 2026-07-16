@@ -57,6 +57,7 @@ export {
   computeLayoutPlan,
   computeEditPreview,
   computeHorizontalShifts,
+  computeHorizontalShiftsFromEdits,
   computeLineHeight,
   findParagraphForLine,
 } from './layout';

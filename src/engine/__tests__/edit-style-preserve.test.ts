@@ -5,6 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import { resolveStyledFontName } from '../flow/style-edit';
 import { distributeTextToSegments, distributeTextChangeToSegments } from '../flow/reflow';
+import { computeHorizontalShiftsFromEdits } from '../flow/layout';
 import { visualFontSize, fontNameStyleFlags, resolveRunStyleFlags } from '../flow/metrics';
 import type { TextLine } from '../flow/types';
 import type { TextRun, GlyphPosition } from '../content/interpreter';
@@ -133,5 +134,31 @@ describe('distributeTextToSegments style preservation', () => {
     const edits = distributeTextChangeToSegments(line, 'Hello World', 'HelloX World', 6);
     expect(edits[0].newText).toBe('HelloX');
     expect(edits[1].newText).toBe(' World');
+  });
+
+  it('chain-shifts trailing run when the leading segment grows', () => {
+    const bold = run('Hello', 'FBold', 12, 50); // width ~30
+    const regular = run(' World', 'FReg', 12, 86); // starts after original "Hello"
+    const line: TextLine = {
+      id: 'l3',
+      runs: [bold, regular],
+      text: 'Hello World',
+      segments: [
+        { run: bold, startIndex: 0, endIndex: 5, text: 'Hello' },
+        { run: regular, startIndex: 5, endIndex: 11, text: ' World' },
+      ],
+      baseline: 700,
+      x: 50, y: 688, width: 72, height: 14,
+      leftMargin: 50, rightEdge: 122,
+      fontSize: 12,
+      isJustified: false,
+      tabSplitIndex: -1,
+    };
+
+    const edits = distributeTextChangeToSegments(line, 'Hello World', 'HelloXXX World', 8);
+    const shifts = computeHorizontalShiftsFromEdits(line, edits);
+    const trailing = shifts.find(s => s.run === regular);
+    expect(trailing).toBeTruthy();
+    expect(trailing!.dx).toBeGreaterThan(10);
   });
 });

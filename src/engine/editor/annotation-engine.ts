@@ -77,6 +77,32 @@ export interface InkAnnotation extends AnnotationBase {
   lineWidth: number;
 }
 
+export interface LineAnnotation extends AnnotationBase {
+  type: 'Line';
+  /** Start and end in PDF user space */
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  lineWidth: number;
+  /** Line ending styles: None | OpenArrow | ClosedArrow */
+  startStyle?: 'None' | 'OpenArrow' | 'ClosedArrow';
+  endStyle?: 'None' | 'OpenArrow' | 'ClosedArrow';
+}
+
+export interface SquareAnnotation extends AnnotationBase {
+  type: 'Square';
+  lineWidth: number;
+  /** Optional fill color (null = stroke only) */
+  fillColor?: [number, number, number] | null;
+}
+
+export interface CircleAnnotation extends AnnotationBase {
+  type: 'Circle';
+  lineWidth: number;
+  fillColor?: [number, number, number] | null;
+}
+
 export interface StampAnnotation extends AnnotationBase {
   type: 'Stamp';
   /** Stamp name: Approved, NotApproved, Draft, etc. */
@@ -103,6 +129,9 @@ export type Annotation =
   | HighlightAnnotation
   | FreeTextAnnotation
   | InkAnnotation
+  | LineAnnotation
+  | SquareAnnotation
+  | CircleAnnotation
   | StampAnnotation
   | RedactAnnotation
   | LinkAnnotation;
@@ -182,6 +211,51 @@ export function createAnnotationDict(
       dict.set('InkList', inkLists);
       dict.set('BS', buildBorderStyle(annotation.lineWidth));
       appearanceStream = buildInkAppearance(annotation);
+      break;
+
+    case 'Line': {
+      dict.set('Subtype', new PDFName('Line'));
+      dict.set('L', new PDFArray([
+        new PDFNumber(annotation.x1),
+        new PDFNumber(annotation.y1),
+        new PDFNumber(annotation.x2),
+        new PDFNumber(annotation.y2),
+      ]));
+      dict.set('BS', buildBorderStyle(annotation.lineWidth));
+      const startLE = annotation.startStyle ?? 'None';
+      const endLE = annotation.endStyle ?? 'None';
+      dict.set('LE', new PDFArray([
+        new PDFName(startLE),
+        new PDFName(endLE),
+      ]));
+      appearanceStream = buildLineAppearance(annotation);
+      break;
+    }
+
+    case 'Square':
+      dict.set('Subtype', new PDFName('Square'));
+      dict.set('BS', buildBorderStyle(annotation.lineWidth));
+      if (annotation.fillColor) {
+        dict.set('IC', new PDFArray([
+          new PDFNumber(annotation.fillColor[0]),
+          new PDFNumber(annotation.fillColor[1]),
+          new PDFNumber(annotation.fillColor[2]),
+        ]));
+      }
+      appearanceStream = buildSquareAppearance(annotation);
+      break;
+
+    case 'Circle':
+      dict.set('Subtype', new PDFName('Circle'));
+      dict.set('BS', buildBorderStyle(annotation.lineWidth));
+      if (annotation.fillColor) {
+        dict.set('IC', new PDFArray([
+          new PDFNumber(annotation.fillColor[0]),
+          new PDFNumber(annotation.fillColor[1]),
+          new PDFNumber(annotation.fillColor[2]),
+        ]));
+      }
+      appearanceStream = buildCircleAppearance(annotation);
       break;
 
     case 'Stamp':
@@ -378,6 +452,104 @@ function buildInkAppearance(annot: InkAnnotation): PDFStream {
   return buildAppearanceStream(lines.join('\n'), rect, annot.opacity);
 }
 
+function arrowHeadPath(
+  tipX: number, tipY: number,
+  fromX: number, fromY: number,
+  size: number,
+): string {
+  const angle = Math.atan2(tipY - fromY, tipX - fromX);
+  const a1 = angle + Math.PI * 0.85;
+  const a2 = angle - Math.PI * 0.85;
+  const x1 = tipX + Math.cos(a1) * size;
+  const y1 = tipY + Math.sin(a1) * size;
+  const x2 = tipX + Math.cos(a2) * size;
+  const y2 = tipY + Math.sin(a2) * size;
+  return `${x1} ${y1} m ${tipX} ${tipY} l ${x2} ${y2} l`;
+}
+
+function buildLineAppearance(annot: LineAnnotation): PDFStream {
+  const { rect, color, lineWidth, x1, y1, x2, y2 } = annot;
+  const lines: string[] = [];
+  const ax = x1 - rect.x;
+  const ay = y1 - rect.y;
+  const bx = x2 - rect.x;
+  const by = y2 - rect.y;
+
+  lines.push(`${color[0]} ${color[1]} ${color[2]} RG`);
+  lines.push(`${lineWidth} w`);
+  lines.push('1 J');
+  lines.push(`${ax} ${ay} m ${bx} ${by} l S`);
+
+  const headSize = Math.max(lineWidth * 4, 8);
+  const endStyle = annot.endStyle ?? 'None';
+  const startStyle = annot.startStyle ?? 'None';
+  if (endStyle === 'OpenArrow' || endStyle === 'ClosedArrow') {
+    lines.push(arrowHeadPath(bx, by, ax, ay, headSize));
+    if (endStyle === 'ClosedArrow') {
+      lines.push(`${color[0]} ${color[1]} ${color[2]} rg`);
+      lines.push('b');
+    } else {
+      lines.push('S');
+    }
+  }
+  if (startStyle === 'OpenArrow' || startStyle === 'ClosedArrow') {
+    lines.push(arrowHeadPath(ax, ay, bx, by, headSize));
+    if (startStyle === 'ClosedArrow') {
+      lines.push(`${color[0]} ${color[1]} ${color[2]} rg`);
+      lines.push('b');
+    } else {
+      lines.push('S');
+    }
+  }
+
+  return buildAppearanceStream(lines.join('\n'), rect, annot.opacity);
+}
+
+function buildSquareAppearance(annot: SquareAnnotation): PDFStream {
+  const { rect, color, lineWidth, fillColor } = annot;
+  const pad = lineWidth;
+  const lines: string[] = [];
+  lines.push(`${color[0]} ${color[1]} ${color[2]} RG`);
+  lines.push(`${lineWidth} w`);
+  const w = Math.max(0, rect.width - pad * 2);
+  const h = Math.max(0, rect.height - pad * 2);
+  lines.push(`${pad} ${pad} ${w} ${h} re`);
+  if (fillColor) {
+    lines.push(`${fillColor[0]} ${fillColor[1]} ${fillColor[2]} rg`);
+    lines.push('B');
+  } else {
+    lines.push('S');
+  }
+  return buildAppearanceStream(lines.join('\n'), rect, annot.opacity);
+}
+
+function buildCircleAppearance(annot: CircleAnnotation): PDFStream {
+  const { rect, color, lineWidth, fillColor } = annot;
+  const cx = rect.width / 2;
+  const cy = rect.height / 2;
+  const rx = Math.max(0, (rect.width - lineWidth) / 2);
+  const ry = Math.max(0, (rect.height - lineWidth) / 2);
+  // Bézier circle approximation
+  const k = 0.5522847498;
+  const ox = rx * k;
+  const oy = ry * k;
+  const lines: string[] = [];
+  lines.push(`${color[0]} ${color[1]} ${color[2]} RG`);
+  lines.push(`${lineWidth} w`);
+  lines.push(`${cx + rx} ${cy} m`);
+  lines.push(`${cx + rx} ${cy + oy} ${cx + ox} ${cy + ry} ${cx} ${cy + ry} c`);
+  lines.push(`${cx - ox} ${cy + ry} ${cx - rx} ${cy + oy} ${cx - rx} ${cy} c`);
+  lines.push(`${cx - rx} ${cy - oy} ${cx - ox} ${cy - ry} ${cx} ${cy - ry} c`);
+  lines.push(`${cx + ox} ${cy - ry} ${cx + rx} ${cy - oy} ${cx + rx} ${cy} c`);
+  if (fillColor) {
+    lines.push(`${fillColor[0]} ${fillColor[1]} ${fillColor[2]} rg`);
+    lines.push('B');
+  } else {
+    lines.push('S');
+  }
+  return buildAppearanceStream(lines.join('\n'), rect, annot.opacity);
+}
+
 function buildStampAppearance(annot: StampAnnotation): PDFStream {
   const { rect, color, stampName } = annot;
   const w = rect.width;
@@ -552,7 +724,11 @@ export function eraseAnnotationsAtPoint(
 
     const subtype = dict.get('Subtype');
     const name = subtype instanceof PDFName ? subtype.name : '';
-    if (name !== 'Highlight' && name !== 'Ink' && name !== 'Underline' && name !== 'StrikeOut' && name !== 'Squiggly') {
+    const markupTypes = new Set([
+      'Highlight', 'Ink', 'Underline', 'StrikeOut', 'Squiggly',
+      'Line', 'Square', 'Circle', 'PolyLine', 'Polygon',
+    ]);
+    if (!markupTypes.has(name)) {
       continue;
     }
 
@@ -588,6 +764,20 @@ export function eraseAnnotationsAtPoint(
         }
       }
       if (!hit) hit = pointInRect(pdfX, pdfY, rx, ry, rw, rh, radius);
+    } else if (name === 'Line') {
+      const L = dict.get('L');
+      if (L instanceof PDFArray && L.items.length >= 4) {
+        const lx1 = (L.items[0] as PDFNumber).value;
+        const ly1 = (L.items[1] as PDFNumber).value;
+        const lx2 = (L.items[2] as PDFNumber).value;
+        const ly2 = (L.items[3] as PDFNumber).value;
+        hit = distToSegment(pdfX, pdfY, lx1, ly1, lx2, ly2) <= radius;
+      } else {
+        hit = pointInRect(pdfX, pdfY, rx, ry, rw, rh, radius);
+      }
+    } else if (name === 'Square' || name === 'Circle') {
+      // Hit near border or inside
+      hit = pointInRect(pdfX, pdfY, rx, ry, rw, rh, radius);
     } else {
       // Highlight / markup: prefer QuadPoints, fall back to Rect
       const qp = dict.get('QuadPoints');
@@ -645,7 +835,10 @@ export function clearMarkupAnnotationsOnPage(
   }
   if (!arr) return 0;
 
-  const markup = new Set(['Highlight', 'Ink', 'Underline', 'StrikeOut', 'Squiggly']);
+  const markup = new Set([
+    'Highlight', 'Ink', 'Underline', 'StrikeOut', 'Squiggly',
+    'Line', 'Square', 'Circle', 'PolyLine', 'Polygon',
+  ]);
   const toRemove: PDFRef[] = [];
   for (const item of arr.items) {
     if (!(item instanceof PDFRef)) continue;

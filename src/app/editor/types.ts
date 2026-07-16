@@ -33,12 +33,21 @@ export const TOOLS: ToolDef[] = [
 
 export type PathType = 'draw' | 'highlight';
 
+/** Sub-modes for the Draw tool */
+export type DrawMode = 'freehand' | 'line' | 'arrow' | 'rectangle' | 'ellipse';
+
 export interface DrawnPath {
   id: string;
   type: PathType;
+  /** Geometry kind; defaults to freehand when omitted */
+  kind?: DrawMode;
   color: string;
   size: number;
+  /** Freehand stroke points (canvas CSS px) */
   points: { x: number; y: number }[];
+  /** Shape endpoints (canvas CSS px) — used when kind !== freehand */
+  start?: { x: number; y: number };
+  end?: { x: number; y: number };
 }
 
 export interface FloatingText {

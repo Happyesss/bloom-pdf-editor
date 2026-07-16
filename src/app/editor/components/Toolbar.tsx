@@ -1,8 +1,9 @@
 import React from 'react';
-import { ChevronLeft, ChevronRight, ZoomOut, ZoomIn, X, Loader2, Undo2, Redo2, Search, FileOutput } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ZoomOut, ZoomIn, X, Undo2, Redo2, Search, FileOutput, Sun, Moon } from 'lucide-react';
 import type { DrawnPath } from '../types';
 import type { PDFDocumentData } from '@/engine';
 import { DownloadDropdown } from './DownloadDropdown';
+import { useTheme } from '@/app/theme/ThemeProvider';
 
 interface ToolbarProps {
   fileName: string;
@@ -60,24 +61,26 @@ export function Toolbar({
   doc,
   onCompressedDownload,
 }: ToolbarProps) {
+  const { theme, toggleTheme } = useTheme();
+
   return (
-    <header className="flex items-center justify-between px-4 h-14 bg-zinc-900/80 backdrop-blur-lg border-b border-zinc-800/80 shrink-0 z-20">
+    <header className="flex items-center justify-between px-4 h-14 bg-panel/90 backdrop-blur-lg border-b border-app shrink-0 z-20">
       <div className="flex items-center gap-3">
         <button 
           onClick={onClose} 
-          className="p-1.5 text-zinc-400 hover:text-red-400 hover:bg-red-500/10 rounded-md transition-all duration-200" 
+          className="p-1.5 text-app-muted hover:text-red-400 hover:bg-red-500/10 rounded-md transition-all duration-200" 
           title="Close file"
         >
           <X size={18} />
         </button>
-        <span className="text-zinc-300 font-medium text-sm truncate max-w-[250px]">{fileName}</span>
+        <span className="text-app font-medium text-sm truncate max-w-[250px] opacity-90">{fileName}</span>
       </div>
 
-      <div className="flex items-center gap-2 bg-zinc-900 px-2 py-1.5 rounded-lg border border-zinc-800 shadow-sm">
+      <div className="flex items-center gap-2 bg-panel-elevated px-2 py-1.5 rounded-lg border border-app shadow-sm">
         <button
           onClick={onUndo}
           disabled={!canUndo}
-          className="p-1 text-zinc-400 hover:text-zinc-100 disabled:opacity-30 disabled:hover:text-zinc-400 transition-colors"
+          className="p-1 text-app-muted hover:text-app disabled:opacity-30 disabled:hover:text-app-muted transition-colors"
           title="Undo (Ctrl+Z)"
         >
           <Undo2 size={16} />
@@ -85,42 +88,50 @@ export function Toolbar({
         <button
           onClick={onRedo}
           disabled={!canRedo}
-          className="p-1 text-zinc-400 hover:text-zinc-100 disabled:opacity-30 disabled:hover:text-zinc-400 transition-colors"
+          className="p-1 text-app-muted hover:text-app disabled:opacity-30 disabled:hover:text-app-muted transition-colors"
           title="Redo (Ctrl+Shift+Z)"
         >
           <Redo2 size={16} />
         </button>
 
-        <div className="w-[1px] h-4 bg-zinc-800 mx-1" />
+        <div className="w-[1px] h-4 bg-[var(--border)] mx-1" />
 
-        <button onClick={onPrevPage} disabled={currentPage === 0} className="p-1 text-zinc-400 hover:text-zinc-100 disabled:opacity-30 disabled:hover:text-zinc-400 transition-colors">
+        <button onClick={onPrevPage} disabled={currentPage === 0} className="p-1 text-app-muted hover:text-app disabled:opacity-30 disabled:hover:text-app-muted transition-colors">
           <ChevronLeft size={18} />
         </button>
-        <span className="text-zinc-400 text-xs font-medium w-16 text-center tracking-wider">
+        <span className="text-app-muted text-xs font-medium w-16 text-center tracking-wider">
           {currentPage + 1} / {totalPages}
         </span>
-        <button onClick={onNextPage} disabled={currentPage >= totalPages - 1} className="p-1 text-zinc-400 hover:text-zinc-100 disabled:opacity-30 disabled:hover:text-zinc-400 transition-colors">
+        <button onClick={onNextPage} disabled={currentPage >= totalPages - 1} className="p-1 text-app-muted hover:text-app disabled:opacity-30 disabled:hover:text-app-muted transition-colors">
           <ChevronRight size={18} />
         </button>
 
-        <div className="w-[1px] h-4 bg-zinc-800 mx-2" />
+        <div className="w-[1px] h-4 bg-[var(--border)] mx-2" />
 
-        <button onClick={onZoomOut} disabled={scale <= 0.5} className="p-1 text-zinc-400 hover:text-zinc-100 disabled:opacity-30 disabled:hover:text-zinc-400 transition-colors">
+        <button onClick={onZoomOut} disabled={scale <= 0.5} className="p-1 text-app-muted hover:text-app disabled:opacity-30 disabled:hover:text-app-muted transition-colors">
           <ZoomOut size={16} />
         </button>
-        <span className="text-zinc-400 text-xs font-medium w-12 text-center">
+        <span className="text-app-muted text-xs font-medium w-12 text-center">
           {Math.round(scale * 100)}%
         </span>
-        <button onClick={onZoomIn} disabled={scale >= 4} className="p-1 text-zinc-400 hover:text-zinc-100 disabled:opacity-30 disabled:hover:text-zinc-400 transition-colors">
+        <button onClick={onZoomIn} disabled={scale >= 4} className="p-1 text-app-muted hover:text-app disabled:opacity-30 disabled:hover:text-app-muted transition-colors">
           <ZoomIn size={16} />
         </button>
       </div>
 
       <div className="flex items-center gap-2">
+        <button
+          onClick={toggleTheme}
+          className="p-2 rounded-lg transition-colors border bg-panel-elevated text-app-muted hover:text-app border-app"
+          title={theme === 'dark' ? 'Switch to white mode' : 'Switch to dark mode'}
+        >
+          {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
+        </button>
+
         {onToggleSearch && (
           <button
             onClick={onToggleSearch}
-            className={`p-2 rounded-lg transition-colors border ${isSearchOpen ? 'bg-blue-600/20 text-blue-400 border-blue-500/50' : 'bg-zinc-800 text-zinc-400 hover:text-zinc-100 border-zinc-700'}`}
+            className={`p-2 rounded-lg transition-colors border ${isSearchOpen ? 'bg-blue-600/20 text-blue-500 border-blue-500/50' : 'bg-panel-elevated text-app-muted hover:text-app border-app'}`}
             title="Toggle Find & Replace"
           >
             <Search size={16} />
@@ -136,17 +147,16 @@ export function Toolbar({
           </button>
         )}
 
-        {/* Export button */}
         {onExport && (
           <>
-            <div className="w-[1px] h-6 bg-zinc-800" />
+            <div className="w-[1px] h-6 bg-[var(--border)]" />
             <button
               onClick={onExport}
               className="
                 flex items-center gap-1.5 text-xs font-medium px-3 py-2
-                bg-zinc-800 hover:bg-zinc-700
-                text-zinc-300 hover:text-white
-                border border-zinc-700 hover:border-zinc-600
+                bg-panel-elevated hover:opacity-90
+                text-app-muted hover:text-app
+                border border-app
                 rounded-xl transition-all duration-200
               "
               title="Export to Word, PNG, Markdown, etc."
@@ -157,9 +167,8 @@ export function Toolbar({
           </>
         )}
 
-        <div className="w-[1px] h-6 bg-zinc-800" />
+        <div className="w-[1px] h-6 bg-[var(--border)]" />
 
-        {/* Download split button with dropdown */}
         <DownloadDropdown
           isSaving={isSaving}
           onDownload={onDownload}

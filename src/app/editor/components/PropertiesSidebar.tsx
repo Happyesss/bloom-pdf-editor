@@ -3,8 +3,9 @@ import {
   Type, TextCursorInput, Image, PenTool, Highlighter, Eraser, MousePointer2,
   X, Trash2, Bold, Italic, Underline, AlignLeft, AlignCenter, AlignRight, Minus, Plus, Stamp, Link2,
   PenLine, Star, Copy, Lock, Unlock, RotateCw, KeyRound, ShieldCheck,
+  ArrowRight, Square, Circle,
 } from 'lucide-react';
-import type { EditorTool } from '../types';
+import type { DrawMode, EditorTool } from '../types';
 import type { TextRun, ImageItem, PathItem, AcroFormWidget, VisualSignature, SignatureLibraryEntry, SignatureField, ManagedIdentity, ValidationReport, LtvStatus, ManagedSignature, RevisionViewEntry } from '@/engine';
 
 interface PropertiesSidebarProps {
@@ -36,6 +37,8 @@ interface PropertiesSidebarProps {
   setDrawColor: (v: string) => void;
   drawSize: number;
   setDrawSize: (v: number) => void;
+  drawMode?: DrawMode;
+  setDrawMode?: (v: DrawMode) => void;
 
   highlightColor: string;
   setHighlightColor: (v: string) => void;
@@ -168,6 +171,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
     textAlign, setTextAlign, textOpacity, setTextOpacity,
     replacingImageIdRef, fileInputRef,
     drawColor, setDrawColor, drawSize, setDrawSize,
+    drawMode = 'freehand', setDrawMode,
     highlightColor, setHighlightColor, highlightSize, setHighlightSize,
     eraserSize, setEraserSize,
     onAddLink, onScanLinks, linksHighlighted = false, pageLinkCount = 0,
@@ -263,7 +267,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
 
   return (
     <div
-      className="w-64 bg-zinc-900/95 backdrop-blur-md border-r border-zinc-800/80 flex flex-col shrink-0 z-10 overflow-y-auto shadow-[4px_0_24px_rgba(0,0,0,0.2)]"
+      className="w-64 bg-panel/95 backdrop-blur-md border-r border-app flex flex-col shrink-0 z-10 overflow-y-auto shadow-[4px_0_24px_rgba(0,0,0,0.08)]"
       data-keep-text-edit
     >
       {/* TEXT TOOL PROPERTIES */}
@@ -601,6 +605,34 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             <PenTool size={14} />
             Draw Properties
           </div>
+          {setDrawMode && (
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase">Shape</label>
+              <div className="grid grid-cols-5 gap-1.5">
+                {([
+                  { id: 'freehand' as DrawMode, icon: PenTool, title: 'Freehand' },
+                  { id: 'line' as DrawMode, icon: Minus, title: 'Line' },
+                  { id: 'arrow' as DrawMode, icon: ArrowRight, title: 'Arrow' },
+                  { id: 'rectangle' as DrawMode, icon: Square, title: 'Rectangle' },
+                  { id: 'ellipse' as DrawMode, icon: Circle, title: 'Ellipse' },
+                ]).map(({ id, icon: Icon, title }) => (
+                  <button
+                    key={id}
+                    type="button"
+                    title={title}
+                    onClick={() => setDrawMode(id)}
+                    className={`flex items-center justify-center h-9 rounded-lg border transition-colors ${
+                      drawMode === id
+                        ? 'bg-blue-600/20 text-blue-400 border-blue-500/50'
+                        : 'bg-zinc-800/50 text-zinc-400 border-zinc-700/50 hover:text-zinc-200'
+                    }`}
+                  >
+                    <Icon size={15} />
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="space-y-1.5">
             <label className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase">Color</label>
             <div className="flex items-center gap-2">

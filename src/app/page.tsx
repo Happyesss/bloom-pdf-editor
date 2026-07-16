@@ -53,11 +53,11 @@ export default function Home() {
   }, [handleFile]);
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center py-10 px-5 font-sans bg-zinc-950 text-zinc-100">
-      <h1 className="text-4xl font-bold mb-2 text-zinc-100 tracking-tight">
+    <div className="min-h-screen flex flex-col items-center justify-center py-10 px-5 font-sans bg-surface text-app">
+      <h1 className="text-4xl font-bold mb-2 text-app tracking-tight">
         PDF Editor
       </h1>
-      <p className="text-sm text-zinc-400 mb-12">
+      <p className="text-sm text-app-muted mb-12">
         Pure TypeScript engine — zero dependencies
       </p>
 
@@ -70,23 +70,23 @@ export default function Home() {
         className={`w-full max-w-lg min-h-[240px] rounded-2xl flex flex-col items-center justify-center cursor-pointer transition-all duration-300 p-8 border-2 border-dashed ${
           isDragging 
             ? 'border-blue-500 bg-blue-500/10 scale-[1.02] shadow-[0_0_30px_rgba(59,130,246,0.15)]' 
-            : 'border-zinc-700 bg-zinc-900/50 hover:bg-zinc-800/80 hover:border-zinc-500'
+            : 'border-app-strong bg-panel/50 hover:bg-panel-elevated hover:border-[var(--text-faint)]'
         }`}
       >
         {isLoading ? (
           <>
             <Loader2 size={48} className="animate-spin text-blue-500 mb-4" />
-            <p className="text-sm font-medium text-zinc-400 animate-pulse">Loading PDF...</p>
+            <p className="text-sm font-medium text-app-muted animate-pulse">Loading PDF...</p>
           </>
         ) : (
           <>
-            <div className={`p-4 rounded-full mb-4 transition-colors duration-300 ${isDragging ? 'bg-blue-500/20 text-blue-400' : 'bg-zinc-800 text-zinc-400'}`}>
+            <div className={`p-4 rounded-full mb-4 transition-colors duration-300 ${isDragging ? 'bg-blue-500/20 text-blue-400' : 'bg-panel-elevated text-app-muted'}`}>
               <FileUp size={40} />
             </div>
-            <p className="text-base font-medium text-zinc-300 mb-1">
+            <p className="text-base font-medium text-app mb-1">
               Drop a PDF here or click to browse
             </p>
-            <p className="text-xs text-zinc-500 font-medium">
+            <p className="text-xs text-app-faint font-medium">
               Supports any standard PDF file
             </p>
           </>

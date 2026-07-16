@@ -202,7 +202,7 @@ export function ThumbnailsSidebar({
 
   return (
     <Tooltip.Provider delayDuration={250} skipDelayDuration={100}>
-      <div className={`transition-all duration-300 bg-zinc-900/95 backdrop-blur-md border-l border-zinc-800/80 flex flex-col shrink-0 z-40 overflow-y-auto p-3 gap-3 shadow-[0_0_40px_rgba(0,0,0,0.5)] ${isExpanded ? 'absolute right-0 top-0 bottom-0 w-[80vw]' : 'relative w-56'}`}>
+      <div className={`transition-all duration-300 bg-panel/95 backdrop-blur-md border-l border-app flex flex-col shrink-0 z-40 overflow-y-auto p-3 gap-3 shadow-[0_0_40px_rgba(0,0,0,0.12)] ${isExpanded ? 'absolute right-0 top-0 bottom-0 w-[80vw]' : 'relative w-56'}`}>
         <input
           type="file"
           accept="application/pdf"
@@ -219,7 +219,7 @@ export function ThumbnailsSidebar({
         />
 
         <div className={`flex-1 overflow-y-auto p-3 flex ${isExpanded ? 'flex-row flex-wrap gap-x-2 gap-y-6 items-stretch content-start' : 'flex-col gap-3'}`}>
-          <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-zinc-400 uppercase px-1 pt-1 pb-1 sticky top-0 bg-zinc-900/95 backdrop-blur-sm z-30 w-full">
+          <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-app-muted uppercase px-1 pt-1 pb-1 sticky top-0 bg-panel/95 backdrop-blur-sm z-30 w-full">
             <Layers size={12} />
             Pages
             <Tooltip.Root delayDuration={250}>

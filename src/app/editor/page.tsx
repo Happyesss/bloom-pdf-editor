@@ -2,21 +2,27 @@
 
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { loadPdfFromStorage, clearPdfFromStorage } from '@/lib/pdfStorage';
+import {
+  loadPdfFromStorage,
+  clearPdfFromStorage,
+  loadEditorSession,
+  saveEditorSession,
+  clearEditorSession,
+} from '@/lib/pdfStorage';
 import { X, Loader2, ChevronLeft, Image, Type } from 'lucide-react';
 
 // We import types only — the engine modules are loaded dynamically
 // because they require browser APIs (canvas, DecompressionStream)
 import type { PDFDocumentData, RenderResult, TextRun, TextLine, ImageItem, PathItem, DisplayItem, TextWatermark, ImageWatermark, Watermark, DetectedWatermark, AcroFormWidget, BloomPage, DetectedTable, VisualSignature, SignatureLibraryEntry, SignatureField, ManagedIdentity, ValidationReport, LtvStatus, ManagedSignature, RevisionViewEntry } from '@/engine';
 
-import type { EditorTool, ToolDef, PathType, DrawnPath, FloatingText, FloatingImage } from './types';
+import type { EditorTool, ToolDef, PathType, DrawnPath, FloatingText, FloatingImage, DrawMode } from './types';
 import { TOOLS } from './types';
 import {
   canvasToPdf, pdfToCanvas, hexToRGB,
   hitTestTextLine, findNearestTextLine, caretIndexFromLineX,
   getLineBounds, getOverlayFontFamily, getDisplayFontFamily,
 } from './utils';
-import { buildDisplayListIndex, hitTestDisplayList, isSelectableDisplayItem, TransactionStack, deleteObject, visualFontSize, resolveRunStyleFlags, transformObject, applyObjectTransform, distributeTextChangeToSegments, segmentAtIndex, createVisualSignature, hitTestSignature, moveSignature, resizeSignature, rotateSignature, setSignatureOpacity, setSignatureLocked, deleteSignature, updateSignature, SignatureHistory, getSignatureLibrary, DEFAULT_SIGNATURE_SIZE, detectSignatureFieldsOnPage, hitTestSignatureField, createSignatureFieldAtPoint, applySignatureFieldAppearanceAsync, getCertificateManager, signDocumentCryptographic, validateDocumentSignatures, enableLongTermValidation, getLtvStatus, listManagedSignatures, buildRevisionViewer, lockSignaturesAfterSigning, pushRecentSignatureId, orderLibraryByRecent, SIGNATURE_SHORTCUTS } from '@/engine';
+import { buildDisplayListIndex, hitTestDisplayList, isSelectableDisplayItem, EditorHistory, captureHistoryEntry, restoreAnnotSnapshot, parseOverlaySnapshot, deleteObject, visualFontSize, resolveRunStyleFlags, transformObject, applyObjectTransform, distributeTextChangeToSegments, segmentAtIndex, createVisualSignature, hitTestSignature, moveSignature, resizeSignature, rotateSignature, setSignatureOpacity, setSignatureLocked, deleteSignature, updateSignature, getSignatureLibrary, DEFAULT_SIGNATURE_SIZE, detectSignatureFieldsOnPage, hitTestSignatureField, createSignatureFieldAtPoint, applySignatureFieldAppearanceAsync, getCertificateManager, signDocumentCryptographic, validateDocumentSignatures, enableLongTermValidation, getLtvStatus, listManagedSignatures, buildRevisionViewer, lockSignaturesAfterSigning, pushRecentSignatureId, orderLibraryByRecent, SIGNATURE_SHORTCUTS } from '@/engine';
 import type { QuadTree, SelectableItem, EditableObject } from '@/engine';
 import { findMatchingFlowLine } from './flowLineMatch';
 
@@ -161,13 +167,18 @@ export default function EditorPage() {
   // Drawing state
   const [isDrawing, setIsDrawing] = useState(false);
   const [drawnPaths, setDrawnPaths] = useState<DrawnPath[]>([]);
+  const [drawMode, setDrawMode] = useState<DrawMode>('freehand');
   const currentDrawPath = useRef<{ x: number; y: number }[]>([]);
+  const shapeStartRef = useRef<{ x: number; y: number } | null>(null);
+  const shapeEndRef = useRef<{ x: number; y: number } | null>(null);
   /** True after a freehand highlight/draw stroke so click doesn't also add a PDF annotation. */
   const skipNextHighlightClickRef = useRef(false);
   /** True once the pointer moved enough during highlight/draw to count as a drag. */
   const drawDraggedRef = useRef(false);
   /** Last eraser sample point — used to interpolate when the pointer jumps. */
   const lastErasePosRef = useRef<{ x: number; y: number } | null>(null);
+  /** True if the current erase gesture removed anything (for one undo step). */
+  const eraseChangedRef = useRef(false);
   const [pageLinks, setPageLinks] = useState<import('@/engine').PageLinkInfo[]>([]);
   const [selectedLink, setSelectedLink] = useState<import('@/engine').PageLinkInfo | null>(null);
   const [linkDraftUrl, setLinkDraftUrl] = useState('');
@@ -250,17 +261,25 @@ export default function EditorPage() {
   const [detectedTables, setDetectedTables] = useState<DetectedTable[]>([]);
   const [activeTableId, setActiveTableId] = useState<string | null>(null);
 
-  // Undo/redo via TransactionStack (+ visual signature history)
-  const txStackRef = useRef(new TransactionStack());
-  const signatureHistoryRef = useRef(new SignatureHistory());
+  // Unified undo/redo (content + annotations + overlays)
+  const historyRef = useRef(new EditorHistory());
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
   const undoSnapshotRef = useRef<{ pageIndex: number; contentBytes: Uint8Array } | null>(null);
 
+  const drawnPathsRef = useRef<DrawnPath[]>([]);
+  drawnPathsRef.current = drawnPaths;
+  const floatingTextsRef = useRef<FloatingText[]>([]);
+  floatingTextsRef.current = floatingTexts;
+  const floatingImagesRef = useRef<FloatingImage[]>([]);
+  floatingImagesRef.current = floatingImages;
+  const signaturesRef = useRef<VisualSignature[]>([]);
+
   const syncTxState = useCallback(() => {
-    setCanUndo(txStackRef.current.canUndo() || signatureHistoryRef.current.canUndo());
-    setCanRedo(txStackRef.current.canRedo() || signatureHistoryRef.current.canRedo());
+    setCanUndo(historyRef.current.canUndo());
+    setCanRedo(historyRef.current.canRedo());
   }, []);
+
   const [textFontFamily, setTextFontFamily] = useState('Helvetica');
   const [textFontSize, setTextFontSize] = useState(12);
   const [textColor, setTextColor] = useState('#000000');
@@ -294,23 +313,14 @@ export default function EditorPage() {
   const [ltvStatus, setLtvStatus] = useState<LtvStatus | null>(null);
   const [managedSignatures, setManagedSignatures] = useState<ManagedSignature[]>([]);
   const [revisionEntries, setRevisionEntries] = useState<RevisionViewEntry[]>([]);
-  const signaturesRef = useRef<VisualSignature[]>([]);
   signaturesRef.current = signatures;
 
   const refreshSignatureLibrary = useCallback(() => {
     setSignatureLibraryEntries(orderLibraryByRecent(getSignatureLibrary().list()));
   }, []);
 
-  const pushSignatureSnapshot = useCallback((next: VisualSignature[], label: string) => {
-    setSignatures(next);
-    signatureHistoryRef.current.push(next, label);
-    syncTxState();
-    setIsDirty(true);
-  }, [syncTxState]);
-
   useEffect(() => {
     refreshSignatureLibrary();
-    signatureHistoryRef.current.seed([], 'init');
   }, [refreshSignatureLibrary]);
 
   // ── Refs (declared early for hooks that need them) ──
@@ -323,6 +333,63 @@ export default function EditorPage() {
   const [engineModule, setEngineModule] = useState<typeof import('@/engine') | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pdfCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  const pushEditorHistory = useCallback((
+    label: string,
+    overlayOverride?: {
+      drawnPaths?: DrawnPath[];
+      floatingTexts?: FloatingText[];
+      floatingImages?: FloatingImage[];
+      signatures?: VisualSignature[];
+    },
+    pageIndexOverride?: number,
+  ) => {
+    if (!doc || !engineRef.current) return;
+    const pageIndex = pageIndexOverride ?? currentPage;
+    const page = doc.pages[pageIndex];
+    if (!page) return;
+    const bytes = engineRef.current.getPageContentBytes(page, doc.objects);
+    const entry = captureHistoryEntry(
+      doc,
+      pageIndex,
+      bytes,
+      {
+        drawnPaths: overlayOverride?.drawnPaths ?? drawnPathsRef.current,
+        floatingTexts: overlayOverride?.floatingTexts ?? floatingTextsRef.current,
+        floatingImages: overlayOverride?.floatingImages ?? floatingImagesRef.current,
+        signatures: overlayOverride?.signatures ?? signaturesRef.current,
+      },
+      label,
+    );
+    historyRef.current.push(entry);
+    syncTxState();
+  }, [doc, currentPage, syncTxState]);
+
+  const pushSignatureSnapshot = useCallback((next: VisualSignature[], label: string) => {
+    setSignatures(next);
+    signaturesRef.current = next;
+    pushEditorHistory(label, { signatures: next });
+    setIsDirty(true);
+  }, [pushEditorHistory]);
+
+  const applyHistoryEntry = useCallback(async (entry: import('@/engine').EditorHistoryEntry) => {
+    if (!doc || !engineRef.current) return;
+    const engine = engineRef.current;
+    const page = doc.pages[entry.pageIndex];
+    if (!page) return;
+    await engine.updatePageContent(page.contentRefs, entry.contentBytes, doc.objects);
+    restoreAnnotSnapshot(page.dict, doc.objects, entry.annotSnapshot);
+    setDrawnPaths(parseOverlaySnapshot<DrawnPath[]>(entry.overlays.drawnPathsJson));
+    setFloatingTexts(parseOverlaySnapshot<FloatingText[]>(entry.overlays.floatingTextsJson));
+    setFloatingImages(parseOverlaySnapshot<FloatingImage[]>(entry.overlays.floatingImagesJson));
+    const sigs = parseOverlaySnapshot<VisualSignature[]>(entry.overlays.signaturesJson);
+    setSignatures(sigs);
+    signaturesRef.current = sigs;
+    setSelectedSignatureId(null);
+    if (entry.pageIndex !== currentPage) setCurrentPage(entry.pageIndex);
+    syncTxState();
+    setRenderKey((k) => k + 1);
+  }, [doc, currentPage, syncTxState]);
 
   const bumpRender = useCallback(() => {
     setIsDirty(true);
@@ -516,6 +583,35 @@ export default function EditorPage() {
     return () => window.removeEventListener('beforeunload', handler);
   }, [isDirty]);
 
+  // Debounced IndexedDB session autosave (PDF bytes + overlay JSON)
+  useEffect(() => {
+    if (!isDirty || !doc || !engineRef.current || isLoading) return;
+    const engine = engineRef.current;
+    const timer = setTimeout(() => {
+      void (async () => {
+        try {
+          const bytes = await engine.saveDocument(doc, 'quick');
+          const copy = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+          await saveEditorSession({
+            bytes: copy,
+            fileName,
+            updatedAt: Date.now(),
+            overlays: {
+              drawnPathsJson: JSON.stringify(drawnPathsRef.current),
+              floatingTextsJson: JSON.stringify(floatingTextsRef.current),
+              floatingImagesJson: JSON.stringify(floatingImagesRef.current),
+              signaturesJson: JSON.stringify(signaturesRef.current),
+              currentPage,
+            },
+          });
+        } catch (e) {
+          console.warn('[Editor] Session autosave failed:', e);
+        }
+      })();
+    }, 2500);
+    return () => clearTimeout(timer);
+  }, [isDirty, doc, fileName, currentPage, isLoading, drawnPaths, floatingTexts, floatingImages, signatures, renderKey]);
+
   // Caret blinking
   const caretVisibleRef = useRef(true);
   const caretTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -524,20 +620,49 @@ export default function EditorPage() {
   useEffect(() => {
     let cancelled = false;
 
-    async function finishLoad(parsed: PDFDocumentData, engine: NonNullable<typeof engineRef.current>) {
+    async function finishLoad(
+      parsed: PDFDocumentData,
+      engine: NonNullable<typeof engineRef.current>,
+      opts?: {
+        pageIndex?: number;
+        overlays?: {
+          drawnPaths: DrawnPath[];
+          floatingTexts: FloatingText[];
+          floatingImages: FloatingImage[];
+          signatures: VisualSignature[];
+        };
+        dirty?: boolean;
+      },
+    ) {
+      const pageIndex = Math.max(0, Math.min(opts?.pageIndex ?? 0, parsed.pages.length - 1));
+      const overlays = opts?.overlays ?? {
+        drawnPaths: [],
+        floatingTexts: [],
+        floatingImages: [],
+        signatures: [],
+      };
       setDoc(parsed);
       setTotalPages(parsed.pages.length);
-      setCurrentPage(0);
-      txStackRef.current.clear();
-      const page0 = parsed.pages[0];
-      const initialBytes = engine.getPageContentBytes(page0, parsed.objects);
-      txStackRef.current.push({
-        pageIndex: 0,
-        contentBytes: new Uint8Array(initialBytes),
-        label: 'initial',
-        timestamp: Date.now(),
-      });
+      setCurrentPage(pageIndex);
+      setDrawnPaths(overlays.drawnPaths);
+      drawnPathsRef.current = overlays.drawnPaths;
+      setFloatingTexts(overlays.floatingTexts);
+      floatingTextsRef.current = overlays.floatingTexts;
+      setFloatingImages(overlays.floatingImages);
+      floatingImagesRef.current = overlays.floatingImages;
+      setSignatures(overlays.signatures);
+      signaturesRef.current = overlays.signatures;
+      const page = parsed.pages[pageIndex];
+      const initialBytes = engine.getPageContentBytes(page, parsed.objects);
+      historyRef.current.seed(captureHistoryEntry(
+        parsed,
+        pageIndex,
+        initialBytes,
+        overlays,
+        'initial',
+      ));
       syncTxState();
+      setIsDirty(!!opts?.dirty);
       setNeedsPassword(false);
       setPasswordError(null);
       pendingEncryptedDocRef.current = null;
@@ -549,12 +674,37 @@ export default function EditorPage() {
         const stored = await loadPdfFromStorage();
         if (!stored) { router.push('/'); return; }
         if (cancelled) return;
-        setFileName(stored.fileName);
 
         const engine = await import('@/engine');
         engineRef.current = engine;
         setEngineModule(engine);
 
+        // Prefer dirty session recovery when available
+        const session = await loadEditorSession();
+        if (session && session.bytes?.byteLength) {
+          try {
+            setFileName(session.fileName || stored.fileName);
+            const parsed = await engine.parsePDF(new Uint8Array(session.bytes));
+            if (cancelled) return;
+            if (!engine.securityEngine.isEncrypted(parsed)) {
+              await finishLoad(parsed, engine, {
+                pageIndex: session.overlays?.currentPage ?? 0,
+                overlays: {
+                  drawnPaths: parseOverlaySnapshot(session.overlays?.drawnPathsJson || '[]'),
+                  floatingTexts: parseOverlaySnapshot(session.overlays?.floatingTextsJson || '[]'),
+                  floatingImages: parseOverlaySnapshot(session.overlays?.floatingImagesJson || '[]'),
+                  signatures: parseOverlaySnapshot(session.overlays?.signaturesJson || '[]'),
+                },
+                dirty: true,
+              });
+              return;
+            }
+          } catch (sessErr) {
+            console.warn('[Editor] Session restore failed, falling back to upload:', sessErr);
+          }
+        }
+
+        setFileName(stored.fileName);
         const pdfBytes = new Uint8Array(stored.bytes);
         const parsed = await engine.parsePDF(pdfBytes);
         if (cancelled) return;
@@ -599,15 +749,15 @@ export default function EditorPage() {
       setDoc(opened.doc);
       setTotalPages(opened.doc.pages.length);
       setCurrentPage(0);
-      txStackRef.current.clear();
       const page0 = opened.doc.pages[0];
       const initialBytes = engine.getPageContentBytes(page0, opened.doc.objects);
-      txStackRef.current.push({
-        pageIndex: 0,
-        contentBytes: new Uint8Array(initialBytes),
-        label: 'initial',
-        timestamp: Date.now(),
-      });
+      historyRef.current.seed(captureHistoryEntry(
+        opened.doc,
+        0,
+        initialBytes,
+        { drawnPaths: [], floatingTexts: [], floatingImages: [], signatures: [] },
+        'initial',
+      ));
       syncTxState();
       setNeedsPassword(false);
       pendingEncryptedDocRef.current = null;
@@ -1049,12 +1199,54 @@ export default function EditorPage() {
       ctx.restore();
     }
 
-    // ── Freehand drawing paths ──
+    // ── Drawing paths / shapes ──
     if (drawnPaths.length > 0) {
       ctx.save();
       ctx.scale(dpr, dpr);
       ctx.lineJoin = 'round';
       for (const path of drawnPaths) {
+        const kind = path.kind ?? 'freehand';
+        if (kind !== 'freehand' && path.start && path.end) {
+          ctx.globalCompositeOperation = 'source-over';
+          ctx.globalAlpha = 1;
+          ctx.strokeStyle = path.color;
+          ctx.lineWidth = path.size;
+          ctx.lineCap = 'round';
+          const { start, end } = path;
+          if (kind === 'line' || kind === 'arrow') {
+            ctx.beginPath();
+            ctx.moveTo(start.x, start.y);
+            ctx.lineTo(end.x, end.y);
+            ctx.stroke();
+            if (kind === 'arrow') {
+              const angle = Math.atan2(end.y - start.y, end.x - start.x);
+              const head = Math.max(path.size * 4, 10);
+              ctx.beginPath();
+              ctx.moveTo(end.x, end.y);
+              ctx.lineTo(end.x - head * Math.cos(angle - 0.4), end.y - head * Math.sin(angle - 0.4));
+              ctx.moveTo(end.x, end.y);
+              ctx.lineTo(end.x - head * Math.cos(angle + 0.4), end.y - head * Math.sin(angle + 0.4));
+              ctx.stroke();
+            }
+          } else if (kind === 'rectangle') {
+            ctx.strokeRect(
+              Math.min(start.x, end.x),
+              Math.min(start.y, end.y),
+              Math.abs(end.x - start.x),
+              Math.abs(end.y - start.y),
+            );
+          } else if (kind === 'ellipse') {
+            const cx = (start.x + end.x) / 2;
+            const cy = (start.y + end.y) / 2;
+            const rx = Math.abs(end.x - start.x) / 2;
+            const ry = Math.abs(end.y - start.y) / 2;
+            ctx.beginPath();
+            ctx.ellipse(cx, cy, Math.max(rx, 0.5), Math.max(ry, 0.5), 0, 0, Math.PI * 2);
+            ctx.stroke();
+          }
+          continue;
+        }
+
         if (path.points.length < 2) continue;
 
         ctx.beginPath();
@@ -1324,15 +1516,7 @@ export default function EditorPage() {
         }
       }
 
-      txStackRef.current.push({
-        pageIndex: currentPage,
-        contentBytes: new Uint8Array(
-          engine.getPageContentBytes(page, doc.objects),
-        ),
-        label: 'text-edit',
-        timestamp: Date.now(),
-      });
-      syncTxState();
+      pushEditorHistory('text-edit');
       editAnchorLineRef.current = null;
       undoSnapshotRef.current = null;
       editingBlockIdRef.current = null;
@@ -1353,7 +1537,7 @@ export default function EditorPage() {
     } finally {
       setIsSaving(false);
     }
-  }, [editingLine, editText, editOffsetCss, scale, doc, currentPage, setEditingLine, renderResult, syncTxState, applyStyle]);
+  }, [editingLine, editText, editOffsetCss, scale, doc, currentPage, setEditingLine, renderResult, pushEditorHistory, applyStyle]);
 
   // ── Edit cancel — discard overlay only; PDF untouched until commit ──
   const handleEditCancel = useCallback(async () => {
@@ -1377,80 +1561,26 @@ export default function EditorPage() {
 
   // ── Undo ──
   const handleUndo = useCallback(async () => {
-    const sigPeek = signatureHistoryRef.current.peek();
-    const pdfPeek = txStackRef.current.peek();
-    const preferSig =
-      signatureHistoryRef.current.canUndo() &&
-      (!pdfPeek || !txStackRef.current.canUndo() ||
-        (sigPeek != null && pdfPeek != null && sigPeek.timestamp >= pdfPeek.timestamp));
-
-    if (preferSig) {
-      const next = signatureHistoryRef.current.undo();
-      if (next) {
-        setSignatures(next);
-        setSelectedSignatureId(null);
-        syncTxState();
-        return;
-      }
-    }
-
     if (!doc || !engineRef.current) return;
-    const entry = txStackRef.current.undo();
+    const entry = historyRef.current.undo();
     if (!entry) return;
     try {
-      const engine = engineRef.current;
-      const page = doc.pages[entry.pageIndex];
-      await engine.updatePageContent(page.contentRefs, entry.contentBytes, doc.objects);
-      undoSnapshotRef.current = null;
-      setEditingLine(null);
-      setSelectedLine(null);
-      setEditText('');
-      setCaretPos(0);
-      if (entry.pageIndex !== currentPage) setCurrentPage(entry.pageIndex);
-      syncTxState();
-      setRenderKey(k => k + 1);
+      await applyHistoryEntry(entry);
     } catch (e) {
       console.error('[Editor] Undo failed:', e);
     }
-  }, [doc, currentPage, setEditingLine, syncTxState]);
+  }, [doc, applyHistoryEntry]);
 
   const handleRedo = useCallback(async () => {
-    if (signatureHistoryRef.current.canRedo() && (activeTool === 'sign' || selectedSignatureId || !txStackRef.current.canRedo())) {
-      const next = signatureHistoryRef.current.redo();
-      if (next) {
-        setSignatures(next);
-        syncTxState();
-        return;
-      }
-    }
-
     if (!doc || !engineRef.current) return;
-    const entry = txStackRef.current.redo();
-    if (!entry) {
-      // Fallback: signature redo
-      const next = signatureHistoryRef.current.redo();
-      if (next) {
-        setSignatures(next);
-        syncTxState();
-      }
-      return;
-    }
+    const entry = historyRef.current.redo();
+    if (!entry) return;
     try {
-      const engine = engineRef.current;
-      const page = doc.pages[entry.pageIndex];
-      await engine.updatePageContent(page.contentRefs, entry.contentBytes, doc.objects);
-      undoSnapshotRef.current = null;
-      setEditingLine(null);
-      setSelectedLine(null);
-      setEditText('');
-      setCaretPos(0);
-      if (entry.pageIndex !== currentPage) setCurrentPage(entry.pageIndex);
-      syncTxState();
-      setRenderKey(k => k + 1);
+      await applyHistoryEntry(entry);
     } catch (e) {
       console.error('[Editor] Redo failed:', e);
     }
-  }, [doc, currentPage, setEditingLine, syncTxState, activeTool, selectedSignatureId]);
+  }, [doc, applyHistoryEntry]);
 
   const handleFormFieldSelect = useCallback((field: AcroFormWidget) => {
     setSelectedFormField(field);
@@ -1701,16 +1831,8 @@ export default function EditorPage() {
     try {
       setIsSaving(true);
       const engine = engineRef.current;
-      const page = doc.pages[currentPage];
       await engine.flattenFormFieldsOnPage(doc, currentPage, formFields);
-      const afterBytes = engine.getPageContentBytes(page, doc.objects);
-      txStackRef.current.push({
-        pageIndex: currentPage,
-        contentBytes: new Uint8Array(afterBytes),
-        label: 'flatten-forms',
-        timestamp: Date.now(),
-      });
-      syncTxState();
+      pushEditorHistory('flatten-forms');
       setFormFields([]);
       setSelectedFormField(null);
       setFormFieldDraft('');
@@ -1721,7 +1843,7 @@ export default function EditorPage() {
     } finally {
       setIsSaving(false);
     }
-  }, [doc, currentPage, formFields, syncTxState]);
+  }, [doc, currentPage, formFields, pushEditorHistory]);
 
   const handleDuplicateLineBelow = useCallback(async () => {
     const line = editAnchorLineRef.current ?? selectedLine ?? editingLine;
@@ -1734,13 +1856,7 @@ export default function EditorPage() {
       const bytes = engine.getPageContentBytes(page, doc.objects);
       const next = engine.duplicateLineBelow(bytes, line);
       await engine.updatePageContent(page.contentRefs, next, doc.objects);
-      txStackRef.current.push({
-        pageIndex: currentPage,
-        contentBytes: new Uint8Array(engine.getPageContentBytes(page, doc.objects)),
-        label: 'duplicate-line',
-        timestamp: Date.now(),
-      });
-      syncTxState();
+      pushEditorHistory('duplicate-line');
       setIsDirty(true);
       setRenderKey(k => k + 1);
     } catch (e) {
@@ -1749,7 +1865,7 @@ export default function EditorPage() {
     } finally {
       setIsSaving(false);
     }
-  }, [doc, currentPage, selectedLine, editingLine, handleEditSubmit, syncTxState]);
+  }, [doc, currentPage, selectedLine, editingLine, handleEditSubmit, pushEditorHistory]);
 
   // Resolve table cell for the current selection (for sidebar actions)
   const selectedTableCell = (() => {
@@ -1779,13 +1895,7 @@ export default function EditorPage() {
       const bytes = engineRef.current.getPageContentBytes(page, doc.objects);
       const next = engineRef.current.duplicateTableRowBelow(bytes, rowLines);
       await engineRef.current.updatePageContent(page.contentRefs, next, doc.objects);
-      txStackRef.current.push({
-        pageIndex: currentPage,
-        contentBytes: new Uint8Array(engineRef.current.getPageContentBytes(page, doc.objects)),
-        label: 'table-add-row',
-        timestamp: Date.now(),
-      });
-      syncTxState();
+      pushEditorHistory('table-add-row');
       setIsDirty(true);
       setRenderKey(k => k + 1);
     } catch (e) {
@@ -1794,7 +1904,7 @@ export default function EditorPage() {
     } finally {
       setIsSaving(false);
     }
-  }, [doc, currentPage, selectedTableCell, editingLine, handleEditSubmit, syncTxState]);
+  }, [doc, currentPage, selectedTableCell, editingLine, handleEditSubmit, pushEditorHistory]);
 
   const handleAddTableColumn = useCallback(async () => {
     if (!doc || !engineRef.current || !selectedTableCell) return;
@@ -1810,13 +1920,7 @@ export default function EditorPage() {
       const bytes = engineRef.current.getPageContentBytes(page, doc.objects);
       const next = engineRef.current.insertTableColumnRight(bytes, rows);
       await engineRef.current.updatePageContent(page.contentRefs, next, doc.objects);
-      txStackRef.current.push({
-        pageIndex: currentPage,
-        contentBytes: new Uint8Array(engineRef.current.getPageContentBytes(page, doc.objects)),
-        label: 'table-add-column',
-        timestamp: Date.now(),
-      });
-      syncTxState();
+      pushEditorHistory('table-add-column');
       setIsDirty(true);
       setRenderKey(k => k + 1);
     } catch (e) {
@@ -1825,17 +1929,24 @@ export default function EditorPage() {
     } finally {
       setIsSaving(false);
     }
-  }, [doc, currentPage, selectedTableCell, editingLine, handleEditSubmit, syncTxState]);
+  }, [doc, currentPage, selectedTableCell, editingLine, handleEditSubmit, pushEditorHistory]);
 
-  // ── Global keyboard shortcuts for undo/redo ──
+  // ── Global keyboard shortcuts for undo/redo (skip while editing text) ──
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const inTextEdit =
+        !!editingLineRef.current ||
+        target?.tagName === 'TEXTAREA' ||
+        target?.tagName === 'INPUT' ||
+        target?.isContentEditable;
+      if (inTextEdit) return; // native undo for typing; document undo when not editing
       if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
         e.preventDefault();
-        handleUndo();
+        void handleUndo();
       } else if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
         e.preventDefault();
-        handleRedo();
+        void handleRedo();
       }
     };
     document.addEventListener('keydown', handler);
@@ -2045,6 +2156,7 @@ export default function EditorPage() {
             [r, g, b],
             'Highlight',
           );
+          pushEditorHistory('highlight');
           setIsDirty(true);
           setRenderKey(k => k + 1);
         } catch (err) {
@@ -2118,7 +2230,7 @@ export default function EditorPage() {
       setSelectedSignatureId(sig.id);
       setActiveLibraryId(entry.id);
     }
-  }, [renderResult, doc, currentPage, scale, activeTool, editingLine, handleEditSubmit, beginEditSession, displayItems, textFontSize, textColor, textFontFamily, highlightColor, formFields, handleFormFieldSelect, linksHighlighted, linkPopoverMode, resolveLinkDisplay, activeLibraryId, pushSignatureSnapshot, pdfSignatureFields, createFieldMode, placeLibrarySignatureIntoField]);
+  }, [renderResult, doc, currentPage, scale, activeTool, editingLine, handleEditSubmit, beginEditSession, displayItems, textFontSize, textColor, textFontFamily, highlightColor, formFields, handleFormFieldSelect, linksHighlighted, linkPopoverMode, resolveLinkDisplay, activeLibraryId, pushSignatureSnapshot, pdfSignatureFields, createFieldMode, placeLibrarySignatureIntoField, pushEditorHistory]);
 
   // Double-click in select mode → enter text edit
   const handleCanvasDoubleClick = useCallback((e: React.MouseEvent) => {
@@ -2163,11 +2275,40 @@ export default function EditorPage() {
   const applyEraser = useCallback((x: number, y: number, opts?: { deferAnnotRender?: boolean }) => {
     const eraserRadius = eraserSize / 2;
 
-    // 1) Erase ephemeral overlay strokes
+    // 1) Erase ephemeral overlay strokes / shapes
     setDrawnPaths(prev => {
       let newPaths: DrawnPath[] = [];
       let modified = false;
       for (const path of prev) {
+        const kind = path.kind ?? 'freehand';
+        if (kind !== 'freehand' && path.start && path.end) {
+          // Hit-test shapes by proximity to geometry
+          let hit = false;
+          if (kind === 'line' || kind === 'arrow') {
+            const { start, end } = path;
+            const dx = end.x - start.x;
+            const dy = end.y - start.y;
+            const len2 = dx * dx + dy * dy;
+            let t = len2 < 1e-8 ? 0 : ((x - start.x) * dx + (y - start.y) * dy) / len2;
+            t = Math.max(0, Math.min(1, t));
+            const dist = Math.hypot(x - (start.x + t * dx), y - (start.y + t * dy));
+            hit = dist <= eraserRadius;
+          } else {
+            const minX = Math.min(path.start.x, path.end.x) - eraserRadius;
+            const maxX = Math.max(path.start.x, path.end.x) + eraserRadius;
+            const minY = Math.min(path.start.y, path.end.y) - eraserRadius;
+            const maxY = Math.max(path.start.y, path.end.y) + eraserRadius;
+            hit = x >= minX && x <= maxX && y >= minY && y <= maxY;
+          }
+          if (hit) {
+            modified = true;
+            eraseChangedRef.current = true;
+          } else {
+            newPaths.push(path);
+          }
+          continue;
+        }
+
         let currentSubPath: { x: number, y: number }[] = [];
         for (const p of path.points) {
           const dx = p.x - x;
@@ -2179,6 +2320,7 @@ export default function EditorPage() {
               newPaths.push({ ...path, id: Math.random().toString(36).substr(2, 9), points: currentSubPath });
               currentSubPath = [];
               modified = true;
+              eraseChangedRef.current = true;
             }
           }
         }
@@ -2188,9 +2330,11 @@ export default function EditorPage() {
           } else {
             newPaths.push({ ...path, id: Math.random().toString(36).substr(2, 9), points: currentSubPath });
             modified = true;
+            eraseChangedRef.current = true;
           }
         }
       }
+      if (modified) drawnPathsRef.current = newPaths;
       return modified ? newPaths : prev;
     });
 
@@ -2211,9 +2355,12 @@ export default function EditorPage() {
         pdfY,
         Math.max(pdfRadius, 4),
       );
-      if (removed > 0 && !opts?.deferAnnotRender) {
-        setIsDirty(true);
-        setRenderKey(k => k + 1);
+      if (removed > 0) {
+        eraseChangedRef.current = true;
+        if (!opts?.deferAnnotRender) {
+          setIsDirty(true);
+          setRenderKey(k => k + 1);
+        }
       }
       return removed;
     }
@@ -2252,38 +2399,92 @@ export default function EditorPage() {
 
     const pageHeight = renderResult?.pageHeight || page.mediaBox.height;
 
+    const toPdf = (cx: number, cy: number) => canvasToPdf(
+      cx, cy, scale,
+      renderResult?.pageWidth || page.mediaBox.width,
+      pageHeight,
+      page.mediaBox.x, page.mediaBox.y,
+    );
+
     for (const p of paths) {
-      if (p.points.length < 2) continue;
-
-      const inkPathsPdf: number[][] = [[]];
-      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-
-      for (const pt of p.points) {
-        const { pdfX, pdfY } = canvasToPdf(
-          pt.x, pt.y, scale,
-          renderResult?.pageWidth || page.mediaBox.width,
-          pageHeight,
-          page.mediaBox.x, page.mediaBox.y
-        );
-        inkPathsPdf[0].push(pdfX, pdfY);
-        minX = Math.min(minX, pdfX);
-        minY = Math.min(minY, pdfY);
-        maxX = Math.max(maxX, pdfX);
-        maxY = Math.max(maxY, pdfY);
-      }
-
+      const kind = p.kind ?? 'freehand';
       const lw = p.size / scale;
-      const rect = { x: minX - lw, y: minY - lw, width: (maxX - minX) + lw * 2, height: (maxY - minY) + lw * 2 };
       const rgb = hexToRGB(p.color);
 
-      const annotation: import('@/engine').InkAnnotation = {
-        type: 'Ink',
-        rect,
-        color: rgb,
-        opacity: p.type === 'highlight' ? 0.4 : 1.0,
-        inkPaths: inkPathsPdf,
-        lineWidth: lw,
-      };
+      let annotation: import('@/engine').Annotation | null = null;
+
+      if (kind !== 'freehand' && p.start && p.end) {
+        const a = toPdf(p.start.x, p.start.y);
+        const b = toPdf(p.end.x, p.end.y);
+        if (kind === 'line' || kind === 'arrow') {
+          const minX = Math.min(a.pdfX, b.pdfX);
+          const minY = Math.min(a.pdfY, b.pdfY);
+          const maxX = Math.max(a.pdfX, b.pdfX);
+          const maxY = Math.max(a.pdfY, b.pdfY);
+          const pad = Math.max(lw * 4, 8);
+          annotation = {
+            type: 'Line',
+            rect: { x: minX - pad, y: minY - pad, width: (maxX - minX) + pad * 2, height: (maxY - minY) + pad * 2 },
+            color: rgb,
+            opacity: 1,
+            x1: a.pdfX,
+            y1: a.pdfY,
+            x2: b.pdfX,
+            y2: b.pdfY,
+            lineWidth: lw,
+            startStyle: 'None',
+            endStyle: kind === 'arrow' ? 'OpenArrow' : 'None',
+          };
+        } else if (kind === 'rectangle') {
+          const minX = Math.min(a.pdfX, b.pdfX);
+          const minY = Math.min(a.pdfY, b.pdfY);
+          const maxX = Math.max(a.pdfX, b.pdfX);
+          const maxY = Math.max(a.pdfY, b.pdfY);
+          annotation = {
+            type: 'Square',
+            rect: { x: minX, y: minY, width: Math.max(maxX - minX, lw), height: Math.max(maxY - minY, lw) },
+            color: rgb,
+            opacity: 1,
+            lineWidth: lw,
+            fillColor: null,
+          };
+        } else if (kind === 'ellipse') {
+          const minX = Math.min(a.pdfX, b.pdfX);
+          const minY = Math.min(a.pdfY, b.pdfY);
+          const maxX = Math.max(a.pdfX, b.pdfX);
+          const maxY = Math.max(a.pdfY, b.pdfY);
+          annotation = {
+            type: 'Circle',
+            rect: { x: minX, y: minY, width: Math.max(maxX - minX, lw), height: Math.max(maxY - minY, lw) },
+            color: rgb,
+            opacity: 1,
+            lineWidth: lw,
+            fillColor: null,
+          };
+        }
+      } else {
+        if (p.points.length < 2) continue;
+        const inkPathsPdf: number[][] = [[]];
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const pt of p.points) {
+          const { pdfX, pdfY } = toPdf(pt.x, pt.y);
+          inkPathsPdf[0].push(pdfX, pdfY);
+          minX = Math.min(minX, pdfX);
+          minY = Math.min(minY, pdfY);
+          maxX = Math.max(maxX, pdfX);
+          maxY = Math.max(maxY, pdfY);
+        }
+        annotation = {
+          type: 'Ink',
+          rect: { x: minX - lw, y: minY - lw, width: (maxX - minX) + lw * 2, height: (maxY - minY) + lw * 2 },
+          color: rgb,
+          opacity: p.type === 'highlight' ? 0.4 : 1.0,
+          inkPaths: inkPathsPdf,
+          lineWidth: lw,
+        };
+      }
+
+      if (!annotation) continue;
 
       const { dict, appearanceStream } = engine.createAnnotationDict(annotation, currentObjNum++);
       if (appearanceStream) {
@@ -2328,14 +2529,62 @@ export default function EditorPage() {
       });
     }
 
+    const clearedOverlays = { drawnPaths: [] as DrawnPath[], floatingTexts: [] as FloatingText[], floatingImages: [] as FloatingImage[] };
     setDrawnPaths([]);
     setFloatingTexts([]);
     setFloatingImages([]);
     setActiveFloatingTextId(null);
     setActiveFloatingImageId(null);
+    pushEditorHistory('commit-drawings', clearedOverlays);
     setIsDirty(true);
     setRenderKey(k => k + 1);
-  }, [doc, currentPage, drawnPaths, floatingTexts, floatingImages, scale, renderResult]);
+  }, [doc, currentPage, drawnPaths, floatingTexts, floatingImages, scale, renderResult, pushEditorHistory]);
+
+  const strokeShapePreview = useCallback((
+    ctx: CanvasRenderingContext2D,
+    kind: DrawMode,
+    start: { x: number; y: number },
+    end: { x: number; y: number },
+    color: string,
+    size: number,
+  ) => {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = size;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    if (kind === 'line' || kind === 'arrow') {
+      ctx.beginPath();
+      ctx.moveTo(start.x, start.y);
+      ctx.lineTo(end.x, end.y);
+      ctx.stroke();
+      if (kind === 'arrow') {
+        const angle = Math.atan2(end.y - start.y, end.x - start.x);
+        const head = Math.max(size * 4, 10);
+        ctx.beginPath();
+        ctx.moveTo(end.x, end.y);
+        ctx.lineTo(end.x - head * Math.cos(angle - 0.4), end.y - head * Math.sin(angle - 0.4));
+        ctx.moveTo(end.x, end.y);
+        ctx.lineTo(end.x - head * Math.cos(angle + 0.4), end.y - head * Math.sin(angle + 0.4));
+        ctx.stroke();
+      }
+    } else if (kind === 'rectangle') {
+      const x = Math.min(start.x, end.x);
+      const y = Math.min(start.y, end.y);
+      const w = Math.abs(end.x - start.x);
+      const h = Math.abs(end.y - start.y);
+      ctx.strokeRect(x, y, w, h);
+    } else if (kind === 'ellipse') {
+      const cx = (start.x + end.x) / 2;
+      const cy = (start.y + end.y) / 2;
+      const rx = Math.abs(end.x - start.x) / 2;
+      const ry = Math.abs(end.y - start.y) / 2;
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, Math.max(rx, 0.5), Math.max(ry, 0.5), 0, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }, []);
 
   const handleDrawStart = useCallback((e: React.MouseEvent) => {
     if (activeTool !== 'draw' && activeTool !== 'highlight' && activeTool !== 'erase') return;
@@ -2348,19 +2597,28 @@ export default function EditorPage() {
 
     setIsDrawing(true);
     drawDraggedRef.current = false;
+    eraseChangedRef.current = false;
 
     if (activeTool === 'erase') {
       lastErasePosRef.current = { x, y };
       const removed = applyEraserStroke(null, { x, y });
       if (removed > 0) {
+        eraseChangedRef.current = true;
         setIsDirty(true);
         setRenderKey(k => k + 1);
       }
+    } else if (activeTool === 'draw' && drawMode !== 'freehand') {
+      lastErasePosRef.current = null;
+      shapeStartRef.current = { x, y };
+      shapeEndRef.current = { x, y };
+      currentDrawPath.current = [];
     } else {
       lastErasePosRef.current = null;
+      shapeStartRef.current = null;
+      shapeEndRef.current = null;
       currentDrawPath.current = [{ x, y }];
     }
-  }, [activeTool, applyEraserStroke]);
+  }, [activeTool, applyEraserStroke, drawMode]);
 
   const handleDrawMove = useCallback((e: React.MouseEvent) => {
     if (!isDrawing) return;
@@ -2375,8 +2633,27 @@ export default function EditorPage() {
       const removed = applyEraserStroke(lastErasePosRef.current, { x, y });
       lastErasePosRef.current = { x, y };
       if (removed > 0) {
+        eraseChangedRef.current = true;
         setIsDirty(true);
         setRenderKey(k => k + 1);
+      }
+      return;
+    }
+
+    // Shape drag preview
+    if (activeTool === 'draw' && drawMode !== 'freehand' && shapeStartRef.current) {
+      if (Math.hypot(x - shapeStartRef.current.x, y - shapeStartRef.current.y) > 5) {
+        drawDraggedRef.current = true;
+      }
+      shapeEndRef.current = { x, y };
+      drawOverlay();
+      const ctx = overlay.getContext('2d');
+      if (ctx && drawDraggedRef.current) {
+        const dpr = window.devicePixelRatio || 1;
+        ctx.save();
+        ctx.scale(dpr, dpr);
+        strokeShapePreview(ctx, drawMode, shapeStartRef.current, { x, y }, drawColor, drawSize);
+        ctx.restore();
       }
       return;
     }
@@ -2423,14 +2700,49 @@ export default function EditorPage() {
         ctx.restore();
       }
     }
-  }, [isDrawing, activeTool, drawColor, drawSize, highlightColor, highlightSize, applyEraserStroke]);
+  }, [isDrawing, activeTool, drawMode, drawColor, drawSize, highlightColor, highlightSize, applyEraserStroke, strokeShapePreview, drawOverlay]);
 
   const handleDrawEnd = useCallback(() => {
     if (!isDrawing) return;
     setIsDrawing(false);
     lastErasePosRef.current = null;
 
-    if (activeTool === 'erase') return;
+    if (activeTool === 'erase') {
+      if (eraseChangedRef.current) {
+        // Also capture overlay path erasures via current drawnPaths state
+        pushEditorHistory('erase');
+        eraseChangedRef.current = false;
+      }
+      return;
+    }
+
+    // Shape placement
+    if (activeTool === 'draw' && drawMode !== 'freehand' && shapeStartRef.current && shapeEndRef.current) {
+      if (drawDraggedRef.current) {
+        const start = shapeStartRef.current;
+        const end = shapeEndRef.current;
+        const newPath: DrawnPath = {
+          id: Math.random().toString(36).substr(2, 9),
+          type: 'draw',
+          kind: drawMode,
+          color: drawColor,
+          size: drawSize,
+          points: [start, end],
+          start,
+          end,
+        };
+        setDrawnPaths((prev) => {
+          const next = [...prev, newPath];
+          drawnPathsRef.current = next;
+          pushEditorHistory('draw-shape', { drawnPaths: next });
+          return next;
+        });
+      }
+      shapeStartRef.current = null;
+      shapeEndRef.current = null;
+      drawDraggedRef.current = false;
+      return;
+    }
 
     if (drawDraggedRef.current && currentDrawPath.current.length > 1) {
       // Drag produced a freehand stroke — suppress the trailing click annotation
@@ -2440,16 +2752,22 @@ export default function EditorPage() {
       const newPath: DrawnPath = {
         id: Math.random().toString(36).substr(2, 9),
         type: activeTool as PathType,
+        kind: 'freehand',
         color: activeTool === 'draw' ? drawColor : highlightColor,
         size: activeTool === 'draw' ? drawSize : highlightSize,
-        points: [...currentDrawPath.current]
+        points: [...currentDrawPath.current],
       };
 
-      setDrawnPaths(prev => [...prev, newPath]);
+      setDrawnPaths((prev) => {
+        const next = [...prev, newPath];
+        drawnPathsRef.current = next;
+        pushEditorHistory(activeTool === 'highlight' ? 'highlight-stroke' : 'draw-stroke', { drawnPaths: next });
+        return next;
+      });
     }
     currentDrawPath.current = [];
     drawDraggedRef.current = false;
-  }, [isDrawing, activeTool, drawColor, drawSize, highlightColor, highlightSize]);
+  }, [isDrawing, activeTool, drawMode, drawColor, drawSize, highlightColor, highlightSize, pushEditorHistory]);
 
   const openLinkHover = useCallback((link: import('@/engine').PageLinkInfo) => {
     if (linkHoverTimerRef.current) {
@@ -2700,15 +3018,7 @@ export default function EditorPage() {
           replacingEmbeddedImageRef.current = null;
           try {
             await engineRef.current.replaceImageXObject(doc, currentPage, target, jpegDataUrl);
-            const page = doc.pages[currentPage];
-            const nextBytes = engineRef.current.getPageContentBytes(page, doc.objects);
-            txStackRef.current.push({
-              pageIndex: currentPage,
-              contentBytes: new Uint8Array(nextBytes),
-              label: 'replace-image',
-              timestamp: Date.now(),
-            });
-            syncTxState();
+            pushEditorHistory('replace-image');
             setIsDirty(true);
             setSelectedDisplayItem(null);
             setRenderKey(k => k + 1);
@@ -2756,7 +3066,7 @@ export default function EditorPage() {
     };
     reader.readAsDataURL(file);
     if (fileInputRef.current) fileInputRef.current.value = '';
-  }, [doc, currentPage, renderResult, syncTxState]);
+  }, [doc, currentPage, renderResult, pushEditorHistory]);
 
   const toEditableImage = useCallback((item: ImageItem): EditableObject => ({
     id: `sel-image-${item.name}`,
@@ -2774,19 +3084,11 @@ export default function EditorPage() {
     const editable = toEditableImage(item);
     const moved = transformObject(editable, { dx: pdfDx, dy: pdfDy });
     await applyObjectTransform(doc, currentPage, editable, moved.ctm);
-    const page = doc.pages[currentPage];
-    const nextBytes = engineRef.current.getPageContentBytes(page, doc.objects);
-    txStackRef.current.push({
-      pageIndex: currentPage,
-      contentBytes: new Uint8Array(nextBytes),
-      label: 'move-image',
-      timestamp: Date.now(),
-    });
-    syncTxState();
+    pushEditorHistory('move-image');
     setIsDirty(true);
     setSelectedDisplayItem(null);
     setRenderKey(k => k + 1);
-  }, [doc, currentPage, selectedDisplayItem, toEditableImage, syncTxState]);
+  }, [doc, currentPage, selectedDisplayItem, toEditableImage, pushEditorHistory]);
 
   const handleEmbeddedImageResize = useCallback(async (newWidth: number, newHeight: number) => {
     if (!doc || !engineRef.current || selectedDisplayItem?.type !== 'image') return;
@@ -2797,19 +3099,11 @@ export default function EditorPage() {
     const newY = top - newHeight;
     const newCtm = [newWidth, 0, 0, newHeight, item.x, newY];
     await applyObjectTransform(doc, currentPage, editable, newCtm);
-    const page = doc.pages[currentPage];
-    const nextBytes = engineRef.current.getPageContentBytes(page, doc.objects);
-    txStackRef.current.push({
-      pageIndex: currentPage,
-      contentBytes: new Uint8Array(nextBytes),
-      label: 'resize-image',
-      timestamp: Date.now(),
-    });
-    syncTxState();
+    pushEditorHistory('resize-image');
     setIsDirty(true);
     setSelectedDisplayItem(null);
     setRenderKey(k => k + 1);
-  }, [doc, currentPage, selectedDisplayItem, toEditableImage, syncTxState]);
+  }, [doc, currentPage, selectedDisplayItem, toEditableImage, pushEditorHistory]);
 
   const handleReplaceEmbeddedImage = useCallback(() => {
     if (selectedDisplayItem?.type !== 'image') return;
@@ -2889,14 +3183,9 @@ export default function EditorPage() {
   }, [editingLine]);
 
   const handleHiddenKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
-      e.preventDefault();
-      handleUndo();
-      return;
-    }
-    if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
-      e.preventDefault();
-      handleRedo();
+    // Let the browser handle Ctrl+Z / Ctrl+Y for in-progress typing (native textarea undo).
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'y')) {
+      e.stopPropagation();
       return;
     }
     if (!editingLine) return;
@@ -2921,7 +3210,7 @@ export default function EditorPage() {
         caretVisibleRef.current = true;
       }, 0);
     }
-  }, [editingLine, caretPos, handleEditSubmit, handleEditCancel, handleUndo, handleRedo, handleDuplicateLineBelow]);
+  }, [editingLine, caretPos, handleEditSubmit, handleEditCancel, handleDuplicateLineBelow]);
 
   const handleHiddenBlur = useCallback(() => {
     if (!editingLine) return;
@@ -3370,6 +3659,7 @@ export default function EditorPage() {
   }, [doc, fileName, commitDrawingsToPdf]);
 
   const handleClose = useCallback(async () => {
+    await clearEditorSession();
     await clearPdfFromStorage();
     router.push('/');
   }, [router]);
@@ -3527,14 +3817,7 @@ export default function EditorPage() {
       };
 
       await deleteObject(doc, currentPage, editable);
-      const nextBytes = engine.getPageContentBytes(page, doc.objects);
-      txStackRef.current.push({
-        pageIndex: currentPage,
-        contentBytes: new Uint8Array(nextBytes),
-        label: `delete-${item.type}`,
-        timestamp: Date.now(),
-      });
-      syncTxState();
+      pushEditorHistory(`delete-${item.type}`);
       setSelectedDisplayItem(null);
       setIsDirty(true);
       setRenderKey(k => k + 1);
@@ -3543,7 +3826,7 @@ export default function EditorPage() {
       console.error('[Editor] Delete object failed:', e);
       setError(`Delete failed: ${e instanceof Error ? e.message : String(e)}`);
     }
-  }, [doc, currentPage, selectedDisplayItem, syncTxState]);
+  }, [doc, currentPage, selectedDisplayItem, pushEditorHistory]);
 
   const handleInsertBlankPage = useCallback((index: number) => {
     if (!doc || !engineRef.current) return;
@@ -3754,8 +4037,8 @@ export default function EditorPage() {
   // ── Loading state ──
   if (isLoading) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-zinc-950 text-zinc-400">
-        <div className="w-8 h-8 border-4 border-zinc-800 border-t-blue-500 rounded-full animate-spin" />
+      <div className="min-h-screen flex flex-col items-center justify-center bg-surface text-app-muted">
+        <div className="w-8 h-8 border-4 border-[var(--border)] border-t-blue-500 rounded-full animate-spin" />
         <p className="mt-4 text-sm font-medium animate-pulse">Processing PDF...</p>
       </div>
     );
@@ -3764,7 +4047,7 @@ export default function EditorPage() {
   // ── Password prompt for encrypted PDFs ──
   if (needsPassword && !doc) {
     return (
-      <div className="min-h-screen bg-zinc-950">
+      <div className="min-h-screen bg-surface">
         <PasswordDialog
           fileName={fileName}
           error={passwordError}
@@ -3779,13 +4062,13 @@ export default function EditorPage() {
   // ── Error state ──
   if (error && !doc) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center font-sans bg-zinc-950 text-zinc-100">
+      <div className="min-h-screen flex flex-col items-center justify-center font-sans bg-surface text-app">
         <p className="text-red-500 text-sm max-w-[400px] text-center leading-relaxed">
           {error}
         </p>
         <button
           onClick={handleClose}
-          className="mt-6 px-4 py-2 rounded-lg border border-zinc-700 text-zinc-300 hover:bg-zinc-800 transition-colors flex items-center gap-2"
+          className="mt-6 px-4 py-2 rounded-lg border border-app text-app-muted hover:bg-panel-elevated transition-colors flex items-center gap-2"
         >
           <ChevronLeft size={16} /> Go Back
         </button>
@@ -3795,7 +4078,7 @@ export default function EditorPage() {
 
   // ── Main editor UI ──
   return (
-    <div className="flex flex-col h-screen font-sans bg-zinc-950 text-zinc-100 selection:bg-blue-500/30">
+    <div className="flex flex-col h-screen font-sans bg-surface text-app selection:bg-blue-500/30">
 
       {/* ── Top toolbar ── */}
       <Toolbar
@@ -3816,14 +4099,14 @@ export default function EditorPage() {
         onRedo={handleRedo}
         onClearPaths={() => {
           setDrawnPaths([]);
+          drawnPathsRef.current = [];
           if (doc && engineRef.current) {
             const page = doc.pages[currentPage];
-            const n = engineRef.current.clearMarkupAnnotationsOnPage(page.dict, doc.objects);
-            if (n > 0) {
-              setIsDirty(true);
-              setRenderKey(k => k + 1);
-            }
+            engineRef.current.clearMarkupAnnotationsOnPage(page.dict, doc.objects);
           }
+          pushEditorHistory('clear-markup', { drawnPaths: [] });
+          setIsDirty(true);
+          setRenderKey(k => k + 1);
         }}
         onDownload={handleDownload}
         saveMode={saveMode}
@@ -3882,6 +4165,8 @@ export default function EditorPage() {
           setDrawColor={setDrawColor}
           drawSize={drawSize}
           setDrawSize={setDrawSize}
+          drawMode={drawMode}
+          setDrawMode={setDrawMode}
           highlightColor={highlightColor}
           setHighlightColor={setHighlightColor}
           highlightSize={highlightSize}

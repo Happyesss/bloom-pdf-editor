@@ -23,7 +23,7 @@ export function buildDocumentFlow(runs: TextRun[]): DocumentFlow {
 
 export { reconstructLines } from './line-reconstruction';
 export { reconstructParagraphs } from './paragraph';
-export { applyLineTextEdit, buildLayoutPlan } from './flow-editor';
+export { applyLineTextEdit, buildLayoutPlan, correctLineResidualGaps } from './flow-editor';
 export { hitTestTextLine, findNearestTextLine, caretIndexFromLineX, lineXFromCaretIndex } from './hit-test';
 export { distributeTextToSegments, distributeTextChangeToSegments, segmentAtIndex, computeLineWidthDelta } from './reflow';
 export {
@@ -45,6 +45,8 @@ export {
   computeBaseline,
   getRunBounds,
   averageCharWidth,
+  averageLetterWidth,
+  estimateSpaceWidth,
   estimateTextWidth,
   visualFontSize,
   fontNameStyleFlags,
@@ -73,6 +75,7 @@ export {
   applyStyleToSelection,
   applyStyleToLine,
   applyStyleToSelectionOnPage,
+  collectBatchedFontSizeTrailingShifts,
   mapSelectionToSegments,
   resolveStyledFontName,
   duplicateLineBelow,

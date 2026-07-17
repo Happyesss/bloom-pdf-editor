@@ -90,6 +90,11 @@ export function getOverlayFontFamily(fontName: string, fontData?: FontData): str
     const stripped = stripPdfFontPrefix(fontData.baseFont);
     return `"${stripped}", "${fontData.baseFont}", serif`;
   }
+  // Match canvas renderer — Standard14 faces must use the same cssFamily or
+  // mid-line inserts look like a different (often lighter) face than neighbors.
+  if (fontData?.standardMetrics?.cssFamily) {
+    return fontData.standardMetrics.cssFamily;
+  }
   const lower = (fontData?.baseFont || fontName).toLowerCase();
   if (lower.includes('courier') || lower.includes('mono')) return '"Courier New", monospace';
   if (lower.includes('times') || lower.includes('roman') || lower.includes('cmr')) {
@@ -104,6 +109,15 @@ export function getOverlayFontStyle(fontName: string, fontData?: FontData): {
   fontWeight: string;
   fontStyle: string;
 } {
+  if (fontData?.standardMetrics) {
+    return {
+      fontWeight: fontData.standardMetrics.isBold ? 'bold' : 'normal',
+      fontStyle: fontData.standardMetrics.isItalic ? 'italic' : 'normal',
+    };
+  }
+  if ((fontData?.fontWeight ?? 0) >= 600) {
+    return { fontWeight: 'bold', fontStyle: 'normal' };
+  }
   const source = fontData?.baseFont || fontName;
   const lower = source.replace(/^.*\+/, '').toLowerCase();
   return {

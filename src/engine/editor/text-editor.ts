@@ -33,6 +33,7 @@ import {
 import { resolveRef } from '../parser/parser';
 import { loadFont, type FontData, charCodeToUnicode } from '../fonts/font-parser';
 import { ensureFallbackFont } from '../fonts/font-augmentation';
+import { resolveRunStyleFlags } from '../flow/metrics';
 import { serializeToString } from './stream-compiler';
 
 /** Visual size for Tf when switching to the Helvetica fallback. */
@@ -98,6 +99,12 @@ export function applyTextEdits(
 
   // Apply each edit
   for (const edit of edits) {
+    // Unchanged runs must not be rewritten — re-encoding through Helvetica
+    // fallback turns Symbol/Zapf bullets (•) into "-" and can perturb spacing.
+    if (edit.newText === edit.targetRun.text) {
+      continue;
+    }
+
     // Load font data for encoding
     const fontData = loadFontForRun(edit.targetRun, page, objects);
 
@@ -106,7 +113,10 @@ export function applyTextEdits(
     let useFallbackFont: string | null = null;
 
     if (isEncodingLossy(edit.newText, encoded, fontData)) {
-      useFallbackFont = ensureFallbackFont(page, objects);
+      // Keep bold/italic of the source run — HelvAug (regular) was stripping
+      // weight from mid-line edits on subset/CID bold faces (F2, etc.).
+      const flags = resolveRunStyleFlags(edit.targetRun.fontName, fontData);
+      useFallbackFont = ensureFallbackFont(page, objects, flags);
       encoded = encodeTextWinAnsi(edit.newText);
       needsFontAugmentation = true;
       if (encoded.missing.length > 0) {
@@ -137,11 +147,11 @@ export function applyTextEdits(
       const wrote = applyGroupedTextEdit(
         instructions,
         sourceInstructionIndices,
-        edit.targetRun.text,
         edit.newText,
         encoded,
         useFallbackFont,
         edit.targetRun,
+        fontData,
       );
       indexOffset += wrote;
       continue;
@@ -180,13 +190,15 @@ export function applyTextEdits(
       continue;
     }
 
-    // Always replace with a single string. Smart TJ fragment remapping corrupts
-    // edits when fragment byte lengths ≠ unicode lengths (common on resumes).
-    if (matched.instruction.operator === 'TJ') {
-      matched.instruction.operands = [new PDFArray([encoded.pdfString])];
-    } else {
-      matched.instruction.operands = [encoded.pdfString];
-    }
+    // Spaces: subset fonts often have ~0 space advance (live CSS shows gaps,
+    // PDF does not). Emit TJ with explicit advances instead of a bare string.
+    applyEncodedShowingOperands(
+      matched.instruction,
+      edit.newText,
+      encoded,
+      fontData,
+      !!useFallbackFont,
+    );
 
     // Switch to Helvetica when the original subset font can't encode the typed text
     if (useFallbackFont) {
@@ -276,15 +288,53 @@ export function applyRunPositionShifts(
     nextMap.forEach((v, key) => appliedToOp.set(key, v));
   };
 
+  const resolvePos = (textIndex: number) =>
+    findTextPositionInstruction(instructions, textIndex)
+    ?? findCtmPositionInstruction(instructions, textIndex);
+
+  const findBtIndex = (textIndex: number): number => {
+    for (let i = textIndex; i >= 0; i--) {
+      if (instructions[i].operator === 'ET') return -1;
+      if (instructions[i].operator === 'BT') return i;
+    }
+    return -1;
+  };
+
+  // True when mutating `posIndex` would also move a run that is not in this
+  // shift batch (shared BT Tm/Td or outer cm). Resume streams often park a
+  // whole line under one cm — nudging a trailer would drag earlier runs and
+  // invent a column gutter mid-line.
+  const posSharedWithUnshifted = (posIndex: number, self: TextRun): boolean => {
+    for (let r = 0; r < trackedRuns.length; r++) {
+      const other = trackedRuns[r];
+      if (other === self || merged.has(other)) continue;
+      const idxs = other.sourceInstructionIndices;
+      if (!idxs || idxs.length === 0) continue;
+      const otherPos = resolvePos(Math.min(...idxs));
+      if (otherPos && otherPos.index === posIndex) return true;
+    }
+    return false;
+  };
+
+  const injectLocalTd = (textIndex: number, dx: number, dy: number) => {
+    instructions.splice(textIndex, 0, {
+      operator: 'Td',
+      operands: [new PDFNumber(dx), new PDFNumber(dy)],
+      offset: 0,
+    });
+    bumpIndicesFrom(textIndex, 1);
+  };
+
+  // One local Td advances the text matrix for later showing ops in the same BT.
+  const localTdByBt = new Map<number, { dx: number; dy: number }>();
+
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     if (item.textIndex < 0 || item.textIndex >= instructions.length) {
       continue;
     }
 
-    const pos =
-      findTextPositionInstruction(instructions, item.textIndex) ??
-      findCtmPositionInstruction(instructions, item.textIndex);
+    const pos = resolvePos(item.textIndex);
 
     if (!pos) {
       // Last resort: absolute Tm in page space (CTM assumed identity).
@@ -308,6 +358,21 @@ export function applyRunPositionShifts(
     const remainDx = item.dx - already.dx;
     const remainDy = item.dy - already.dy;
     if (Math.abs(remainDx) < 0.01 && Math.abs(remainDy) < 0.01) {
+      continue;
+    }
+
+    if (posSharedWithUnshifted(pos.index, item.run)) {
+      const bt = findBtIndex(item.textIndex);
+      const prevLocal = bt >= 0 ? (localTdByBt.get(bt) ?? { dx: 0, dy: 0 }) : { dx: 0, dy: 0 };
+      const needDx = item.dx - prevLocal.dx;
+      const needDy = item.dy - prevLocal.dy;
+      if (Math.abs(needDx) < 0.01 && Math.abs(needDy) < 0.01) {
+        continue;
+      }
+      injectLocalTd(item.textIndex, needDx, needDy);
+      if (bt >= 0) {
+        localTdByBt.set(bt, { dx: prevLocal.dx + needDx, dy: prevLocal.dy + needDy });
+      }
       continue;
     }
 
@@ -860,7 +925,9 @@ export function encodeTextWinAnsi(text: string): EncodedText {
       i++; // skip trailing surrogate
     }
     if (isBulletLike(cp)) {
-      result += '-';
+      // WinAnsiEncoding 0x95 = • — never substitute ASCII hyphen (turns list
+      // bullets into "-" whenever a run falls back to Helvetica).
+      result += String.fromCharCode(0x95);
       continue;
     }
     if (cp <= 0xff) {
@@ -1046,11 +1113,11 @@ function insertEraseRectForRun(
 function applyGroupedTextEdit(
   instructions: CSInstruction[],
   sourceIndices: number[],
-  _oldText: string,
-  _newText: string,
+  newText: string,
   encoded: EncodedText,
   fallbackFont: string | null,
   run: TextRun,
+  fontData: FontData | null,
 ): number {
   const sortedIndices = Array.from(new Set(sourceIndices)).sort((a, b) => a - b);
   let primaryIdx = -1;
@@ -1066,12 +1133,7 @@ function applyGroupedTextEdit(
 
   const empty = new PDFString('');
   const primary = instructions[primaryIdx];
-
-  if (primary.operator === 'TJ') {
-    primary.operands = [new PDFArray([encoded.pdfString])];
-  } else {
-    primary.operands = [encoded.pdfString];
-  }
+  applyEncodedShowingOperands(primary, newText, encoded, fontData, !!fallbackFont);
 
   for (let i = 0; i < sortedIndices.length; i++) {
     const idx = sortedIndices[i];
@@ -1094,6 +1156,62 @@ function applyGroupedTextEdit(
     );
   }
   return 0;
+}
+
+/** Em-fraction per Space via TJ (negative number → next glyph moves right). */
+const SPACE_TJ_EM = 0.28;
+/** Cap visual advance so mashed Space rivers don't shove the line off-flow. */
+const SPACE_TJ_MAX_CHARS = 3;
+
+/**
+ * Subset/CID resume fonts often encode Space with ~0 advance. Keep space
+ * glyphs (for re-interpret) and add TJ advances so gaps survive commit.
+ * Cap advance length — uncapped space rivers can orphan the trailing clause
+ * onto another flow line.
+ */
+export function buildTJWithSpaceAdvances(
+  text: string,
+  fontData: FontData | null,
+  useWinAnsi: boolean,
+): PDFArray {
+  const items: PDFObject[] = [];
+  const parts = text.split(/([ ]+)/);
+  for (const part of parts) {
+    if (!part) continue;
+    if (/^ +$/.test(part)) {
+      const enc = useWinAnsi ? encodeTextWinAnsi(part) : encodeTextForFont(part, fontData);
+      items.push(enc.pdfString);
+      const advChars = Math.min(part.length, SPACE_TJ_MAX_CHARS);
+      items.push(new PDFNumber(-Math.round(advChars * SPACE_TJ_EM * 1000)));
+      continue;
+    }
+    const enc = useWinAnsi ? encodeTextWinAnsi(part) : encodeTextForFont(part, fontData);
+    items.push(enc.pdfString);
+  }
+  if (items.length === 0) {
+    const enc = useWinAnsi ? encodeTextWinAnsi(text) : encodeTextForFont(text, fontData);
+    items.push(enc.pdfString);
+  }
+  return new PDFArray(items);
+}
+
+function applyEncodedShowingOperands(
+  inst: CSInstruction,
+  text: string,
+  encoded: EncodedText,
+  fontData: FontData | null,
+  useWinAnsi: boolean,
+): void {
+  if (/ /.test(text)) {
+    inst.operator = 'TJ';
+    inst.operands = [buildTJWithSpaceAdvances(text, fontData, useWinAnsi)];
+    return;
+  }
+  if (inst.operator === 'TJ') {
+    inst.operands = [new PDFArray([encoded.pdfString])];
+  } else {
+    inst.operands = [encoded.pdfString];
+  }
 }
 
 function findFontNameForInstruction(instructions: CSInstruction[], index: number): string {

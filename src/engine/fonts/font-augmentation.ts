@@ -17,15 +17,35 @@ import { resolveRef } from '../parser/parser';
 import { getNextObjNum } from '../writer/serializer';
 
 const FALLBACK_FONT = 'HelvAug';
+const FALLBACK_FONT_BOLD = 'HelvAugBold';
+const FALLBACK_FONT_OBLIQUE = 'HelvAugOblique';
+const FALLBACK_FONT_BOLD_OBLIQUE = 'HelvAugBoldOblique';
 
 /**
  * Ensure a Helvetica Type1 fallback font exists in page Resources.
+ * Preserves bold/italic of the source run so mid-line edits don't drop weight.
  * Returns the resource font name to use for missing glyphs.
  */
 export function ensureFallbackFont(
   page: PDFPageInfo,
   objects: Map<string, PDFObject>,
+  style?: { bold?: boolean; italic?: boolean },
 ): string {
+  const wantBold = !!style?.bold;
+  const wantItalic = !!style?.italic;
+  let resourceName = FALLBACK_FONT;
+  let baseFont = 'Helvetica';
+  if (wantBold && wantItalic) {
+    resourceName = FALLBACK_FONT_BOLD_OBLIQUE;
+    baseFont = 'Helvetica-BoldOblique';
+  } else if (wantBold) {
+    resourceName = FALLBACK_FONT_BOLD;
+    baseFont = 'Helvetica-Bold';
+  } else if (wantItalic) {
+    resourceName = FALLBACK_FONT_OBLIQUE;
+    baseFont = 'Helvetica-Oblique';
+  }
+
   const resourcesObj = page.dict.get('Resources');
   let resources = resourcesObj instanceof PDFRef ? resolveRef(resourcesObj, objects) : resourcesObj;
   if (!(resources instanceof PDFDict)) {
@@ -40,16 +60,16 @@ export function ensureFallbackFont(
     resources.set('Font', fontDict);
   }
 
-  if (!fontDict.has(FALLBACK_FONT)) {
+  if (!fontDict.has(resourceName)) {
     const helvetica = new PDFDict();
     helvetica.set('Type', new PDFName('Font'));
     helvetica.set('Subtype', new PDFName('Type1'));
-    helvetica.set('BaseFont', new PDFName('Helvetica'));
+    helvetica.set('BaseFont', new PDFName(baseFont));
     helvetica.set('Encoding', new PDFName('WinAnsiEncoding'));
-    fontDict.set(FALLBACK_FONT, helvetica);
+    fontDict.set(resourceName, helvetica);
   }
 
-  return FALLBACK_FONT;
+  return resourceName;
 }
 
 /**

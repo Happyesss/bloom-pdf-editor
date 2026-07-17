@@ -93,6 +93,9 @@ export function computeHorizontalShiftsFromEdits(
 
   const shifts: RunShift[] = [];
   let cursor = getRunBounds(line.segments[0].run).left;
+  // Match text-editor SPACE_TJ_EM — subset fonts need ~0.28em per Space.
+  const spaceEm = 0.28;
+  let spaceGrowthSeen = false;
 
   for (let i = 0; i < line.segments.length; i++) {
     const seg = line.segments[i];
@@ -102,19 +105,16 @@ export function computeHorizontalShiftsFromEdits(
     const bounds = getRunBounds(run);
     const oldW = Math.max(bounds.width, estimateTextWidth(seg.text, run), 0.01);
     const estimated = estimateTextWidth(newText, run);
-    const scaled = oldW * (newText.length / Math.max(1, seg.text.length));
     const fs = visualFontSize(run);
-    // When growing, never assume narrower-than-Helvetica advance — subset fonts
-    // often report tight averages that under-shift trailing runs.
-    const growFloor = newText.length > seg.text.length
-      ? newText.length * fs * 0.5
-      : 0;
-    const newW = Math.max(estimated, scaled, growFloor);
-
-    const dx = cursor - bounds.left;
-    if (Math.abs(dx) > 0.01) {
-      shifts.push({ run, dx, dy: 0 });
-    }
+    const growing = newText.length > seg.text.length;
+    const deltaChars = newText.length - seg.text.length;
+    const oldSpaces = (seg.text.match(/\s/g) || []).length;
+    const newSpaces = (newText.match(/\s/g) || []).length;
+    const deltaSpaces = newSpaces - oldSpaces;
+    const deltaLetters = deltaChars - deltaSpaces;
+    const hasNewSpaces = growing && deltaSpaces > 0;
+    if (hasNewSpaces) spaceGrowthSeen = true;
+    const unchanged = newText === seg.text;
 
     let gap = 0;
     if (i < line.segments.length - 1) {
@@ -122,6 +122,41 @@ export function computeHorizontalShiftsFromEdits(
       gap = nextBounds.left - bounds.right;
       if (gap < 0) gap = fs * 0.12;
     }
+
+    // Unchanged runs stay put. Re-estimating their width caused cursor drift
+    // that opened a fake column gutter and split the line.
+    if (unchanged) {
+      cursor = bounds.right + gap;
+      continue;
+    }
+
+    // Length-ratio scaling treats spaces like letters and invents rivers.
+    // Whenever spaces were inserted, trust the space-aware estimate only.
+    const scaled = oldW * (newText.length / Math.max(1, seg.text.length));
+    let newW: number;
+    if (hasNewSpaces) {
+      const spaceFloor =
+        oldW
+        + Math.max(0, deltaLetters) * fs * 0.35
+        + Math.max(0, deltaSpaces) * fs * spaceEm;
+      newW = Math.max(estimated, spaceFloor);
+    } else if (growing) {
+      const deltaFloor = oldW + Math.max(0, deltaLetters) * fs * 0.4;
+      const emCap = newText.length * fs * 0.52;
+      const proportional = Math.max(estimated, scaled);
+      newW = Math.max(deltaFloor, Math.min(proportional, emCap));
+    } else {
+      newW = Math.max(estimated, 0);
+    }
+
+    let dx = cursor - bounds.left;
+    // After space inserts, never pull trailing runs left — measured old bounds
+    // often ignore TJ space advances, so dx goes negative and gaps vanish.
+    if (spaceGrowthSeen && dx < 0) dx = 0;
+    if (Math.abs(dx) > 0.01) {
+      shifts.push({ run, dx, dy: 0 });
+    }
+
     cursor += newW + gap;
   }
 

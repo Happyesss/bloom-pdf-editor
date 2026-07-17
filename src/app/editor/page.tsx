@@ -20,7 +20,7 @@ import { TOOLS } from './types';
 import {
   canvasToPdf, pdfToCanvas, hexToRGB,
   hitTestTextLine, findNearestTextLine, caretIndexFromLineX,
-  getLineBounds, getOverlayFontFamily, getDisplayFontFamily,
+  getLineBounds, getOverlayFontFamily, getOverlayFontStyle, getDisplayFontFamily,
 } from './utils';
 import { buildDisplayListIndex, hitTestDisplayList, isSelectableDisplayItem, EditorHistory, captureHistoryEntry, restoreAnnotSnapshot, parseOverlaySnapshot, deleteObject, visualFontSize, resolveRunStyleFlags, transformObject, applyObjectTransform, distributeTextChangeToSegments, segmentAtIndex, createVisualSignature, hitTestSignature, moveSignature, resizeSignature, rotateSignature, setSignatureOpacity, setSignatureLocked, deleteSignature, updateSignature, getSignatureLibrary, DEFAULT_SIGNATURE_SIZE, detectSignatureFieldsOnPage, hitTestSignatureField, createSignatureFieldAtPoint, applySignatureFieldAppearanceAsync, getCertificateManager, signDocumentCryptographic, validateDocumentSignatures, enableLongTermValidation, getLtvStatus, listManagedSignatures, buildRevisionViewer, lockSignaturesAfterSigning, pushRecentSignatureId, orderLibraryByRecent, SIGNATURE_SHORTCUTS } from '@/engine';
 import type { QuadTree, SelectableItem, EditableObject } from '@/engine';
@@ -62,6 +62,186 @@ function runHasPathUnderline(run: TextRun, paths: PathItem[]): boolean {
     return true;
   }
   return false;
+}
+
+type TypingStyle = Partial<Pick<TextStyleUI, 'bold' | 'italic' | 'underline' | 'color' | 'fontSize' | 'fontFamily'>>;
+
+/**
+ * Map a char index in the *current* edit text to the PDF run that owns it
+ * after caret-aware redistribute. Using frozen-anchor indices directly is
+ * wrong once inserts push the caret past later original segments (e.g. into
+ * an unbold neighbor), which then falsely queues bold patches.
+ */
+function runAtDistributedEditIndex(
+  line: TextLine,
+  initialText: string,
+  currentText: string,
+  charIndex: number,
+): TextRun | null {
+  if (!currentText) {
+    return line.segments[0]?.run ?? null;
+  }
+  const idx = Math.max(0, Math.min(charIndex, currentText.length - 1));
+  const edits = distributeTextChangeToSegments(
+    line,
+    initialText,
+    currentText,
+    Math.min(charIndex + 1, currentText.length),
+  );
+  let pos = 0;
+  for (const edit of edits) {
+    const end = pos + edit.newText.length;
+    if (idx >= pos && idx < end) return edit.run;
+    pos = end;
+  }
+  if (edits.length > 0) return edits[edits.length - 1].run;
+  return segmentAtIndex(line, Math.min(idx, line.text.length))?.run ?? null;
+}
+
+/**
+ * Word-like style at the caret: inherit from the character to the LEFT
+ * (or index 0 at line start), including path-drawn underlines and overrides.
+ */
+function resolveTypingStyleFromCaret(
+  line: TextLine,
+  caret: number,
+  fonts: RenderResult['fonts'] | undefined,
+  paths: PathItem[],
+  overrides: EditStyleOverride[],
+  currentText?: string,
+  initialText?: string,
+): TypingStyle {
+  const styleIndex = caret > 0 ? caret - 1 : 0;
+  const text = currentText ?? line.text;
+  const initial = initialText ?? line.text;
+  const run = runAtDistributedEditIndex(line, initial, text, styleIndex)
+    ?? segmentAtIndex(line, Math.min(styleIndex, line.text.length))?.run;
+  if (!run) return {};
+  const fontData = fonts?.get(run.fontName);
+  const flags = resolveRunStyleFlags(run.fontName, fontData);
+  let bold = flags.bold;
+  let italic = flags.italic;
+  let underline = !!run.isUnderline || runHasPathUnderline(run, paths);
+  let fontSize = visualFontSize(run);
+  let color: string | undefined;
+  if (run.fillColor) {
+    const [r, g, b] = run.fillColor;
+    color = '#' + [r, g, b].map(c => Math.round(c * 255).toString(16).padStart(2, '0')).join('');
+  }
+  for (const ov of overrides) {
+    if (styleIndex >= ov.start && styleIndex < ov.end) {
+      if (ov.bold != null) bold = ov.bold;
+      if (ov.italic != null) italic = ov.italic;
+      if (ov.underline != null) underline = ov.underline;
+      if (ov.fontSize != null) fontSize = ov.fontSize;
+      if (ov.color) color = ov.color;
+    }
+  }
+  return {
+    bold,
+    italic,
+    underline,
+    fontSize,
+    // Intentionally omit fontFamily — display names strip "Bold" and would
+    // replace the PDF face with synthetic weight on insert overrides.
+    ...(color ? { color } : {}),
+  };
+}
+
+/**
+ * Remap a [start,end) style range across an insert (delta>0) or delete (delta<0).
+ * Deletes must collapse points inside the removed span — never shift a range
+ * that starts at editAt leftward onto the previous character.
+ */
+function remapStyleRange(
+  start: number,
+  end: number,
+  editAt: number,
+  delta: number,
+): { start: number; end: number } | null {
+  if (delta > 0) {
+    if (end <= editAt) return { start, end };
+    if (start >= editAt) return { start: start + delta, end: end + delta };
+    return { start, end: end + delta };
+  }
+  if (delta < 0) {
+    const delEnd = editAt - delta;
+    const mapPoint = (p: number) => {
+      if (p <= editAt) return p;
+      if (p >= delEnd) return p + delta;
+      return editAt;
+    };
+    const ns = mapPoint(start);
+    const ne = mapPoint(end);
+    if (ne <= ns) return null;
+    return { start: ns, end: ne };
+  }
+  return { start, end };
+}
+
+/**
+ * Merge same fontSize-only patches across whitespace/punctuation gaps.
+ * Per-keystroke inserts leave holes on spaces (intentionally not committed),
+ * so sequential applies split the same run repeatedly with stale indices and
+ * only the first chunk keeps the new size — later typed text looks "unbold"
+ * / small and trailing glyphs overlap.
+ */
+function coalesceFontSizePatches<T extends { start: number; end: number; patch: Partial<TextStyleUI> }>(
+  queued: T[],
+  commitText: string,
+): T[] {
+  if (queued.length <= 1) return queued;
+  const out: T[] = [];
+  for (const item of queued) {
+    const prev = out[out.length - 1];
+    if (!prev) {
+      out.push({ ...item, patch: { ...item.patch } });
+      continue;
+    }
+    const prevKeys = Object.keys(prev.patch).filter(k => (prev.patch as Record<string, unknown>)[k] != null);
+    const itemKeys = Object.keys(item.patch).filter(k => (item.patch as Record<string, unknown>)[k] != null);
+    const prevOnlyFs = prevKeys.length === 1 && prevKeys[0] === 'fontSize';
+    const itemOnlyFs = itemKeys.length === 1 && itemKeys[0] === 'fontSize';
+    const sameFs =
+      prevOnlyFs
+      && itemOnlyFs
+      && prev.patch.fontSize != null
+      && prev.patch.fontSize === item.patch.fontSize;
+    const gap = commitText.slice(prev.end, item.start);
+    const gapOk = prev.end <= item.start && /^[\s.,;:!?…\-–—]*$/.test(gap);
+    if (sameFs && gapOk) {
+      prev.end = Math.max(prev.end, item.end);
+      continue;
+    }
+    out.push({ ...item, patch: { ...item.patch } });
+  }
+  return out;
+}
+
+/**
+ * Spaces are painted large in the overlay but not queued as fontSize commits.
+ * Without expanding the range, the separator before the residual word stays
+ * small (` nt` at 10pt after `yfuyct fdu` at 16pt) so glyphs look glued and
+ * users mash Space.
+ */
+function expandFontSizePatchesThroughSpaces<T extends { start: number; end: number; patch: Partial<TextStyleUI> }>(
+  queued: T[],
+  commitText: string,
+): T[] {
+  return queued.map(item => {
+    if (item.patch.fontSize == null) return item;
+    let s = item.start;
+    let e = item.end;
+    // Include at most one separator space (+ trailing punct). Absorbing a
+    // whole space-river into the enlarged mid inflates TJ width and can
+    // orphan the trailing clause onto another flow line.
+    while (s > 0 && /[.,;:!?…]/.test(commitText[s - 1]!)) s--;
+    if (s > 0 && commitText[s - 1] === ' ') s--;
+    while (e < commitText.length && /[.,;:!?…]/.test(commitText[e]!)) e++;
+    if (e < commitText.length && commitText[e] === ' ') e++;
+    if (s === item.start && e === item.end) return item;
+    return { ...item, start: s, end: e };
+  });
 }
 
 type EditStyleOverride = {
@@ -469,9 +649,14 @@ export default function EditorPage() {
     // Sync sidebar toggles from the run under the caret / selection start
     const line = editAnchorLineRef.current;
     if (!line || !renderResult) return;
-    const seg = segmentAtIndex(line, start);
-    if (!seg) return;
-    const run = seg.run;
+    const styleIndex = start > 0 ? start - 1 : 0;
+    const currentText = editTextRef.current;
+    const initialText = initialRunTextRef.current || line.text;
+    const run = runAtDistributedEditIndex(line, initialText, currentText, styleIndex)
+      ?? segmentAtIndex(line, Math.min(styleIndex, line.text.length))?.run;
+    if (!run) {
+      return;
+    }
     const flags = resolveRunStyleFlags(run.fontName, renderResult.fonts.get(run.fontName));
     let bold = flags.bold;
     let italic = flags.italic;
@@ -514,7 +699,7 @@ export default function EditorPage() {
         setTextColor(hex);
       }
     }
-  }, [renderResult, strokePaths, editStyleOverrides, textFontFamily, textColor]);
+  }, [renderResult, strokePaths, editStyleOverrides, textFontFamily, textColor, textBold]);
 
   const handleTextBold = useCallback((v: boolean | ((prev: boolean) => boolean)) => {
     setTextBold(prev => {
@@ -1025,7 +1210,12 @@ export default function EditorPage() {
       const fontSizeCss = maxFs * scale;
       const baseline = anchor.baseline;
       const ascent = fontSizeCss * 0.85;
-      const descent = fontSizeCss * 0.25;
+      // Cover path-drawn underlines too — leaving them visible while the HTML
+      // overlay clips CSS underlines made new glyphs look non-underlined.
+      const hasUnderline = textUnderline || anchor.runs.some(r =>
+        !!r.isUnderline || runHasPathUnderline(r, strokePaths),
+      );
+      const descent = fontSizeCss * (hasUnderline ? 0.45 : 0.25);
 
       ctx.save();
       ctx.scale(dpr, dpr);
@@ -1061,6 +1251,37 @@ export default function EditorPage() {
 
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(rx - 1, ry - 1, rw + 2, rh + 2);
+
+      // Path underlines only cover original glyph spans — extend a stroke under
+      // underlined runs as the line grows so mid-line inserts stay underlined.
+      if (hasUnderline) {
+        let ulLeft = Infinity;
+        let ulRight = -Infinity;
+        for (const run of anchor.runs) {
+          if (!(run.isUnderline || runHasPathUnderline(run, strokePaths))) continue;
+          ulLeft = Math.min(ulLeft, run.x);
+          ulRight = Math.max(ulRight, run.x + Math.max(run.width, maxFs * 0.5));
+        }
+        if (Number.isFinite(ulLeft) && ulRight > ulLeft) {
+          const origLen = (initialRunTextRef.current || anchor.text || '').length;
+          const grown = Math.max(0, (editText || '').length - origLen);
+          const ulWPdf = (ulRight - ulLeft) + grown * maxFs * 0.55;
+          const ulOrigin = pdfToCanvas(
+            ulLeft,
+            baseline,
+            scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
+          );
+          const ulX = ulOrigin.cssX + editOffsetCss.x;
+          const ulY = ulOrigin.cssY + editOffsetCss.y + fontSizeCss * 0.12;
+          const canvasUlW = ulWPdf * scale;
+          ctx.strokeStyle = textColor.startsWith('#') ? textColor : '#000000';
+          ctx.lineWidth = Math.max(1, fontSizeCss * 0.06);
+          ctx.beginPath();
+          ctx.moveTo(ulX, ulY);
+          ctx.lineTo(ulX + canvasUlW, ulY);
+          ctx.stroke();
+        }
+      }
 
       ctx.restore();
     }
@@ -1286,7 +1507,7 @@ export default function EditorPage() {
       }
       ctx.restore();
     }
-  }, [editingLine, editText, caretPos, renderResult, doc, currentPage, scale, drawnPaths, activeTool, displayItems, selectedDisplayItem, formFields, selectedFormField, editOffsetCss, editManualSize, editStyleOverrides, editSel, textFontSize, pageLinks, selectedLink, linksHighlighted, detectedTables, activeTableId]);
+  }, [editingLine, editText, caretPos, renderResult, doc, currentPage, scale, drawnPaths, activeTool, displayItems, selectedDisplayItem, formFields, selectedFormField, editOffsetCss, editManualSize, editStyleOverrides, editSel, textFontSize, textUnderline, textColor, strokePaths, pageLinks, selectedLink, linksHighlighted, detectedTables, activeTableId]);
 
   // Re-draw overlay whenever edit state changes
   useEffect(() => { drawOverlay(); }, [drawOverlay]);
@@ -1370,23 +1591,25 @@ export default function EditorPage() {
     editSelRef.current = { start: caret, end: caret };
     setEditSel({ start: caret, end: caret });
 
-    // Sync sidebar styles from the run under the caret (not always runs[0])
+    // Sync sidebar + typing style from the character left of the caret
     {
-      const seg = segmentAtIndex(line, caret) ?? (line.segments[0] ?? null);
-      const run = seg?.run ?? line.runs[0];
-      if (run) {
-        setTextFontSize(visualFontSize(run));
-        const fontData = renderResult?.fonts.get(run.fontName);
-        setTextFontFamily(getDisplayFontFamily(run.fontName, fontData));
-        const flags = resolveRunStyleFlags(run.fontName, fontData);
-        setTextBold(flags.bold);
-        setTextItalic(flags.italic);
-        setTextUnderline(!!run.isUnderline || runHasPathUnderline(run, strokePaths));
-        if (run.fillColor) {
-          const [r, g, b] = run.fillColor;
-          const hex = '#' + [r, g, b].map(c => Math.round(c * 255).toString(16).padStart(2, '0')).join('');
-          setTextColor(hex);
-        }
+      const seeded = resolveTypingStyleFromCaret(
+        line,
+        caret,
+        renderResult?.fonts,
+        strokePaths,
+        [],
+      );
+      typingStyleRef.current = seeded;
+      if (seeded.fontSize != null) setTextFontSize(seeded.fontSize);
+      if (seeded.bold != null) setTextBold(seeded.bold);
+      if (seeded.italic != null) setTextItalic(seeded.italic);
+      if (seeded.underline != null) setTextUnderline(seeded.underline);
+      if (seeded.color) setTextColor(seeded.color);
+      const seg = segmentAtIndex(line, caret > 0 ? caret - 1 : 0) ?? line.segments[0];
+      if (seg) {
+        const fd = renderResult?.fonts.get(seg.run.fontName);
+        setTextFontFamily(getDisplayFontFamily(seg.run.fontName, fd));
       }
     }
 
@@ -1442,7 +1665,10 @@ export default function EditorPage() {
         : engine.getPageContentBytes(page, doc.objects);
 
       if (textChanged) {
-        const commitText = editTextRef.current || editText;
+        let commitText = editTextRef.current || editText;
+        let caretAfter = editSelRef.current.end;
+        // Do NOT collapse multi-spaces on commit — live overlay gaps were real
+        // inserts, and smashing them made spaces vanish on click-away.
         const editResult = engine.applyLineTextEdit(
           bytes,
           page,
@@ -1452,7 +1678,8 @@ export default function EditorPage() {
           renderResult?.documentFlow,
           {
             oldText: initialRunTextRef.current || targetLine.text,
-            caretAfter: editSelRef.current.end,
+            caretAfter,
+            skipResidualCorrection: pendingStyles.some(p => p.patch.fontSize != null),
           },
         );
 
@@ -1482,7 +1709,7 @@ export default function EditorPage() {
         const raw = [...pendingStyles]
           .filter(p => p.end > p.start)
           .sort((a, b) => a.start - b.start || a.end - b.end);
-        const queued: typeof raw = [];
+        let queued: typeof raw = [];
         for (const item of raw) {
           const prev = queued[queued.length - 1];
           const samePatch = prev && JSON.stringify(prev.patch) === JSON.stringify(item.patch);
@@ -1492,21 +1719,76 @@ export default function EditorPage() {
             queued.push({ ...item, patch: { ...item.patch } });
           }
         }
+        // Bridge fontSize-only holes left by spaces (not committed as fontSize)
+        const beforeCoalesce = queued.length;
+        queued = coalesceFontSizePatches(queued, commitText);
+        queued = expandFontSizePatchesThroughSpaces(queued, commitText);
         pendingStylesRef.current = [];
         // Re-interpret so selection ranges map onto the updated line text/runs
         let styleLine: TextLine = targetLine;
-        try {
-          const freshBytes = engine.getPageContentBytes(page, doc.objects);
-          const interpreted = engine.interpretPage(freshBytes, page, doc.objects);
-          const flow = engine.buildDocumentFlow(interpreted.textRuns);
-          styleLine =
-            flow.lines.find((l: TextLine) => l.text === commitText) ??
-            findMatchingFlowLine(targetLine, flow.lines) ??
-            targetLine;
-        } catch (reErr) {
-          console.warn('[Editor] Re-interpret for styles failed:', reErr);
-        }
+        const normalizeDashes = (t: string) => t.replace(/[\u2013\u2014\u2212]/g, '-');
+        const commitNorm = normalizeDashes(commitText);
+        const refreshStyleLine = () => {
+          try {
+            const freshBytes = engine.getPageContentBytes(page, doc.objects);
+            const interpreted = engine.interpretPage(freshBytes, page, doc.objects);
+            const flow = engine.buildDocumentFlow(interpreted.textRuns);
+            styleLine =
+              flow.lines.find((l: TextLine) => l.text === commitText) ??
+              flow.lines.find((l: TextLine) => normalizeDashes(l.text) === commitNorm) ??
+              findMatchingFlowLine(targetLine, flow.lines) ??
+              styleLine;
+          } catch (reErr) {
+            console.warn('[Editor] Re-interpret for styles failed:', reErr);
+          }
+        };
+        refreshStyleLine();
+
+        // Path underlines don't move when text grows — expand insert-only
+        // underline patches to the full destination run so the stroke covers
+        // the whole title after commit.
         for (const item of queued) {
+          if (item.patch.underline !== true) continue;
+          const onlyUl = Object.keys(item.patch).every(
+            k => k === 'underline' || (item.patch as Record<string, unknown>)[k] == null,
+          );
+          if (!onlyUl) continue;
+          for (const seg of styleLine.segments) {
+            if (item.end > seg.startIndex && item.start < seg.endIndex) {
+              item.start = Math.min(item.start, seg.startIndex);
+              item.end = Math.max(item.end, seg.endIndex);
+            }
+          }
+        }
+
+        // Batched fontSize trailing only (no post-style residual). Residual after
+        // Tf splits re-chained widths and shoved trailers; batched growth tracks
+        // selection enlarge only.
+        if (textChanged) {
+          const fsRanges = queued
+            .filter(q => q.patch.fontSize != null)
+            .map(q => ({
+              start: Math.max(0, Math.min(q.start, styleLine.text.length)),
+              end: Math.max(0, Math.min(q.end, styleLine.text.length)),
+              fontSize: q.patch.fontSize as number,
+            }))
+            .filter(r => r.end > r.start);
+          if (fsRanges.length > 0) {
+            const batched = engine.collectBatchedFontSizeTrailingShifts(styleLine, fsRanges);
+            if (batched.shifts.length > 0) {
+              let styleBytes = engine.getPageContentBytes(page, doc.objects);
+              styleBytes = engine.applyRunPositionShifts(
+                styleBytes,
+                batched.shifts,
+                styleLine.runs,
+              );
+              await engine.updatePageContent(page.contentRefs, styleBytes, doc.objects);
+            }
+          }
+        }
+
+        for (let qi = 0; qi < queued.length; qi++) {
+          const item = queued[qi];
           const style: Record<string, unknown> = {};
           if (item.patch.fontSize != null) style.fontSize = item.patch.fontSize;
           if (item.patch.fontFamily != null) style.fontFamily = item.patch.fontFamily;
@@ -1527,9 +1809,47 @@ export default function EditorPage() {
             start,
             end,
             style,
+            textChanged ? { skipTrailingFontSizeShifts: true } : undefined,
           );
+          // Splits invalidate sourceInstructionIndices — refresh before next patch
+          if (qi < queued.length - 1) refreshStyleLine();
+        }
+      } else if (textChanged) {
+        // No pending styles — pack measured gaps after the text rewrite only.
+        // Skip when spaces were inserted: TJ space advances inflate measured
+        // widths and residual packing then pulls trailers left, collapsing
+        // live gaps and truncating the line.
+        const commitText = editTextRef.current || editText;
+        const oldTextForPack = initialRunTextRef.current || targetLine.text;
+        const packDeltaSpaces =
+          (commitText.match(/\s/g) || []).length - (oldTextForPack.match(/\s/g) || []).length;
+        if (packDeltaSpaces <= 0) {
+          try {
+            let packBytes = engine.getPageContentBytes(page, doc.objects);
+            const interpreted = engine.interpretPage(packBytes, page, doc.objects);
+            const flow = engine.buildDocumentFlow(interpreted.textRuns);
+            const normalizeDashes = (t: string) => t.replace(/[\u2013\u2014\u2212]/g, '-');
+            const commitNorm = normalizeDashes(commitText);
+            const packLine =
+              flow.lines.find((l: TextLine) => l.text === commitText) ??
+              flow.lines.find((l: TextLine) => normalizeDashes(l.text) === commitNorm) ??
+              findMatchingFlowLine(targetLine, flow.lines) ??
+              null;
+            if (packLine && packLine.segments.length > 1) {
+              const packed = engine.correctLineResidualGaps(
+                packBytes, page, doc.objects, packLine,
+                { gapSourceLine: targetLine },
+              );
+              if (packed.corrections.length > 0) {
+                await engine.updatePageContent(page.contentRefs, packed.bytes, doc.objects);
+              }
+            }
+          } catch (packErr) {
+            console.warn('[Editor] Post-text residual pack failed:', packErr);
+          }
         }
       }
+
 
       pushEditorHistory('text-edit');
       editAnchorLineRef.current = null;
@@ -3135,59 +3455,167 @@ export default function EditorPage() {
     const oldVal = editTextRef.current;
     const sel = el.selectionStart ?? newVal.length;
     const delta = newVal.length - oldVal.length;
+    const editAt = Math.min(sel - Math.max(0, delta), oldVal.length);
 
-    // Remap existing style overrides around the edit point
-    const remap = (start: number, end: number): { start: number; end: number } | null => {
-      const editAt = Math.min(sel - Math.max(0, delta), oldVal.length);
-      if (end <= editAt) return { start, end };
-      if (start >= editAt) return { start: start + delta, end: end + delta };
-      // Edit inside range — expand/shrink end
-      return { start, end: Math.max(start, end + delta) };
-    };
 
     if (delta !== 0 || newVal !== oldVal) {
-      setEditStyleOverrides(prev => prev.map(ov => {
-        const next = remap(ov.start, ov.end);
-        return next ? { ...ov, ...next } : ov;
+      setEditStyleOverrides(prev => prev.flatMap(ov => {
+        const next = remapStyleRange(ov.start, ov.end, editAt, delta);
+        return next ? [{ ...ov, ...next }] : [];
       }).filter(ov => ov.end > ov.start));
-      pendingStylesRef.current = pendingStylesRef.current.map(p => {
-        const next = remap(p.start, p.end);
-        return next ? { ...p, ...next } : p;
+      pendingStylesRef.current = pendingStylesRef.current.flatMap(p => {
+        const next = remapStyleRange(p.start, p.end, editAt, delta);
+        return next ? [{ ...p, ...next }] : [];
       }).filter(p => p.end > p.start);
     }
 
-    // Apply typing style to newly inserted characters only
-    const ts = typingStyleRef.current;
-    if (
-      delta > 0
-      && (ts.bold != null || ts.italic != null || ts.underline != null
-        || ts.color != null || ts.fontSize != null || ts.fontFamily != null)
-    ) {
-      const insertStart = sel - delta;
-      const insertEnd = sel;
-      const patch: Partial<TextStyleUI> = {};
-      if (ts.bold != null) patch.bold = ts.bold;
-      if (ts.italic != null) patch.italic = ts.italic;
-      if (ts.underline != null) patch.underline = ts.underline;
-      if (ts.color != null) patch.color = ts.color;
-      if (ts.fontSize != null) patch.fontSize = ts.fontSize;
-      if (ts.fontFamily != null) patch.fontFamily = ts.fontFamily;
-      pendingStylesRef.current = [...pendingStylesRef.current, { patch, start: insertStart, end: insertEnd }];
-      setEditStyleOverrides(prev => [
-        ...prev,
-        {
-          start: insertStart,
-          end: insertEnd,
-          bold: ts.bold,
-          italic: ts.italic,
-          underline: ts.underline,
-          color: ts.color,
-          fontSize: ts.fontSize,
-          fontFamily: ts.fontFamily,
-        },
-      ]);
+    // Inherit caret-local style, then let explicit typingStyle (sidebar) win.
+    // Never inherit fontFamily — seeded display names strip Bold and would
+    // force synthetic weight over the PDF face in the overlay.
+    const anchor = editAnchorLineRef.current;
+    const inherited = anchor
+      ? resolveTypingStyleFromCaret(
+          anchor,
+          editAt,
+          renderResult?.fonts,
+          strokePaths,
+          pendingStylesRef.current.map(p => ({
+            start: p.start,
+            end: p.end,
+            bold: p.patch.bold,
+            italic: p.patch.italic,
+            underline: p.patch.underline,
+            color: p.patch.color,
+            fontSize: p.patch.fontSize,
+          })),
+          oldVal,
+          initialRunTextRef.current || anchor.text,
+        )
+      : {};
+    const explicit = typingStyleRef.current;
+    const ts: TypingStyle = {
+      ...inherited,
+      ...explicit,
+      // Only apply a font family the user picked in the sidebar
+      ...(explicit.fontFamily != null ? { fontFamily: explicit.fontFamily } : { fontFamily: undefined }),
+    };
+    if (explicit.fontFamily == null) delete ts.fontFamily;
+
+    // After deleting out of a sized override, drop sticky fontSize so neighbors
+    // and further typing return to the surrounding size.
+    if (delta < 0 && explicit.fontSize != null) {
+      const stillInSized = pendingStylesRef.current.some(
+        p => sel >= p.start && sel < p.end && p.patch.fontSize != null,
+      );
+      if (!stillInSized && inherited.fontSize != null && explicit.fontSize !== inherited.fontSize) {
+        typingStyleRef.current = { ...explicit, fontSize: inherited.fontSize };
+        ts.fontSize = inherited.fontSize;
+        setTextFontSize(inherited.fontSize);
+      }
     }
 
+    // Only paint live overrides when style differs from the caret run.
+    // Matching inserts stay in the run's span (no 1-glyph splits that break
+    // bold face / underline continuity). Path underlines still need a
+    // commit-only pending patch so the PDF underline extends.
+    if (delta > 0) {
+      const styleIdx = editAt > 0 ? editAt - 1 : 0;
+      // Redistribute current text onto frozen runs — do NOT use raw anchor
+      // indices (they walk into later segments as the caret advances).
+      const destRun = anchor
+        ? runAtDistributedEditIndex(
+            anchor,
+            initialRunTextRef.current || anchor.text,
+            oldVal,
+            styleIdx,
+          )
+        : null;
+      const destFd = destRun && renderResult ? renderResult.fonts.get(destRun.fontName) : undefined;
+      const destFlags = destRun
+        ? resolveRunStyleFlags(destRun.fontName, destFd)
+        : { bold: false, italic: false };
+      const destUl = destRun
+        ? !!(destRun.isUnderline || runHasPathUnderline(destRun, strokePaths))
+        : false;
+      const destFs = destRun ? visualFontSize(destRun) : 0;
+      const colorDiffers = (() => {
+        if (ts.color == null || !destRun?.fillColor) return ts.color != null && !destRun?.fillColor;
+        const [r, g, b] = destRun.fillColor;
+        const runHex = '#' + [r, g, b].map(c => Math.round(c * 255).toString(16).padStart(2, '0')).join('');
+        return ts.color.toLowerCase() !== runHex.toLowerCase();
+      })();
+      // Compare against the destination run — inherited color/size that already
+      // match must NOT force live overrides (that split every glyph into its
+      // own span and breaks bold/underline continuity).
+      const differs =
+        (ts.bold != null && ts.bold !== destFlags.bold)
+        || (ts.italic != null && ts.italic !== destFlags.italic)
+        || (ts.underline != null && ts.underline !== destUl)
+        || (ts.fontSize != null && Math.abs(ts.fontSize - destFs) > 0.5)
+        || (explicit.fontFamily != null)
+        || colorDiffers;
+
+      const insertStart = sel - delta;
+      const insertEnd = sel;
+      const insertedText = newVal.slice(insertStart, insertEnd);
+      const onlyWhitespace = /^\s+$/.test(insertedText);
+
+      if (differs) {
+        // Only queue properties that actually differ from the destination run.
+        // Seeded typingStyle always carries bold/italic/color — piggybacking those
+        // onto a fontSize-only insert created per-glyph bold overrides and, for
+        // spaces, bold-only commit patches that flipped neighboring unbold runs.
+        const patch: Partial<TextStyleUI> = {};
+        if (ts.bold != null && ts.bold !== destFlags.bold) patch.bold = ts.bold;
+        if (ts.italic != null && ts.italic !== destFlags.italic) patch.italic = ts.italic;
+        if (ts.underline != null && ts.underline !== destUl) patch.underline = ts.underline;
+        if (ts.color != null && colorDiffers) patch.color = ts.color;
+        // Spaces: never commit a larger fontSize (that invents rivers via trailing
+        // shifts). Still paint typing-size spaces in the live overlay so the
+        // caret doesn't look like it's arrow-skipping through the next word.
+        if (ts.fontSize != null && !onlyWhitespace && Math.abs(ts.fontSize - destFs) > 0.5) {
+          patch.fontSize = ts.fontSize;
+        }
+        if (explicit.fontFamily != null) patch.fontFamily = ts.fontFamily;
+        const hasPatch = Object.keys(patch).length > 0;
+        if (hasPatch) {
+          pendingStylesRef.current = [...pendingStylesRef.current, { patch, start: insertStart, end: insertEnd }];
+          setEditStyleOverrides(prev => [
+            ...prev,
+            {
+              start: insertStart,
+              end: insertEnd,
+              bold: patch.bold,
+              italic: patch.italic,
+              underline: patch.underline,
+              color: patch.color,
+              fontSize: patch.fontSize,
+              fontFamily: patch.fontFamily,
+            },
+          ]);
+        }
+        if (
+          onlyWhitespace
+          && ts.fontSize != null
+          && Math.abs(ts.fontSize - destFs) > 0.5
+        ) {
+          setEditStyleOverrides(prev => [
+            ...prev,
+            { start: insertStart, end: insertEnd, fontSize: ts.fontSize },
+          ]);
+        }
+      } else if (ts.underline && destRun && !destRun.isUnderline && runHasPathUnderline(destRun, strokePaths)) {
+        // Path-drawn underline won't grow with new glyphs on commit
+        pendingStylesRef.current = [
+          ...pendingStylesRef.current,
+          { patch: { underline: true }, start: insertStart, end: insertEnd },
+        ];
+      }
+    }
+
+    // Do NOT live-collapse spaces while typing — rewriting the textarea mid-
+    // keystroke made Space feel broken (2nd+ press) and jumped the caret.
+    // Rivers are still collapsed on commit (see handleEditSubmit).
     editTextRef.current = newVal;
     setEditText(newVal);
     setCaretPos(sel);
@@ -3195,7 +3623,7 @@ export default function EditorPage() {
     editSelRef.current = { start: sel, end: selEnd };
     setEditSel({ start: sel, end: selEnd });
     caretVisibleRef.current = true;
-  }, [editingLine]);
+  }, [editingLine, renderResult, strokePaths]);
 
   const handleHiddenKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Let the browser handle Ctrl+Z / Ctrl+Y for in-progress typing (native textarea undo).
@@ -4823,7 +5251,10 @@ export default function EditorPage() {
               const fontSizeCss = maxFontSizeCss;
               const baseline = anchor.baseline;
               const ascent = fontSizeCss * 0.85;
-              const descent = fontSizeCss * 0.25;
+              const lineHasUnderline = textUnderline || anchor.runs.some(r =>
+                !!r.isUnderline || runHasPathUnderline(r, strokePaths),
+              ) || editStyleOverrides.some(o => o.underline);
+              const descent = fontSizeCss * (lineHasUnderline ? 0.45 : 0.25);
               const origin = pdfToCanvas(
                 bounds.x,
                 baseline,
@@ -4906,8 +5337,17 @@ export default function EditorPage() {
                 const run = piece.run;
                 const fd = renderResult.fonts.get(run.fontName);
                 const flags = resolveRunStyleFlags(run.fontName, fd);
-                let bold = flags.bold;
-                let italic = flags.italic;
+                const faceStyle = getOverlayFontStyle(run.fontName, fd);
+                // Embedded faces already carry weight — don't synthesize extra bold
+                // (matches canvas renderer). Fall back to flag-based weight otherwise.
+                let bold = fd?.fontBytes
+                  ? faceStyle.fontWeight === 'bold' || flags.bold
+                  : flags.bold;
+                let italic = fd?.fontBytes
+                  ? faceStyle.fontStyle === 'italic' || flags.italic
+                  : flags.italic;
+                // When embedded bold face is used, CSS weight stays normal
+                const useEmbeddedFace = !!(fd?.fontBytes && fd.baseFont);
                 let underline = !!run.isUnderline || runHasPathUnderline(run, pathItems);
                 let color = run.fillColor
                   ? `rgb(${Math.round(run.fillColor[0] * 255)}, ${Math.round(run.fillColor[1] * 255)}, ${Math.round(run.fillColor[2] * 255)})`
@@ -4922,16 +5362,29 @@ export default function EditorPage() {
                     if (ov.underline != null) underline = ov.underline;
                     if (ov.color) color = ov.color.startsWith('#') ? ov.color : color;
                     if (ov.fontSize != null) segFontSize = ov.fontSize * scale;
-                    if (ov.fontFamily) segFontFamily = cssFontFamilyFromUI(ov.fontFamily);
+                    if (ov.fontFamily) {
+                      segFontFamily = cssFontFamilyFromUI(ov.fontFamily);
+                    }
                   }
                 }
+
+                const hasBoldOv = editStyleOverrides.some(
+                  o => piece.start >= o.start && piece.end <= o.end && o.bold != null,
+                );
+                const hasItalicOv = editStyleOverrides.some(
+                  o => piece.start >= o.start && piece.end <= o.end && o.italic != null,
+                );
+
+                const fontWeight = useEmbeddedFace && !hasBoldOv ? 'normal' : (bold ? 'bold' : 'normal');
 
                 return {
                   text: piece.text,
                   fontFamily: segFontFamily,
                   fontSizeCss: segFontSize,
-                  fontWeight: bold ? 'bold' : 'normal',
-                  fontStyle: italic ? 'italic' : 'normal',
+                  // Embedded faces already include weight — synthesizing CSS bold
+                  // on top makes mid-line inserts look heavier/wrong vs neighbors.
+                  fontWeight,
+                  fontStyle: useEmbeddedFace && !hasItalicOv ? 'normal' : (italic ? 'italic' : 'normal'),
                   underline,
                   color,
                 };

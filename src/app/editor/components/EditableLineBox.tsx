@@ -116,6 +116,18 @@ export function EditableLineBox(props: EditableLineBoxProps) {
       charEndsRef.current = [];
       return;
     }
+    // Per-index font size for min space advances (large typing-size spaces).
+    const fsAt: number[] = new Array(text.length).fill(fontSizeCss);
+    if (hasSegments) {
+      let pos = 0;
+      for (const seg of segments!) {
+        const fs = seg.fontSizeCss ?? fontSizeCss;
+        for (let k = 0; k < seg.text.length && pos + k < text.length; k++) {
+          fsAt[pos + k] = fs;
+        }
+        pos += seg.text.length;
+      }
+    }
     const ends: number[] = [];
     const hostLeft = host.getBoundingClientRect().left;
     const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT);
@@ -124,11 +136,13 @@ export function EditableLineBox(props: EditableLineBoxProps) {
     while (node) {
       const value = node.textContent || '';
       for (let i = 0; i < value.length; i++) {
+        const gi = globalOffset + i;
         const range = document.createRange();
         range.setStart(node, i);
         range.setEnd(node, i + 1);
         const rect = range.getBoundingClientRect();
-        ends[globalOffset + i] = Math.max(0, rect.right - hostLeft);
+        const end = Math.max(0, rect.right - hostLeft);
+        ends[gi] = end;
       }
       globalOffset += value.length;
       node = walker.nextNode();
@@ -137,8 +151,12 @@ export function EditableLineBox(props: EditableLineBoxProps) {
       const last = ends.length > 0 ? ends[ends.length - 1] : 0;
       ends.push(last + fontSizeCss * 0.5);
     }
+    // Enforce non-decreasing ends after min-space bumps
+    for (let i = 1; i < ends.length; i++) {
+      if (ends[i] < ends[i - 1]) ends[i] = ends[i - 1];
+    }
     charEndsRef.current = ends.slice(0, Math.max(text.length, 0));
-  }, [text, fontSizeCss]);
+  }, [text, fontSizeCss, hasSegments, segments]);
 
   const xToIndex = useCallback((localX: number) => {
     const ends = charEndsRef.current;
@@ -187,7 +205,15 @@ export function EditableLineBox(props: EditableLineBoxProps) {
       const ratio = naturalWidth / measured;
       frozenScaleX.current = Math.max(0.55, Math.min(1.85, ratio));
     }
-    const sx = frozenScaleX.current ?? 1;
+    // Mixed sizes (large mid-line insert vs original condensed run): keep scaleX=1
+    // so oversized glyphs aren't crushed into the old PDF advance and look like
+    // they skip through neighbors when typing spaces.
+    const mixedSize = !!(
+      hasSegments
+      && segments!.some(s => (s.fontSizeCss ?? fontSizeCss) > fontSizeCss * 0.95)
+      && segments!.some(s => (s.fontSizeCss ?? fontSizeCss) < fontSizeCss * 0.85)
+    );
+    const sx = mixedSize ? 1 : (frozenScaleX.current ?? 1);
     setScaleX(Math.abs(sx - 1) > 0.005 ? sx : 1);
 
     const contentCss = measured * sx;
@@ -318,25 +344,41 @@ export function EditableLineBox(props: EditableLineBoxProps) {
 
   const renderSegmentSpans = (forMeasure: boolean) => {
     if (hasSegments) {
-      return segments!.map((seg, i) => (
-        <span
-          key={i}
-          style={{
-            fontFamily: seg.fontFamily,
-            fontSize: seg.fontSizeCss ?? fontSizeCss,
-            fontWeight: seg.fontWeight,
-            fontStyle: seg.fontStyle,
-            color: forMeasure ? 'transparent' : seg.color,
-            textDecorationLine: !forMeasure && seg.underline ? 'underline' : 'none',
-            textDecorationColor: seg.color,
-          }}
-        >
-          {seg.text}
-        </span>
-      ));
+      return segments!.map((seg, i) => {
+        const segFs = seg.fontSizeCss ?? fontSizeCss;
+        return (
+          <span
+            key={i}
+            style={{
+              fontFamily: seg.fontFamily,
+              fontSize: segFs,
+              fontWeight: seg.fontWeight,
+              fontStyle: seg.fontStyle,
+              color: forMeasure ? 'transparent' : seg.color,
+              borderBottom: !forMeasure && seg.underline
+                ? `${Math.max(1, Math.round(segFs * 0.06))}px solid ${seg.color}`
+                : 'none',
+              paddingBottom: !forMeasure && seg.underline ? 1 : 0,
+            }}
+          >
+            {seg.text}
+          </span>
+        );
+      });
     }
     return (
-      <span style={{ fontFamily, fontWeight, fontStyle, color: forMeasure ? 'transparent' : color }}>
+      <span
+        style={{
+          fontFamily,
+          fontWeight,
+          fontStyle,
+          color: forMeasure ? 'transparent' : color,
+          borderBottom: !forMeasure && underline
+            ? `${Math.max(1, Math.round(fontSizeCss * 0.06))}px solid ${color}`
+            : 'none',
+          paddingBottom: !forMeasure && underline ? 1 : 0,
+        }}
+      >
         {text || ' '}
       </span>
     );
@@ -417,14 +459,17 @@ export function EditableLineBox(props: EditableLineBoxProps) {
         />
       )}
 
-      {/* Visible mixed-style text */}
+      {/* Visible mixed-style text — overflow visible so underlines aren't clipped.
+          Use pre (not nowrap): nowrap collapses consecutive spaces so caret
+          advances through the next word while gaps never appear. */}
       <div
         ref={visibleRef}
         aria-hidden
-        className="absolute inset-0 m-0 p-0 overflow-hidden whitespace-nowrap pointer-events-none z-[6]"
+        className="absolute inset-0 m-0 p-0 whitespace-pre pointer-events-none z-[6]"
         style={{
           fontSize: fontSizeCss,
           lineHeight: `${fontSizeCss}px`,
+          overflow: 'visible',
           ...stretchStyle,
         }}
       >

@@ -118,6 +118,40 @@ export function averageCharWidth(run: TextRun): number {
   return bounds.width / run.text.length;
 }
 
+/**
+ * Average advance of non-whitespace glyphs. Prose runs that happen to include
+ * a trailing space still yield a letter-like average; pure space runs fall back
+ * to averageCharWidth.
+ */
+export function averageLetterWidth(run: TextRun): number {
+  const glyphs = run.glyphs.filter(g => g.unicode && !/\s/.test(g.unicode));
+  if (glyphs.length > 0) {
+    let w = 0;
+    for (let i = 0; i < glyphs.length; i++) w += glyphs[i].width;
+    return w / glyphs.length;
+  }
+  const letters = run.text.replace(/\s/g, '');
+  if (letters.length > 0 && letters.length < run.text.length) {
+    // No glyph widths — approximate by removing spaces from the char average.
+    const avg = averageCharWidth(run);
+    const fs = visualFontSize(run);
+    const spaceW = Math.min(avg * 0.4, fs * 0.33);
+    const bounds = getRunBounds(run);
+    const spaceCount = run.text.length - letters.length;
+    const letterW = Math.max(0, bounds.width - spaceCount * spaceW);
+    return letterW / letters.length;
+  }
+  return averageCharWidth(run);
+}
+
+/** Typical space advance for a run (page units). */
+export function estimateSpaceWidth(run: TextRun): number {
+  const fs = visualFontSize(run);
+  const letterAvg = averageLetterWidth(run);
+  // Match text-editor TJ space advances (0.28em) for subset/CID resume fonts.
+  return Math.min(Math.max(fs * 0.28, letterAvg * 0.28), letterAvg * 0.5, fs * 0.45);
+}
+
 /** Gap between two horizontally adjacent runs on the same line. */
 export function gapBetweenRuns(left: TextRun, right: TextRun): number {
   const l = getRunBounds(left);
@@ -128,6 +162,50 @@ export function gapBetweenRuns(left: TextRun, right: TextRun): number {
 /** Estimate rendered width of a string using run metrics. */
 export function estimateTextWidth(text: string, run: TextRun): number {
   if (text.length === 0) return 0;
-  const avg = averageCharWidth(run);
-  return text.length * avg;
+  const letterAvg = averageLetterWidth(run);
+  const spaceW = estimateSpaceWidth(run);
+  let w = 0;
+  for (let i = 0; i < text.length; i++) {
+    w += /\s/.test(text[i]) ? spaceW : letterAvg;
+  }
+  return w;
+}
+
+export interface FontSizeOverrideRange {
+  start: number;
+  end: number;
+  fontSize: number;
+}
+
+/**
+ * Estimate width when some characters will render at a different font size
+ * (pending style overrides). Scales the run's average advance by fs ratio.
+ */
+export function estimateTextWidthWithOverrides(
+  text: string,
+  run: TextRun,
+  lineStart: number,
+  overrides?: FontSizeOverrideRange[],
+): number {
+  if (text.length === 0) return 0;
+  if (!overrides?.length) return estimateTextWidth(text, run);
+
+  const baseFs = Math.max(0.5, visualFontSize(run));
+  const letterAvg = averageLetterWidth(run);
+  const spaceW = estimateSpaceWidth(run);
+  let w = 0;
+  for (let i = 0; i < text.length; i++) {
+    const abs = lineStart + i;
+    let fs = baseFs;
+    for (let o = 0; o < overrides.length; o++) {
+      const ov = overrides[o];
+      if (abs >= ov.start && abs < ov.end) {
+        fs = ov.fontSize;
+        break;
+      }
+    }
+    const base = /\s/.test(text[i]) ? spaceW : letterAvg;
+    w += base * (fs / baseFs);
+  }
+  return w;
 }

@@ -2,6 +2,7 @@
  * Flow-aware text editing — commit full-line edits across styled runs.
  */
 
+import { interpretPage } from '../content/interpreter';
 import type { TextRun } from '../content/interpreter';
 import type { PDFObject, PDFPageInfo } from '../types';
 import {
@@ -19,8 +20,134 @@ import {
   findParagraphForLine,
   type LayoutPlan,
 } from './layout';
-import { estimateTextWidth, visualFontSize } from './metrics';
+import { estimateTextWidth, getRunBounds, visualFontSize } from './metrics';
 import type { DocumentFlow, TextLine } from './types';
+
+/** Normalize bullets/dashes so "• " still matches rewritten "- ". */
+function normalizeEditText(text: string): string {
+  return text
+    .replace(/^[\u2022\u2023\u25E6\u2043\u2219\u00B7\u25CF\u25CB•∙]\s*/, '- ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Resolve post-edit runs for each segment. Prefer left-to-right same-baseline
+ * peers when counts match — text match alone fails when "•" becomes "-".
+ */
+function resolveFreshSegmentRuns(
+  runs: TextRun[],
+  segmentEdits: { run: TextRun; newText: string }[],
+  baseline: number,
+  fontSize: number,
+): TextRun[] | null {
+  const tol = Math.max(2, fontSize * 0.35);
+  const peers = runs
+    .filter(r => {
+      if ((r.sourceInstructionIndices ?? []).length === 0) return false;
+      const bl = r.glyphs.length > 0 ? r.glyphs[0].tRm.f : r.y;
+      return Math.abs(bl - baseline) <= tol;
+    })
+    .sort((a, b) => a.x - b.x || a.y - b.y);
+
+  if (peers.length === segmentEdits.length) {
+    return peers;
+  }
+
+  // Fallback: greedy text match with bullet normalization
+  const used = new Set<TextRun>();
+  const fresh: TextRun[] = [];
+  for (let i = 0; i < segmentEdits.length; i++) {
+    const want = normalizeEditText(segmentEdits[i].newText);
+    let best: TextRun | null = null;
+    let bestScore = -1;
+    for (let p = 0; p < peers.length; p++) {
+      const run = peers[p];
+      if (used.has(run)) continue;
+      const got = normalizeEditText(run.text);
+      let score = 0;
+      if (got === want) score = 100;
+      else if (want.length > 0 && got.includes(want.slice(0, Math.min(10, want.length)))) score = 50;
+      else if (want.length > 2 && got.slice(0, 6) === want.slice(0, 6)) score = 25;
+      if (score > bestScore) {
+        bestScore = score;
+        best = run;
+      }
+    }
+    if (!best || bestScore < 25) return null;
+    used.add(best);
+    fresh.push(best);
+  }
+  return fresh;
+}
+
+/**
+ * After estimate-based shifts + text rewrite, re-measure real glyph widths and
+ * nudge trailing runs so rivers/overlaps from width-estimate error disappear.
+ */
+function correctResidualRunGaps(
+  contentBytes: Uint8Array,
+  page: PDFPageInfo,
+  objects: Map<string, PDFObject>,
+  line: TextLine,
+  segmentEdits: { run: TextRun; newText: string }[],
+  /**
+   * Pre-edit line whose inter-run gaps define PDF spacing. Using the post-edit
+   * line here reuses estimate-inflated rivers and then stacks font-growth push
+   * on top.
+   */
+  gapSourceLine?: TextLine,
+): { bytes: Uint8Array; corrections: RunPositionShift[] } {
+  if (segmentEdits.length < 2) {
+    return { bytes: contentBytes, corrections: [] };
+  }
+
+  const interpreted = interpretPage(contentBytes, page, objects);
+  const fresh = resolveFreshSegmentRuns(
+    interpreted.textRuns,
+    segmentEdits,
+    line.baseline,
+    line.fontSize,
+  );
+  if (!fresh) {
+    return { bytes: contentBytes, corrections: [] };
+  }
+
+  const gapLine = gapSourceLine ?? line;
+  const corrections: RunPositionShift[] = [];
+  let cursor = getRunBounds(fresh[0]).left;
+  const fs = Math.max(line.fontSize, 8);
+
+  for (let i = 0; i < fresh.length; i++) {
+    const bounds = getRunBounds(fresh[i]);
+    const dx = cursor - bounds.left;
+    if (Math.abs(dx) > 0.5) {
+      corrections.push({ run: fresh[i], dx, dy: 0 });
+    }
+
+    let gap = fs * 0.12;
+    if (i < gapLine.segments.length - 1) {
+      const ob = getRunBounds(gapLine.segments[i].run);
+      const nb = getRunBounds(gapLine.segments[i + 1].run);
+      gap = nb.left - ob.right;
+      if (gap < 0) gap = fs * 0.12;
+    }
+    // Subset fonts often measure space advance ≈ 0; floor with estimate so
+    // residual packing cannot erase space inserts.
+    const estW = estimateTextWidth(segmentEdits[i]?.newText ?? fresh[i].text, fresh[i]);
+    const w = Math.max(bounds.width, estW);
+    cursor += w + gap;
+  }
+
+
+  if (corrections.length === 0) {
+    return { bytes: contentBytes, corrections };
+  }
+  return {
+    bytes: applyRunPositionShifts(contentBytes, corrections),
+    corrections,
+  };
+}
 
 /**
  * Width growth of the edited line itself. Needed when title|tags have already
@@ -34,10 +161,23 @@ function estimateLineGrowthDx(line: TextLine, oldText: string, newText: string):
 
   const oldW = Math.max(line.width, estimateTextWidth(oldText, run), 0.01);
   const estimated = estimateTextWidth(newText, run);
-  const scaled = oldW * (newText.length / Math.max(1, oldText.length));
   const fs = visualFontSize(run);
-  const growFloor = oldW + (newText.length - oldText.length) * fs * 0.5;
-  const newW = Math.max(estimated, scaled, growFloor);
+  const deltaChars = newText.length - oldText.length;
+  const deltaSpaces =
+    (newText.match(/\s/g) || []).length - (oldText.match(/\s/g) || []).length;
+  const deltaLetters = deltaChars - deltaSpaces;
+  if (deltaSpaces > 0) {
+    const spaceFloor =
+      oldW
+      + Math.max(0, deltaLetters) * fs * 0.35
+      + Math.max(0, deltaSpaces) * fs * 0.28;
+    return Math.max(0, Math.max(estimated, spaceFloor) - oldW);
+  }
+  const scaled = oldW * (newText.length / Math.max(1, oldText.length));
+  const deltaFloor = oldW + Math.max(0, deltaLetters) * fs * 0.4;
+  const emCap = newText.length * fs * 0.52;
+  const proportional = Math.max(estimated, scaled);
+  const newW = Math.max(deltaFloor, Math.min(proportional, emCap));
   return Math.max(0, newW - oldW);
 }
 
@@ -97,12 +237,42 @@ export interface LineTextEditOptions {
   oldText?: string;
   /** Caret index after the edit (matches overlay preview). */
   caretAfter?: number;
+  /**
+   * Skip measured residual gap correction. Needed when a larger fontSize will
+   * be applied next — residual packs to the old-size widths and pulls peers
+   * back into the space the size bump still needs.
+   */
+  skipResidualCorrection?: boolean;
 }
 
 /**
  * Apply a Word-style line edit with paragraph layout:
  * distributes text across styled runs, wraps overflow, and shifts positions.
  */
+/**
+ * Close rivers / overlaps using measured glyph bounds after text+style edits.
+ * Safe to run once fonts/sizes are final (not before a pending fontSize bump).
+ */
+export function correctLineResidualGaps(
+  contentBytes: Uint8Array,
+  page: PDFPageInfo,
+  objects: Map<string, PDFObject>,
+  line: TextLine,
+  options?: { gapSourceLine?: TextLine },
+): { bytes: Uint8Array; corrections: RunPositionShift[] } {
+  if (line.segments.length < 2) {
+    return { bytes: contentBytes, corrections: [] };
+  }
+  return correctResidualRunGaps(
+    contentBytes,
+    page,
+    objects,
+    line,
+    line.segments.map(s => ({ run: s.run, newText: s.text })),
+    options?.gapSourceLine,
+  );
+}
+
 export function applyLineTextEdit(
   contentBytes: Uint8Array,
   page: PDFPageInfo,
@@ -145,10 +315,14 @@ export function applyLineTextEdit(
 
   let horizShifts = editShifts.filter(s => Math.abs(s.dy) < 0.01 && Math.abs(s.dx) > 0.01);
   const segmentGrowthDx = horizShifts.reduce((m, s) => Math.max(m, s.dx), 0);
-  // After column split, title is alone — use line width growth so same-baseline
-  // tags/dates still get collectRightColumnShifts.
-  const lineGrowthDx = estimateLineGrowthDx(primaryLine, oldText, newText);
+  // Multi-segment: trust segment chain. Single-segment: estimate line growth for
+  // right-column peers. Never inflate the whole line by a pending fontSize.
+  const lineGrowthDx = primaryLine.segments.length <= 1
+    ? estimateLineGrowthDx(primaryLine, oldText, newText)
+    : 0;
   const growthDx = Math.max(segmentGrowthDx, lineGrowthDx);
+  const dSpaces = (newText.match(/\s/g) || []).length - (oldText.match(/\s/g) || []).length;
+  const dChars = newText.length - oldText.length;
   const rightShifts = collectRightColumnShifts(primaryLine, flow, growthDx);
   if (rightShifts.length > 0) {
     horizShifts = [...horizShifts, ...rightShifts];
@@ -166,7 +340,34 @@ export function applyLineTextEdit(
     );
   }
 
-  return applyTextEdits(bytes, page, objects, edits);
+  const editResult = applyTextEdits(bytes, page, objects, edits);
+  bytes = editResult.newContentBytes;
+
+  // Second pass: close rivers / overlaps left by width-estimate error (or a
+  // first-pass shift that failed to land). Uses measured glyph bounds.
+  // Skip when a pending fontSize enlarge will need that slack next.
+  // Also skip when spaces were inserted: subset fonts often measure space
+  // width ≈ 0, so residual packing pulls trailers back and live gaps vanish
+  // on commit (spaces in Tj, but next run still at old X).
+  const skipResidualForSpaces = dSpaces > 0;
+  if (
+    !options?.skipResidualCorrection
+    && !skipResidualForSpaces
+    && primarySegmentEdits
+    && primarySegmentEdits.length > 1
+  ) {
+    const corrected = correctResidualRunGaps(
+      bytes,
+      page,
+      objects,
+      primaryLine,
+      primarySegmentEdits,
+    );
+    bytes = corrected.bytes;
+  } else if (options?.skipResidualCorrection || skipResidualForSpaces) {
+  }
+
+  return { ...editResult, newContentBytes: bytes };
 }
 
 export { buildLayoutPlan };

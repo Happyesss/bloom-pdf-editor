@@ -14,6 +14,8 @@ import {
   PDFDict,
   PDFRef,
   PDFString,
+  PDFHexString,
+  PDFArray,
   type PDFDocumentData,
   type PDFObject,
   type PDFPageInfo,
@@ -21,18 +23,30 @@ import {
 import type { TextRun } from '../content/interpreter';
 import { getPageContentBytes, resolveRef } from '../parser/parser';
 import {
+  applyRunPositionShifts,
+  buildTJWithSpaceAdvances,
   compileInstructions,
   encodeTextForFont,
   encodeTextWinAnsi,
   loadFontForName,
   type EditResult,
   type EncodedText,
+  type RunPositionShift,
 } from '../editor/text-editor';
 import { ensureFallbackFont } from '../fonts/font-augmentation';
 import { updatePageContent } from '../editor/stream-compiler';
 import { parseContentStream, type CSInstruction } from '../content/operator-lexer';
+import { interpretPage } from '../content/interpreter';
+import { reconstructLines } from './line-reconstruction';
 import type { TextLine, StyledSegment } from './types';
-import { fontNameStyleFlags, visualFontSize } from './metrics';
+import {
+  estimateTextWidth,
+  getRunBounds,
+  fontNameStyleFlags,
+  resolveRunStyleFlags,
+  visualFontSize,
+} from './metrics';
+import type { FontData } from '../fonts/font-parser';
 
 export interface TextStylePatch {
   fontSize?: number;
@@ -112,6 +126,383 @@ export function mapSelectionToSegments(
     }
   }
   return hits;
+}
+
+/**
+ * When fontSize grows on a mid-line span, sibling runs keep absolute Tm and
+ * pile onto the enlarged glyphs. Shift trailing peers by selectedW×(ratio−1).
+ *
+ * Peer selection is by CHARACTER INDEX (segments starting at/after selectionEnd),
+ * not by x — after caret-aware redistribute the grown span is often one mega-run,
+ * so every later word shares that run and an x-fence finds nobody to shift.
+ */
+function collectFontSizeTrailingShifts(
+  line: TextLine,
+  selectionStart: number,
+  selectionEnd: number,
+  newFontSize: number,
+): {
+  shifts: RunPositionShift[];
+  growthDx: number;
+  fenceX: number;
+  ownedCount: number;
+  trailingSegs: number;
+} {
+  const hits = mapSelectionToSegments(line, selectionStart, selectionEnd);
+  if (hits.length === 0) {
+    return { shifts: [], growthDx: 0, fenceX: 0, ownedCount: 0, trailingSegs: 0 };
+  }
+
+  let growthDx = 0;
+  let fenceX = Infinity;
+  const owned = new Set<TextRun>();
+
+  for (const h of hits) {
+    const run = h.segment.run;
+    owned.add(run);
+    const oldFs = visualFontSize(run);
+    if (oldFs < 0.5) continue;
+    const ratio = newFontSize / oldFs;
+    if (Math.abs(ratio - 1) < 0.02) continue;
+
+    const localText = run.text.slice(h.localStart, h.localEnd);
+    const wGlyph = widthUpToChar(run, h.localEnd) - widthUpToChar(run, h.localStart);
+    const wEst = estimateTextWidth(localText, run);
+    const selectedW = Math.max(wGlyph, wEst, localText.length * oldFs * 0.45);
+    growthDx += selectedW * (ratio - 1);
+
+    const startX = run.x + widthUpToChar(run, h.localStart);
+    if (startX < fenceX) fenceX = startX;
+  }
+
+  if (fenceX === Infinity || Math.abs(growthDx) < 0.35) {
+    return { shifts: [], growthDx: 0, fenceX: 0, ownedCount: owned.size, trailingSegs: 0 };
+  }
+
+  const maxGrowth = Math.max(8, (selectionEnd - selectionStart) * newFontSize * 0.7);
+  if (growthDx > maxGrowth) growthDx = maxGrowth;
+
+  // Whitespace-only enlargements must not shove the rest of the line.
+  const selectedSlice = line.text.slice(selectionStart, selectionEnd);
+  if (/^\s*$/.test(selectedSlice)) {
+    return { shifts: [], growthDx: 0, fenceX: fenceX, ownedCount: owned.size, trailingSegs: 0 };
+  }
+
+  const shifts: RunPositionShift[] = [];
+  const seen = new Set<TextRun>();
+  let trailingSegs = 0;
+  for (const seg of line.segments) {
+    if (seg.startIndex < selectionEnd) continue;
+    trailingSegs++;
+    const run = seg.run;
+    if (owned.has(run) || seen.has(run)) continue;
+    if ((run.sourceInstructionIndices ?? []).length === 0) continue;
+    seen.add(run);
+    shifts.push({ run, dx: growthDx, dy: 0 });
+  }
+
+  // Fallback: x-fence when redistribute absorbed later words into the owned run
+  // (no segment starts at/after selectionEnd).
+  if (shifts.length === 0) {
+    for (const run of line.runs) {
+      if (owned.has(run) || seen.has(run)) continue;
+      if ((run.sourceInstructionIndices ?? []).length === 0) continue;
+      if (getRunBounds(run).left >= fenceX - 0.5) {
+        seen.add(run);
+        shifts.push({ run, dx: growthDx, dy: 0 });
+      }
+    }
+  }
+
+  return { shifts, growthDx, fenceX, ownedCount: owned.size, trailingSegs };
+}
+
+/**
+ * One trailing-shift pass for many mid-line fontSize patches (e.g. typed
+ * letters separated by spaces). Sequential per-patch shifts stack on the same
+ * peers and invent rivers; skipping all shifts lets oversized glyphs overlap.
+ *
+ * For each segment after a patch, dx = sum of growth from patches that end
+ * at/before that segment — same math as sequential applies, one write.
+ */
+export function collectBatchedFontSizeTrailingShifts(
+  line: TextLine,
+  ranges: Array<{ start: number; end: number; fontSize: number }>,
+): {
+  shifts: RunPositionShift[];
+  totalGrowthDx: number;
+  rangeCount: number;
+} {
+  const parts: Array<{
+    start: number;
+    end: number;
+    growthDx: number;
+    fenceX: number;
+    owned: Set<TextRun>;
+  }> = [];
+
+  for (const r of ranges) {
+    if (r.end <= r.start || r.fontSize == null) continue;
+    if (/^\s*$/.test(line.text.slice(r.start, r.end))) continue;
+    const one = collectFontSizeTrailingShifts(line, r.start, r.end, r.fontSize);
+    if (one.growthDx < 0.35) continue;
+    const owned = new Set<TextRun>();
+    for (const h of mapSelectionToSegments(line, r.start, r.end)) {
+      owned.add(h.segment.run);
+    }
+    parts.push({
+      start: r.start,
+      end: r.end,
+      growthDx: one.growthDx,
+      fenceX: one.fenceX,
+      owned,
+    });
+  }
+  if (parts.length === 0) {
+    return { shifts: [], totalGrowthDx: 0, rangeCount: 0 };
+  }
+
+  const allOwned = new Set<TextRun>();
+  for (const p of parts) {
+    for (const r of p.owned) allOwned.add(r);
+  }
+
+  const dxByRun = new Map<TextRun, number>();
+  const seen = new Set<TextRun>();
+  for (const seg of line.segments) {
+    const run = seg.run;
+    if (seen.has(run) || allOwned.has(run)) continue;
+    if ((run.sourceInstructionIndices ?? []).length === 0) continue;
+    let dx = 0;
+    for (const p of parts) {
+      if (seg.startIndex >= p.end) dx += p.growthDx;
+    }
+    if (dx < 0.35) continue;
+    seen.add(run);
+    dxByRun.set(run, dx);
+  }
+
+  if (dxByRun.size === 0) {
+    const total = parts.reduce((s, p) => s + p.growthDx, 0);
+    let fenceX = Infinity;
+    for (const p of parts) {
+      if (p.fenceX < fenceX) fenceX = p.fenceX;
+    }
+    if (Number.isFinite(fenceX) && total >= 0.35) {
+      for (const run of line.runs) {
+        if (allOwned.has(run)) continue;
+        if ((run.sourceInstructionIndices ?? []).length === 0) continue;
+        if (getRunBounds(run).left >= fenceX - 0.5) {
+          dxByRun.set(run, total);
+        }
+      }
+    }
+  }
+
+  const shifts: RunPositionShift[] = [];
+  let totalGrowthDx = 0;
+  for (const [run, dx] of dxByRun) {
+    shifts.push({ run, dx, dy: 0 });
+    totalGrowthDx = Math.max(totalGrowthDx, dx);
+  }
+  return { shifts, totalGrowthDx, rangeCount: parts.length };
+}
+
+/**
+ * After Tf grows mid-line glyphs, push every same-line run that still starts
+ * under the enlarged span by ONE uniform dx (no cascading re-pack).
+ *
+ * Only runs that overlap the just-styled selection count as "enlarged".
+ * Matching every same-size run on the line (e.g. an earlier 16pt insert)
+ * makes interstitial content (spaces between two large words) look like an
+ * overlap of a mega-span and shoves the rest of the line by hundreds of units.
+ */
+function fixLineLocalOverlapsAfterFontSize(
+  contentBytes: Uint8Array,
+  page: PDFPageInfo,
+  objects: Map<string, PDFObject>,
+  line: TextLine,
+  selectionStart: number,
+  selectionEnd: number,
+  newFontSize: number,
+): { bytes: Uint8Array; fixes: number; totalDx: number; pairs: Array<{ left: string; right: string; dx: number }> } {
+  const interpreted = interpretPage(contentBytes, page, objects);
+  const freshLines = reconstructLines(interpreted.textRuns);
+  const normalize = (t: string) => t.replace(/[\u2013\u2014\u2212]/g, '-');
+  const want = normalize(line.text);
+  const midSlice = line.text.slice(selectionStart, selectionEnd);
+  const baseTol = Math.max(2, line.fontSize * 0.35);
+  const sameBaseline = freshLines.filter(
+    l => Math.abs(l.baseline - line.baseline) <= baseTol,
+  );
+
+  // Intact line, else mid-bearing fragment, else all same-baseline lines.
+  // After a mid-line Tf split, column detection often tears the enlarged mid
+  // onto a sibling cell — peers must still include the after-fragment.
+  const fresh =
+    sameBaseline.find(l => l.text === line.text)
+    ?? sameBaseline.find(l => normalize(l.text) === want)
+    ?? (midSlice.trim()
+      ? sameBaseline.find(l => l.text.includes(midSlice.trim()))
+      : undefined)
+    ?? null;
+
+  const peerSource = fresh ? [fresh] : sameBaseline;
+  if (peerSource.length === 0) {
+    return { bytes: contentBytes, fixes: 0, totalDx: 0, pairs: [] };
+  }
+
+  // Don't repack the line when only spaces were enlarged.
+  if (/^\s*$/.test(midSlice)) {
+    return { bytes: contentBytes, fixes: 0, totalDx: 0, pairs: [] };
+  }
+
+  const peers = peerSource
+    .flatMap(l => l.runs)
+    .filter(r => (r.sourceInstructionIndices ?? []).length > 0)
+    .sort((a, b) => getRunBounds(a).left - getRunBounds(b).left);
+
+  if (peers.length < 2) {
+    return { bytes: contentBytes, fixes: 0, totalDx: 0, pairs: [] };
+  }
+
+  // Selection-local enlarged runs only (not every same-size run on the line).
+  const enlarged: TextRun[] = [];
+  const seen = new Set<TextRun>();
+  const segLists = fresh ? [fresh.segments] : peerSource.map(l => l.segments);
+  for (const segments of segLists) {
+    for (const seg of segments) {
+      if (fresh) {
+        if (seg.endIndex <= selectionStart || seg.startIndex >= selectionEnd) continue;
+      } else if (midSlice.trim() && !seg.text.includes(midSlice.trim())
+        && !midSlice.includes(seg.text.trim())) {
+        // Union path: prefer runs that carry the enlarged slice.
+        if (Math.abs(visualFontSize(seg.run) - newFontSize) >= 1.0) continue;
+      }
+      const run = seg.run;
+      if (seen.has(run)) continue;
+      if ((run.sourceInstructionIndices ?? []).length === 0) continue;
+      if (Math.abs(visualFontSize(run) - newFontSize) < 1.0) {
+        seen.add(run);
+        enlarged.push(run);
+      }
+    }
+  }
+  if (enlarged.length === 0) {
+    // Fallback: original line hits → match fresh runs by text + x proximity
+    const hits = mapSelectionToSegments(line, selectionStart, selectionEnd);
+    for (const h of hits) {
+      const hb = getRunBounds(h.segment.run);
+      const match = peers.find(r => {
+        if (seen.has(r)) return false;
+        if (Math.abs(visualFontSize(r) - newFontSize) >= 1.0) return false;
+        const b = getRunBounds(r);
+        return Math.abs(b.left - hb.left) < Math.max(8, newFontSize)
+          || r.text.includes(h.segment.run.text.slice(h.localStart, h.localEnd));
+      });
+      if (match) {
+        seen.add(match);
+        enlarged.push(match);
+      }
+    }
+  }
+  if (enlarged.length === 0) {
+    return { bytes: contentBytes, fixes: 0, totalDx: 0, pairs: [] };
+  }
+
+  let grownRight = -Infinity;
+  let enlargedLeft = Infinity;
+  let enlargedMaxIdx = -1;
+  for (const r of enlarged) {
+    const b = getRunBounds(r);
+    if (b.right > grownRight) grownRight = b.right;
+    if (b.left < enlargedLeft) enlargedLeft = b.left;
+    for (const idx of r.sourceInstructionIndices ?? []) {
+      if (idx > enlargedMaxIdx) enlargedMaxIdx = idx;
+    }
+  }
+  // Mid glyphs sometimes report ~0 advance after a size-only byte-split; floor
+  // grownRight so the after-fragment can still clear the typed span.
+  const midFloor =
+    enlargedLeft
+    + Math.max(1, midSlice.replace(/\s/g, '').length) * newFontSize * 0.42;
+  if (grownRight < midFloor) grownRight = midFloor;
+
+  if (!Number.isFinite(grownRight)) {
+    return { bytes: contentBytes, fixes: 0, totalDx: 0, pairs: [] };
+  }
+
+  const minGap = Math.max(
+    fresh?.fontSize ?? line.fontSize,
+    line.fontSize,
+    8,
+  ) * 0.1;
+  const enlargedSet = new Set(enlarged);
+  // Peers under the enlarged span, OR stream-after fragments that still sit
+  // left of mid (after-fragment drawn under "before").
+  let firstIdx = -1;
+  let streamAfterStuck = false;
+  for (let i = 0; i < peers.length; i++) {
+    if (enlargedSet.has(peers[i])) continue;
+    const b = getRunBounds(peers[i]);
+    const idxs = peers[i].sourceInstructionIndices ?? [];
+    const peerMinIdx = idxs.length > 0 ? Math.min(...idxs) : -1;
+    const underSpan = b.left >= enlargedLeft - 0.5 && b.left < grownRight - 0.5;
+    const stuckBehind =
+      peerMinIdx > enlargedMaxIdx && b.left < grownRight - 0.5;
+    if (underSpan || stuckBehind) {
+      firstIdx = i;
+      streamAfterStuck = stuckBehind && !underSpan;
+      break;
+    }
+  }
+  if (firstIdx < 0) {
+    return { bytes: contentBytes, fixes: 0, totalDx: 0, pairs: [] };
+  }
+
+  const firstLeft = getRunBounds(peers[firstIdx]).left;
+  let dx = grownRight + minGap - firstLeft;
+  if (dx <= 0.5) {
+    return { bytes: contentBytes, fixes: 0, totalDx: 0, pairs: [] };
+  }
+
+  // Soft cap for ordinary under-span nudges. Stream-after fragments stuck to
+  // the left of mid need the full clearance.
+  if (!streamAfterStuck) {
+    const selLen = Math.max(1, selectionEnd - selectionStart);
+    const maxDx = Math.min(
+      selLen * newFontSize * 0.45,
+      newFontSize * 4,
+    );
+    if (dx > maxDx) dx = maxDx;
+  }
+
+  const shifts: RunPositionShift[] = [];
+  const pairs: Array<{ left: string; right: string; dx: number }> = [];
+  for (let i = firstIdx; i < peers.length; i++) {
+    if (enlargedSet.has(peers[i])) continue;
+    // Only shift runs at/after the stuck peer in stream order when clearing
+    // a buried after-fragment — avoid shoving earlier cells (bullet) right.
+    if (streamAfterStuck) {
+      const idxs = peers[i].sourceInstructionIndices ?? [];
+      const peerMinIdx = idxs.length > 0 ? Math.min(...idxs) : -1;
+      if (peerMinIdx <= enlargedMaxIdx) continue;
+    }
+    shifts.push({ run: peers[i], dx, dy: 0 });
+  }
+  pairs.push({
+    left: enlarged.map(r => r.text.slice(0, 10)).join('|'),
+    right: peers[firstIdx].text.slice(0, 12),
+    dx: Math.round(dx * 100) / 100,
+  });
+
+
+  return {
+    bytes: applyRunPositionShifts(contentBytes, shifts, peers),
+    fixes: shifts.length,
+    totalDx: dx * shifts.length,
+    pairs,
+  };
 }
 
 /** Strip weight/style tokens so we can rebuild a Regular/Bold/Italic face name. */
@@ -246,6 +637,17 @@ function ensureStandard14Font(
   return resourceKey;
 }
 
+export interface StyleApplyOptions {
+  /**
+   * When text was just rewritten in the same commit, peers were already shifted
+   * for the new glyph widths. Extra fontSize trailing shifts then stack per
+   * letter-patch (especially with spaces between them) and invent rivers.
+   * Mid-run Tf growth still advances the same-BT tail via Tj; overlap fix
+   * catches true collisions.
+   */
+  skipTrailingFontSizeShifts?: boolean;
+}
+
 /**
  * Apply style to a character range on a line — safe in-BT patches only.
  */
@@ -257,6 +659,7 @@ export function applyStyleToSelection(
   selectionStart: number,
   selectionEnd: number,
   style: TextStylePatch,
+  options?: StyleApplyOptions,
 ): StyleEditResult {
   const start = Math.max(0, Math.min(selectionStart, line.text.length));
   const end = Math.max(start, Math.min(selectionEnd, line.text.length));
@@ -289,6 +692,22 @@ export function applyStyleToSelection(
   let addedUnderline = false;
   let removedUnderline = false;
 
+  // Push trailing absolute-Tm peers BEFORE patching Tf — indices must stay valid.
+  // growthDx = selectedW × (newFs/oldFs − 1) stacks with text-edit insert shifts.
+  if (
+    style.fontSize != null
+    && end > start
+    && !options?.skipTrailingFontSizeShifts
+  ) {
+    const { shifts, growthDx, fenceX, ownedCount, trailingSegs } = collectFontSizeTrailingShifts(
+      line, start, end, style.fontSize,
+    );
+    if (shifts.length > 0) {
+      bytes = applyRunPositionShifts(bytes, shifts, line.runs);
+    }
+  } else if (style.fontSize != null && options?.skipTrailingFontSizeShifts) {
+  }
+
   for (const [run, range] of byRun) {
     const patched = patchRunStyle(
       bytes, run, style, page, objects, range.localStart, range.localEnd,
@@ -296,6 +715,15 @@ export function applyStyleToSelection(
     bytes = patched.bytes;
     addedUnderline = addedUnderline || patched.addedUnderline;
     removedUnderline = removedUnderline || patched.removedUnderline;
+  }
+
+  // After Tf grows mid glyphs, push any same-line runs that still overlap
+  // (e.g. the "after" fragment of a style split that didn't advance enough).
+  if (style.fontSize != null && end > start) {
+    const fixed = fixLineLocalOverlapsAfterFontSize(
+      bytes, page, objects, line, start, end, style.fontSize,
+    );
+    bytes = fixed.bytes;
   }
 
   if (style.align && line.runs.length > 0) {
@@ -329,11 +757,12 @@ export async function applyStyleToSelectionOnPage(
   selectionStart: number,
   selectionEnd: number,
   style: TextStylePatch,
+  options?: StyleApplyOptions,
 ): Promise<StyleEditResult> {
   const page = doc.pages[pageIndex];
   const contentBytes = getPageContentBytes(page, doc.objects);
   const result = applyStyleToSelection(
-    contentBytes, page, doc.objects, line, selectionStart, selectionEnd, style,
+    contentBytes, page, doc.objects, line, selectionStart, selectionEnd, style, options,
   );
   await updatePageContent(page.contentRefs, result.newContentBytes, doc.objects);
   return result;
@@ -357,6 +786,165 @@ function findBtEtRange(
   return { bt, et };
 }
 
+/** Prefer a real Tj/TJ/'/" index — min(indices) is often a preceding Tf after font switches. */
+function resolveTextShowingIndex(
+  instructions: CSInstruction[],
+  indices: number[],
+): number {
+  const sorted = [...indices].sort((a, b) => a - b);
+  for (const i of sorted) {
+    const op = instructions[i]?.operator;
+    if (op === 'Tj' || op === 'TJ' || op === "'" || op === '"') return i;
+  }
+  const start = sorted.length > 0 ? sorted[0] : 0;
+  for (let i = start; i < instructions.length; i++) {
+    const op = instructions[i]?.operator;
+    if (op === 'ET') break;
+    if (op === 'Tj' || op === 'TJ' || op === "'" || op === '"') return i;
+  }
+  return sorted[0] ?? 0;
+}
+
+/**
+ * Wrap already-encoded Tj/TJ string bytes in a TJ array, inserting space
+ * advances without re-encoding letter CIDs.
+ */
+function tjFromEncodedWithSpaceAdvances(
+  text: string,
+  encoded: PDFObject,
+  fontData: FontData | null,
+): PDFArray {
+  let bytes: Uint8Array;
+  let asHex = false;
+  if (encoded instanceof PDFHexString) {
+    bytes = encoded.toBytes();
+    asHex = true;
+  } else if (encoded instanceof PDFString) {
+    bytes = encoded.toBytes();
+  } else if (encoded instanceof PDFArray) {
+    // Already a TJ — prefer rebuild from text via standard path
+    return buildTJWithSpaceAdvances(text, fontData, false);
+  } else {
+    return buildTJWithSpaceAdvances(text, fontData, false);
+  }
+
+  const isComposite = !!fontData?.isComposite;
+  const bpc = isComposite ? 2 : 1;
+  if (bytes.length < text.length * bpc) {
+    return buildTJWithSpaceAdvances(text, fontData, false);
+  }
+
+  const toPdfString = (from: number, to: number): PDFObject => {
+    const part = bytes.slice(from, to);
+    if (asHex) {
+      let hex = '';
+      for (let i = 0; i < part.length; i++) hex += part[i].toString(16).padStart(2, '0');
+      return new PDFHexString(hex);
+    }
+    let s = '';
+    for (let i = 0; i < part.length; i++) s += String.fromCharCode(part[i]);
+    return new PDFString(s);
+  };
+
+  const items: PDFObject[] = [];
+  let bytePos = 0;
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === ' ') {
+      let j = i;
+      while (j < text.length && text[j] === ' ') j++;
+      const n = j - i;
+      const byteLen = n * bpc;
+      items.push(toPdfString(bytePos, bytePos + byteLen));
+      const advChars = Math.min(n, 3);
+      items.push(new PDFNumber(-Math.round(advChars * 0.28 * 1000)));
+      bytePos += byteLen;
+      i = j;
+      continue;
+    }
+    let j = i;
+    while (j < text.length && text[j] !== ' ') j++;
+    const n = j - i;
+    const byteLen = n * bpc;
+    items.push(toPdfString(bytePos, bytePos + byteLen));
+    bytePos += byteLen;
+    i = j;
+  }
+  if (items.length === 0) {
+    return buildTJWithSpaceAdvances(text, fontData, false);
+  }
+  return new PDFArray(items);
+}
+
+/**
+ * Split an existing Tj/TJ PDF string into before/mid/after by Unicode char index
+ * without re-encoding — avoids subset round-trips that turn letters into spaces.
+ */
+function splitEncodedByUnicodeIndex(
+  operand: PDFObject,
+  fontData: FontData | null,
+  midStart: number,
+  midEnd: number,
+  totalChars: number,
+): { before: PDFObject; mid: PDFObject; after: PDFObject } | null {
+  let bytes: Uint8Array;
+  let asHex = false;
+  if (operand instanceof PDFHexString) {
+    bytes = operand.toBytes();
+    asHex = true;
+  } else if (operand instanceof PDFString) {
+    bytes = operand.toBytes();
+  } else if (operand instanceof PDFArray) {
+    // Flatten TJ string parts only (drop kerning numbers) into one byte stream
+    const parts: number[] = [];
+    for (let i = 0; i < operand.length; i++) {
+      const item = operand.get(i)!;
+      if (item instanceof PDFString || item instanceof PDFHexString) {
+        const b = item.toBytes();
+        for (let j = 0; j < b.length; j++) parts.push(b[j]);
+        if (item instanceof PDFHexString) asHex = true;
+      }
+    }
+    if (parts.length === 0) return null;
+    bytes = new Uint8Array(parts);
+  } else {
+    return null;
+  }
+
+  const isComposite = !!fontData?.isComposite;
+  const cuts: number[] = [0]; // byte offsets at unicode boundaries
+  let idx = 0;
+  let charCount = 0;
+  while (idx < bytes.length && charCount < totalChars) {
+    if (isComposite && idx + 1 < bytes.length) idx += 2;
+    else idx += 1;
+    charCount++;
+    cuts.push(idx);
+  }
+  if (charCount < totalChars || midEnd > charCount) return null;
+  if (midStart < 0 || midStart > midEnd) return null;
+
+  const b0 = cuts[midStart] ?? 0;
+  const b1 = cuts[midEnd] ?? bytes.length;
+  const b2 = cuts[totalChars] ?? bytes.length;
+  const slice = (from: number, to: number) => {
+    const part = bytes.slice(from, to);
+    if (asHex) {
+      let hex = '';
+      for (let i = 0; i < part.length; i++) hex += part[i].toString(16).padStart(2, '0');
+      return new PDFHexString(hex);
+    }
+    let s = '';
+    for (let i = 0; i < part.length; i++) s += String.fromCharCode(part[i]);
+    return new PDFString(s);
+  };
+  return {
+    before: slice(0, b0),
+    mid: slice(b0, b1),
+    after: slice(b1, b2),
+  };
+}
+
 function patchRunStyle(
   contentBytes: Uint8Array,
   run: TextRun,
@@ -372,7 +960,7 @@ function patchRunStyle(
     return { bytes: contentBytes, addedUnderline: false, removedUnderline: false };
   }
 
-  const textIndex = Math.min(...indices);
+  const textIndex = resolveTextShowingIndex(instructions, indices);
   const range = findBtEtRange(instructions, textIndex);
   if (!range) return { bytes: contentBytes, addedUnderline: false, removedUnderline: false };
 
@@ -404,7 +992,9 @@ function patchRunStyle(
   // Font size / face: patch existing Tf / Tm only
   if (style.fontSize != null || style.bold != null || style.italic != null || style.fontFamily != null) {
     let fontKey: string | null = null;
-    const currentFlags = fontNameStyleFlags(run.fontName);
+    const fontDataForFlags = loadFontForName(run.fontName, page, objects);
+    // F2/F3 resource keys are opaque — never use name-only flags (that marks bold as false).
+    const currentFlags = resolveRunStyleFlags(run.fontName, fontDataForFlags);
     const wantBold = style.bold ?? currentFlags.bold;
     const wantItalic = style.italic ?? currentFlags.italic;
 
@@ -448,12 +1038,18 @@ function patchRunStyle(
     }
   }
 
-  // Underline: add stroke after ET, or remove a stroke we previously inserted
+  // Underline: replace any nearby stroke, then add one spanning the selection.
   if (style.underline === true) {
+    removedUnderline = removeUnderlineNearRun(instructions, run) || removedUnderline;
     const color = style.color ?? run.fillColor ?? [0, 0, 0];
     const y = run.y - visualFontSize(run) * 0.12;
     const startX = run.x + widthUpToChar(run, clampStart);
-    const endX = run.x + widthUpToChar(run, clampEnd);
+    // Full-run underlines must cover the drawn advance — glyph summation can
+    // undercount after mid-line inserts when widths are estimated.
+    let endX = run.x + widthUpToChar(run, clampEnd);
+    if (clampStart <= 0 && clampEnd >= run.text.length) {
+      endX = run.x + Math.max(run.width, endX - run.x, visualFontSize(run) * 0.5);
+    }
     const w = Math.max(endX - startX, visualFontSize(run) * 0.5);
     const ul: CSInstruction[] = [
       op('q'),
@@ -546,7 +1142,8 @@ function encodePieceForStyle(
   const lossy = encoded.missing.length > 0
     || (encoded.pdfString instanceof PDFString && encoded.pdfString.value.includes('?') && !text.includes('?'));
   if (lossy) {
-    return { encoded: encodeTextWinAnsi(text), fontKey: ensureFallbackFont(page, objects) };
+    const flags = resolveRunStyleFlags(fontData?.name || fontData?.baseFont || '', fontData);
+    return { encoded: encodeTextWinAnsi(text), fontKey: ensureFallbackFont(page, objects, flags) };
   }
   return { encoded, fontKey: null };
 }
@@ -579,9 +1176,6 @@ function splitRunTextStyle(
   if (!mid) return false;
 
   const fontData = loadFontForName(run.fontName, page, objects);
-  const beforePiece = before ? encodePieceForStyle(before, fontData, page, objects) : null;
-  const midPiece = encodePieceForStyle(mid, fontData, page, objects);
-  const afterPiece = after ? encodePieceForStyle(after, fontData, page, objects) : null;
 
   // Find current Tf size / name
   let tfSize: PDFObject = new PDFNumber(run.fontSize);
@@ -612,63 +1206,156 @@ function splitRunTextStyle(
     }
   }
 
-  const beforeFont = (beforePiece?.fontKey ?? origFontName).replace(/^\//, '');
-  const midFont = (newFontKey ?? midPiece.fontKey ?? origFontName).replace(/^\//, '');
-  const afterFont = (afterPiece?.fontKey ?? origFontName).replace(/^\//, '');
+  // Size-only: slice existing Tj/TJ bytes by Unicode index — re-encoding through
+  // subset ToUnicode was replacing the after-fragment with leading spaces.
+  let beforeOperand: PDFObject | null = null;
+  let midOperand: PDFObject | null = null;
+  let afterOperand: PDFObject | null = null;
+  let beforeFont = origFontName;
+  let midFont = (newFontKey ?? origFontName).replace(/^\//, '');
+  let afterFont = origFontName;
+  let usedByteSplit = false;
+
+  const sizeOnly = newFontKey == null && newFontSize != null;
+  if (sizeOnly) {
+    const operand = inst.operator === '"' ? inst.operands[2] : inst.operands[0];
+    if (operand) {
+      const sliced = splitEncodedByUnicodeIndex(
+        operand,
+        fontData,
+        localStart,
+        localEnd,
+        run.text.length,
+      );
+      if (sliced) {
+        beforeOperand = before ? sliced.before : null;
+        midOperand = sliced.mid;
+        afterOperand = after ? sliced.after : null;
+        usedByteSplit = true;
+      }
+    }
+  }
+
+  if (!usedByteSplit) {
+    const beforePiece = before ? encodePieceForStyle(before, fontData, page, objects) : null;
+    const midPiece = encodePieceForStyle(mid, fontData, page, objects);
+    const afterPiece = after ? encodePieceForStyle(after, fontData, page, objects) : null;
+    beforeOperand = beforePiece?.encoded.pdfString ?? null;
+    midOperand = midPiece.encoded.pdfString;
+    afterOperand = afterPiece?.encoded.pdfString ?? null;
+    beforeFont = (beforePiece?.fontKey ?? origFontName).replace(/^\//, '');
+    midFont = (newFontKey ?? midPiece.fontKey ?? origFontName).replace(/^\//, '');
+    afterFont = (afterPiece?.fontKey ?? origFontName).replace(/^\//, '');
+  }
+
+
+  if (!midOperand) return false;
+
+  // Pieces with spaces need TJ advances (subset space glyphs are ~0 wide).
+  // When byte-split succeeded, keep those CID bytes — re-encoding via
+  // buildTJWithSpaceAdvances was desyncing mid/after advances.
+  const showingOp = (
+    text: string,
+    operand: PDFObject,
+    face: string,
+    size: PDFObject,
+  ): CSInstruction[] => {
+    if (/ /.test(text)) {
+      const tj = usedByteSplit
+        ? tjFromEncodedWithSpaceAdvances(text, operand, fontData)
+        : buildTJWithSpaceAdvances(text, fontData, false);
+      return [op('Tf', [new PDFName(face), size]), op('TJ', [tj])];
+    }
+    return [op('Tf', [new PDFName(face), size]), op('Tj', [operand])];
+  };
 
   const replacement: CSInstruction[] = [];
   // Tj advances the text matrix, so consecutive Tj ops stay on one baseline
   // without Td — inserting Td would double-advance and shift glyphs.
-  if (before && beforePiece) {
-    replacement.push(op('Tf', [new PDFName(beforeFont), tfSize]));
-    replacement.push(op('Tj', [beforePiece.encoded.pdfString]));
+  if (before && beforeOperand) {
+    replacement.push(...showingOp(before, beforeOperand, beforeFont, tfSize));
   }
-  replacement.push(op('Tf', [new PDFName(midFont), midSize]));
-  replacement.push(op('Tj', [midPiece.encoded.pdfString]));
+  replacement.push(...showingOp(mid, midOperand, midFont, midSize));
   // Restore face/size for the tail (and later ops in this BT).
-  replacement.push(op('Tf', [new PDFName(afterFont), tfSize]));
-  if (after && afterPiece) {
-    replacement.push(op('Tj', [afterPiece.encoded.pdfString]));
+  if (after && afterOperand) {
+    replacement.push(...showingOp(after, afterOperand, afterFont, tfSize));
+  } else {
+    replacement.push(op('Tf', [new PDFName(afterFont), tfSize]));
   }
 
-  // If the original used TJ with spacing, falling back to Tj is acceptable for the selection.
+
   instructions.splice(textIndex, 1, ...replacement);
   return true;
 }
 
-/** Remove a short horizontal stroke under the run (editor-added underline). */
+/** Remove horizontal underline strokes near a run (q-wrapped or bare m/l/S). */
 function removeUnderlineNearRun(instructions: CSInstruction[], run: TextRun): boolean {
   const fs = visualFontSize(run);
   const targetY = run.y - fs * 0.12;
-  for (let i = 0; i < instructions.length - 6; i++) {
-    if (instructions[i].operator !== 'q') continue;
-    // q … m l S Q  — simple underline block
-    let mIdx = -1;
-    let lIdx = -1;
-    let sIdx = -1;
-    let qIdx = -1;
-    for (let j = i + 1; j < Math.min(i + 10, instructions.length); j++) {
-      const opName = instructions[j].operator;
-      if (opName === 'm' && mIdx < 0) mIdx = j;
-      else if (opName === 'l' && mIdx >= 0 && lIdx < 0) lIdx = j;
-      else if (opName === 'S' && lIdx >= 0 && sIdx < 0) sIdx = j;
-      else if (opName === 'Q' && sIdx >= 0) { qIdx = j; break; }
-      else if (opName === 'q' || opName === 'BT') break;
-    }
-    if (mIdx < 0 || lIdx < 0 || sIdx < 0 || qIdx < 0) continue;
+  const runLeft = run.x - fs * 0.5;
+  const runRight = run.x + Math.max(run.width, fs) + fs * 0.5;
+  let removed = false;
+
+  const tryRemoveSpan = (mIdx: number, lIdx: number, from: number, to: number): boolean => {
     const mx = instructions[mIdx].operands[0];
     const my = instructions[mIdx].operands[1];
     const lx = instructions[lIdx].operands[0];
     const ly = instructions[lIdx].operands[1];
-    if (!(mx instanceof PDFNumber) || !(my instanceof PDFNumber)) continue;
-    if (!(lx instanceof PDFNumber) || !(ly instanceof PDFNumber)) continue;
-    if (Math.abs(my.value - ly.value) > 0.5) continue; // not horizontal
-    if (Math.abs(my.value - targetY) > fs * 0.35) continue;
-    if (Math.abs(mx.value - run.x) > fs * 0.5) continue;
-    instructions.splice(i, qIdx - i + 1);
+    if (!(mx instanceof PDFNumber) || !(my instanceof PDFNumber)) return false;
+    if (!(lx instanceof PDFNumber) || !(ly instanceof PDFNumber)) return false;
+    if (Math.abs(my.value - ly.value) > 0.5) return false;
+    if (Math.abs(my.value - targetY) > fs * 0.35) return false;
+    const strokeLeft = Math.min(mx.value, lx.value);
+    const strokeRight = Math.max(mx.value, lx.value);
+    if (strokeRight < runLeft || strokeLeft > runRight) return false;
+    if (strokeRight - strokeLeft < fs * 0.3) return false;
+    instructions.splice(from, to - from + 1);
     return true;
+  };
+
+  for (let i = 0; i < instructions.length - 1; i++) {
+    // q … m l S Q
+    if (instructions[i].operator === 'q') {
+      let mIdx = -1;
+      let lIdx = -1;
+      let sIdx = -1;
+      let qIdx = -1;
+      for (let j = i + 1; j < Math.min(i + 12, instructions.length); j++) {
+        const opName = instructions[j].operator;
+        if (opName === 'm' && mIdx < 0) mIdx = j;
+        else if (opName === 'l' && mIdx >= 0 && lIdx < 0) lIdx = j;
+        else if (opName === 'S' && lIdx >= 0 && sIdx < 0) sIdx = j;
+        else if (opName === 'Q' && sIdx >= 0) { qIdx = j; break; }
+        else if (opName === 'q' || opName === 'BT') break;
+      }
+      if (mIdx >= 0 && lIdx >= 0 && sIdx >= 0 && qIdx >= 0) {
+        if (tryRemoveSpan(mIdx, lIdx, i, qIdx)) {
+          removed = true;
+          i--;
+          continue;
+        }
+      }
+    }
+
+    // Bare m l S (common for resume path underlines)
+    if (instructions[i].operator === 'm' && i + 2 < instructions.length) {
+      if (instructions[i + 1].operator === 'l' && instructions[i + 2].operator === 'S') {
+        // Include a preceding w / RG / rg if present (up to 3 ops)
+        let from = i;
+        for (let k = 1; k <= 3 && i - k >= 0; k++) {
+          const prev = instructions[i - k].operator;
+          if (prev === 'w' || prev === 'RG' || prev === 'rg' || prev === 'G' || prev === 'g') {
+            from = i - k;
+          } else break;
+        }
+        if (tryRemoveSpan(i, i + 1, from, i + 2)) {
+          removed = true;
+          i = Math.max(-1, from - 1);
+        }
+      }
+    }
   }
-  return false;
+  return removed;
 }
 
 function applyAlignmentShift(

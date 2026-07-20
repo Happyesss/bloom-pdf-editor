@@ -337,9 +337,24 @@ export function applyRunPositionShifts(
     const pos = resolvePos(item.textIndex);
 
     if (!pos) {
-      // Last resort: absolute Tm in page space (CTM assumed identity).
-      const absX = item.run.x + item.dx;
-      const absY = item.run.y || item.run.glyphs[0]?.tRm.f || 0;
+      // Prefer local Td inside the BT — absolute Tm at run.x is wrong for
+      // after-fragments of a style split (run.x is the before-origin while
+      // glyphs already sit further right via Tj advance).
+      const bt = findBtIndex(item.textIndex);
+      if (bt >= 0) {
+        const prevLocal = localTdByBt.get(bt) ?? { dx: 0, dy: 0 };
+        const needDx = item.dx - prevLocal.dx;
+        const needDy = item.dy - prevLocal.dy;
+        if (Math.abs(needDx) >= 0.01 || Math.abs(needDy) >= 0.01) {
+          injectLocalTd(item.textIndex, needDx, needDy);
+          localTdByBt.set(bt, { dx: prevLocal.dx + needDx, dy: prevLocal.dy + needDy });
+        }
+        continue;
+      }
+      // Last resort: absolute Tm from glyph origin (not run.x).
+      const g0 = item.run.glyphs[0]?.tRm;
+      const absX = (g0?.e ?? item.run.x) + item.dx;
+      const absY = (g0?.f ?? item.run.y) + item.dy;
       const insertAt = item.textIndex;
       instructions.splice(insertAt, 0, {
         operator: 'Tm',

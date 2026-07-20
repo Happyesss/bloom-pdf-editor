@@ -440,69 +440,71 @@ function fixLineLocalOverlapsAfterFontSize(
     8,
   ) * 0.1;
   const enlargedSet = new Set(enlarged);
-  // Peers under the enlarged span, OR stream-after fragments that still sit
-  // left of mid (after-fragment drawn under "before").
-  let firstIdx = -1;
-  let streamAfterStuck = false;
-  for (let i = 0; i < peers.length; i++) {
-    if (enlargedSet.has(peers[i])) continue;
-    const b = getRunBounds(peers[i]);
-    const idxs = peers[i].sourceInstructionIndices ?? [];
-    const peerMinIdx = idxs.length > 0 ? Math.min(...idxs) : -1;
-    const underSpan = b.left >= enlargedLeft - 0.5 && b.left < grownRight - 0.5;
-    const stuckBehind =
-      peerMinIdx > enlargedMaxIdx && b.left < grownRight - 0.5;
-    if (underSpan || stuckBehind) {
-      firstIdx = i;
-      streamAfterStuck = stuckBehind && !underSpan;
-      break;
-    }
-  }
-  if (firstIdx < 0) {
-    return { bytes: contentBytes, fixes: 0, totalDx: 0, pairs: [] };
-  }
-
-  const firstLeft = getRunBounds(peers[firstIdx]).left;
-  let dx = grownRight + minGap - firstLeft;
-  if (dx <= 0.5) {
-    return { bytes: contentBytes, fixes: 0, totalDx: 0, pairs: [] };
-  }
-
-  // Soft cap for ordinary under-span nudges. Stream-after fragments stuck to
-  // the left of mid need the full clearance.
-  if (!streamAfterStuck) {
-    const selLen = Math.max(1, selectionEnd - selectionStart);
-    const maxDx = Math.min(
-      selLen * newFontSize * 0.45,
-      newFontSize * 4,
-    );
-    if (dx > maxDx) dx = maxDx;
-  }
-
+  // Per-peer cascade from a running fence. Stream-after fragments (same BT,
+  // consecutive Tj after the enlarged mid) must NOT be position-shifted —
+  // applyRunPositionShifts often falls back to absolute Tm at run.x (the
+  // before-origin), teleporting "structure" from ~242 back to ~105.
+  const selLen = Math.max(1, selectionEnd - selectionStart);
+  const softMaxDx = Math.min(selLen * newFontSize * 0.45, newFontSize * 4);
   const shifts: RunPositionShift[] = [];
   const pairs: Array<{ left: string; right: string; dx: number }> = [];
-  for (let i = firstIdx; i < peers.length; i++) {
-    if (enlargedSet.has(peers[i])) continue;
-    // Only shift runs at/after the stuck peer in stream order when clearing
-    // a buried after-fragment — avoid shoving earlier cells (bullet) right.
-    if (streamAfterStuck) {
-      const idxs = peers[i].sourceInstructionIndices ?? [];
-      const peerMinIdx = idxs.length > 0 ? Math.min(...idxs) : -1;
-      if (peerMinIdx <= enlargedMaxIdx) continue;
+  let fenceRight = grownRight;
+  let seenEnlarged = false;
+  let totalDx = 0;
+  for (let i = 0; i < peers.length; i++) {
+    const peer = peers[i];
+    if (enlargedSet.has(peer)) {
+      seenEnlarged = true;
+      fenceRight = Math.max(fenceRight, getRunBounds(peer).right, grownRight);
+      continue;
     }
-    shifts.push({ run: peers[i], dx, dy: 0 });
+    if (!seenEnlarged) continue;
+    const b = getRunBounds(peer);
+    const idxs = peer.sourceInstructionIndices ?? [];
+    const peerMinIdx = idxs.length > 0 ? Math.min(...idxs) : -1;
+    const underSpan = b.left >= enlargedLeft - 0.5 && b.left < grownRight - 0.5;
+    const overlapsPrev = b.left < fenceRight - 0.5;
+    // After-fragment of a Tf split: sits at/just past mid via Tj advance.
+    // Far trailers also have higher instruction indices — only skip the near one.
+    const afterFragment =
+      peerMinIdx > enlargedMaxIdx
+      && b.left <= grownRight + Math.max(minGap, newFontSize * 0.25);
+    if (afterFragment) {
+      fenceRight = Math.max(fenceRight, b.right, grownRight);
+      continue;
+    }
+    if (!underSpan && !overlapsPrev) {
+      fenceRight = Math.max(fenceRight, b.right);
+      continue;
+    }
+    let peerDx = Math.max(
+      grownRight + minGap - b.left,
+      fenceRight + minGap - b.left,
+    );
+    if (underSpan && !overlapsPrev && peerDx > softMaxDx) {
+      peerDx = softMaxDx;
+    }
+    if (peerDx > 0.5) {
+      shifts.push({ run: peer, dx: peerDx, dy: 0 });
+      totalDx += peerDx;
+      pairs.push({
+        left: `fence@${Math.round(fenceRight * 10) / 10}`,
+        right: peer.text.slice(0, 12),
+        dx: Math.round(peerDx * 100) / 100,
+      });
+      fenceRight = b.right + peerDx;
+    } else {
+      fenceRight = Math.max(fenceRight, b.right);
+    }
   }
-  pairs.push({
-    left: enlarged.map(r => r.text.slice(0, 10)).join('|'),
-    right: peers[firstIdx].text.slice(0, 12),
-    dx: Math.round(dx * 100) / 100,
-  });
-
+  if (shifts.length === 0) {
+    return { bytes: contentBytes, fixes: 0, totalDx: 0, pairs: [] };
+  }
 
   return {
     bytes: applyRunPositionShifts(contentBytes, shifts, peers),
     fixes: shifts.length,
-    totalDx: dx * shifts.length,
+    totalDx,
     pairs,
   };
 }
@@ -701,13 +703,12 @@ export function applyStyleToSelection(
     && end > start
     && !options?.skipTrailingFontSizeShifts
   ) {
-    const { shifts, growthDx, fenceX, ownedCount, trailingSegs } = collectFontSizeTrailingShifts(
+    const { shifts } = collectFontSizeTrailingShifts(
       line, start, end, style.fontSize,
     );
     if (shifts.length > 0) {
       bytes = applyRunPositionShifts(bytes, shifts, line.runs);
     }
-  } else if (style.fontSize != null && options?.skipTrailingFontSizeShifts) {
   }
 
   for (const [run, range] of byRun) {

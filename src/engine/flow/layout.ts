@@ -12,7 +12,13 @@
 import type { TextRun } from '../content/interpreter';
 import type { DocumentFlow, Paragraph, TextLine } from './types';
 import { greedyWrap } from './line-break';
-import { estimateTextWidth, getRunBounds, visualFontSize } from './metrics';
+import {
+  estimateTextWidth,
+  estimateTextWidthWithOverrides,
+  getRunBounds,
+  visualFontSize,
+  type FontSizeOverrideRange,
+} from './metrics';
 import { distributeTextToSegments } from './reflow';
 
 export interface LineTextEdit {
@@ -88,6 +94,12 @@ export function computeHorizontalShifts(line: TextLine, newText: string): RunShi
 export function computeHorizontalShiftsFromEdits(
   line: TextLine,
   segmentEdits: { run: TextRun; newText: string }[],
+  /**
+   * Pending fontSize ranges in NEW line-text coordinates. Inserts typed at a
+   * larger size must reserve that width now — estimating at the old run size
+   * leaves trailers short and the enlarged glyphs pile onto neighbors.
+   */
+  fontSizeOverrides?: FontSizeOverrideRange[],
 ): RunShift[] {
   if (line.segments.length <= 1) return [];
 
@@ -96,6 +108,8 @@ export function computeHorizontalShiftsFromEdits(
   // Match text-editor SPACE_TJ_EM — subset fonts need ~0.28em per Space.
   const spaceEm = 0.28;
   let spaceGrowthSeen = false;
+  let newLinePos = 0;
+  const hasFsOverrides = !!(fontSizeOverrides && fontSizeOverrides.length > 0);
 
   for (let i = 0; i < line.segments.length; i++) {
     const seg = line.segments[i];
@@ -104,7 +118,9 @@ export function computeHorizontalShiftsFromEdits(
     const newText = edit?.newText ?? seg.text;
     const bounds = getRunBounds(run);
     const oldW = Math.max(bounds.width, estimateTextWidth(seg.text, run), 0.01);
-    const estimated = estimateTextWidth(newText, run);
+    const estimated = hasFsOverrides
+      ? estimateTextWidthWithOverrides(newText, run, newLinePos, fontSizeOverrides)
+      : estimateTextWidth(newText, run);
     const fs = visualFontSize(run);
     const growing = newText.length > seg.text.length;
     const deltaChars = newText.length - seg.text.length;
@@ -133,14 +149,18 @@ export function computeHorizontalShiftsFromEdits(
         shifts.push({ run, dx, dy: 0 });
       }
       cursor = bounds.left + dx + bounds.width + gap;
+      newLinePos += newText.length;
       continue;
     }
 
     // Length-ratio scaling treats spaces like letters and invents rivers.
     // Whenever spaces were inserted, trust the space-aware estimate only.
+    // Pending larger fontSize: trust the override estimate (includes size ratio).
     const scaled = oldW * (newText.length / Math.max(1, seg.text.length));
     let newW: number;
-    if (hasNewSpaces) {
+    if (hasFsOverrides && growing) {
+      newW = Math.max(estimated, oldW);
+    } else if (hasNewSpaces) {
       const spaceFloor =
         oldW
         + Math.max(0, deltaLetters) * fs * 0.35
@@ -164,6 +184,7 @@ export function computeHorizontalShiftsFromEdits(
     }
 
     cursor += newW + gap;
+    newLinePos += newText.length;
   }
 
   return mergeShifts(shifts);

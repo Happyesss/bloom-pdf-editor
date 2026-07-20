@@ -1664,6 +1664,14 @@ export default function EditorPage() {
         ? new Uint8Array(snapshot.contentBytes)
         : engine.getPageContentBytes(page, doc.objects);
 
+      const fontSizeOverrides = pendingStyles
+        .filter(p => p.patch.fontSize != null && p.end > p.start)
+        .map(p => ({
+          start: p.start,
+          end: p.end,
+          fontSize: p.patch.fontSize as number,
+        }));
+
       if (textChanged) {
         let commitText = editTextRef.current || editText;
         let caretAfter = editSelRef.current.end;
@@ -1680,6 +1688,7 @@ export default function EditorPage() {
             oldText: initialRunTextRef.current || targetLine.text,
             caretAfter,
             skipResidualCorrection: pendingStyles.some(p => p.patch.fontSize != null),
+            fontSizeOverrides: fontSizeOverrides.length > 0 ? fontSizeOverrides : undefined,
           },
         );
 
@@ -1720,7 +1729,6 @@ export default function EditorPage() {
           }
         }
         // Bridge fontSize-only holes left by spaces (not committed as fontSize)
-        const beforeCoalesce = queued.length;
         queued = coalesceFontSizePatches(queued, commitText);
         queued = expandFontSizePatchesThroughSpaces(queued, commitText);
         pendingStylesRef.current = [];
@@ -1764,7 +1772,9 @@ export default function EditorPage() {
         // Batched fontSize trailing only (no post-style residual). Residual after
         // Tf splits re-chained widths and shoved trailers; batched growth tracks
         // selection enlarge only.
-        if (textChanged) {
+        // Skip when text-edit already reserved large-font width via fontSizeOverrides
+        // — stacking both invents a river after the enlarged insert.
+        if (textChanged && fontSizeOverrides.length === 0) {
           const fsRanges = queued
             .filter(q => q.patch.fontSize != null)
             .map(q => ({

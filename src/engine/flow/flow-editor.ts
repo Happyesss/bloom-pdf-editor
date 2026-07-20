@@ -20,7 +20,12 @@ import {
   findParagraphForLine,
   type LayoutPlan,
 } from './layout';
-import { estimateTextWidth, getRunBounds, visualFontSize } from './metrics';
+import {
+  estimateTextWidth,
+  estimateTextWidthWithOverrides,
+  getRunBounds,
+  visualFontSize,
+} from './metrics';
 import type { DocumentFlow, TextLine } from './types';
 
 /** Normalize bullets/dashes so "• " still matches rewritten "- ". */
@@ -154,18 +159,28 @@ function correctResidualRunGaps(
  * been split into separate flow cells — segment shifts are empty (segCount=1)
  * but peers on the same baseline still need to move.
  */
-function estimateLineGrowthDx(line: TextLine, oldText: string, newText: string): number {
+function estimateLineGrowthDx(
+  line: TextLine,
+  oldText: string,
+  newText: string,
+  fontSizeOverrides?: Array<{ start: number; end: number; fontSize: number }>,
+): number {
   if (newText.length <= oldText.length) return 0;
   const run = line.segments[0]?.run ?? line.runs[0];
   if (!run) return 0;
 
   const oldW = Math.max(line.width, estimateTextWidth(oldText, run), 0.01);
-  const estimated = estimateTextWidth(newText, run);
+  const estimated = fontSizeOverrides?.length
+    ? estimateTextWidthWithOverrides(newText, run, 0, fontSizeOverrides)
+    : estimateTextWidth(newText, run);
   const fs = visualFontSize(run);
   const deltaChars = newText.length - oldText.length;
   const deltaSpaces =
     (newText.match(/\s/g) || []).length - (oldText.match(/\s/g) || []).length;
   const deltaLetters = deltaChars - deltaSpaces;
+  if (fontSizeOverrides?.length) {
+    return Math.max(0, estimated - oldW);
+  }
   if (deltaSpaces > 0) {
     const spaceFloor =
       oldW
@@ -245,6 +260,11 @@ export interface LineTextEditOptions {
    * back into the space the size bump still needs.
    */
   skipResidualCorrection?: boolean;
+  /**
+   * Pending fontSize patches in new-text coordinates so insert width estimates
+   * match the size that will be applied on the same commit.
+   */
+  fontSizeOverrides?: Array<{ start: number; end: number; fontSize: number }>;
 }
 
 /**
@@ -312,7 +332,11 @@ export function applyLineTextEdit(
 
   // Shifts must use the same caret-aware split as the text rewrite.
   const editShifts = primarySegmentEdits
-    ? computeHorizontalShiftsFromEdits(primaryLine, primarySegmentEdits)
+    ? computeHorizontalShiftsFromEdits(
+      primaryLine,
+      primarySegmentEdits,
+      options?.fontSizeOverrides,
+    )
     : plan.shifts;
 
   let horizShifts = editShifts.filter(s => Math.abs(s.dy) < 0.01 && Math.abs(s.dx) > 0.01);
@@ -320,7 +344,7 @@ export function applyLineTextEdit(
   // Multi-segment: trust segment chain. Single-segment: estimate line growth for
   // right-column peers. Never inflate the whole line by a pending fontSize.
   const lineGrowthDx = primaryLine.segments.length <= 1
-    ? estimateLineGrowthDx(primaryLine, oldText, newText)
+    ? estimateLineGrowthDx(primaryLine, oldText, newText, options?.fontSizeOverrides)
     : 0;
   const growthDx = Math.max(segmentGrowthDx, lineGrowthDx);
   const dSpaces = (newText.match(/\s/g) || []).length - (oldText.match(/\s/g) || []).length;
@@ -343,7 +367,13 @@ export function applyLineTextEdit(
       .sort((a, b) => a.run.x - b.run.x)[0];
     if (trailer) peerDx = trailer.dx;
   }
-  const peerShifts = collectPeerShiftsAfter(primaryLine, flow, peerAfterX, peerDx);
+  // Skip peers that share content-stream ops with segment trailers already shifted.
+  const shiftedOps = new Set<number>();
+  for (const s of horizShifts) {
+    for (const idx of s.run.sourceInstructionIndices ?? []) shiftedOps.add(idx);
+  }
+  const peerShifts = collectPeerShiftsAfter(primaryLine, flow, peerAfterX, peerDx)
+    .filter(s => !(s.run.sourceInstructionIndices ?? []).some(idx => shiftedOps.has(idx)));
   if (peerShifts.length > 0) {
     horizShifts = [...horizShifts, ...peerShifts];
   }
@@ -384,7 +414,6 @@ export function applyLineTextEdit(
       primarySegmentEdits,
     );
     bytes = corrected.bytes;
-  } else if (options?.skipResidualCorrection || skipResidualForSpaces) {
   }
 
   return { ...editResult, newContentBytes: bytes };

@@ -25,6 +25,8 @@ import { getPageContentBytes, resolveRef } from '../parser/parser';
 import {
   applyRunPositionShifts,
   buildTJWithSpaceAdvances,
+  SPACE_TJ_EM,
+  SPACE_TJ_MAX_CHARS,
   compileInstructions,
   encodeTextForFont,
   encodeTextWinAnsi,
@@ -856,8 +858,8 @@ function tjFromEncodedWithSpaceAdvances(
       const n = j - i;
       const byteLen = n * bpc;
       items.push(toPdfString(bytePos, bytePos + byteLen));
-      const advChars = Math.min(n, 3);
-      items.push(new PDFNumber(-Math.round(advChars * 0.28 * 1000)));
+      const advChars = Math.min(n, SPACE_TJ_MAX_CHARS);
+      items.push(new PDFNumber(-Math.round(advChars * SPACE_TJ_EM * 1000)));
       bytePos += byteLen;
       i = j;
       continue;

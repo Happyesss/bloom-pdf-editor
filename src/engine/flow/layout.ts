@@ -123,10 +123,16 @@ export function computeHorizontalShiftsFromEdits(
       if (gap < 0) gap = fs * 0.12;
     }
 
-    // Unchanged runs stay put. Re-estimating their width caused cursor drift
-    // that opened a fake column gutter and split the line.
+    // Unchanged runs keep measured width (re-estimating invented gutters), but
+    // must still chain-shift when a prior segment grew — otherwise trailers
+    // stay at the old X and overlap the expanded text (spaces / inserts).
     if (unchanged) {
-      cursor = bounds.right + gap;
+      let dx = cursor - bounds.left;
+      if (spaceGrowthSeen && dx < 0) dx = 0;
+      if (Math.abs(dx) > 0.01) {
+        shifts.push({ run, dx, dy: 0 });
+      }
+      cursor = bounds.left + dx + bounds.width + gap;
       continue;
     }
 

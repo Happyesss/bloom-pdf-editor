@@ -201,20 +201,22 @@ function buildLayoutPlan(
 }
 
 /**
- * Resume title rows are often split into left (title|tags) + right (date) cells.
- * Growing the left cell shifts tags right — also nudge same-baseline runs that
- * start past the edited line so "Currently Working" doesn't get buried.
+ * Nudge same-baseline peer runs that are not part of this line's segments.
+ *
+ * Covers: right-column date cells past the edited line, and orphan duplicate
+ * draws (common in resume PDFs) that sit mid-line after the grown run — those
+ * used to stay put when only segment trailers moved, overlapping the new gap.
  */
-function collectRightColumnShifts(
+function collectPeerShiftsAfter(
   line: TextLine,
   flow: DocumentFlow | undefined,
-  growthDx: number,
+  afterX: number,
+  dx: number,
 ): RunPositionShift[] {
-  if (!flow?.rawRuns?.length || growthDx < 0.5) return [];
+  if (!flow?.rawRuns?.length || dx < 0.5) return [];
 
   const owned = new Set<TextRun>(line.runs);
   const fs = Math.max(line.fontSize, 8);
-  const fence = line.rightEdge - fs * 0.25;
   const shifts: RunPositionShift[] = [];
 
   for (let i = 0; i < flow.rawRuns.length; i++) {
@@ -224,9 +226,9 @@ function collectRightColumnShifts(
 
     const baseline = run.glyphs.length > 0 ? run.glyphs[0].tRm.f : run.y;
     if (Math.abs(baseline - line.baseline) > Math.max(2, fs * 0.35)) continue;
-    if (run.x < fence) continue;
+    if (run.x < afterX - 0.5) continue;
 
-    shifts.push({ run, dx: growthDx, dy: 0 });
+    shifts.push({ run, dx, dy: 0 });
   }
 
   return shifts;
@@ -323,9 +325,27 @@ export function applyLineTextEdit(
   const growthDx = Math.max(segmentGrowthDx, lineGrowthDx);
   const dSpaces = (newText.match(/\s/g) || []).length - (oldText.match(/\s/g) || []).length;
   const dChars = newText.length - oldText.length;
-  const rightShifts = collectRightColumnShifts(primaryLine, flow, growthDx);
-  if (rightShifts.length > 0) {
-    horizShifts = [...horizShifts, ...rightShifts];
+
+  // Peer origin: just after the last changed segment (or classic right-column fence).
+  const fsPeer = Math.max(primaryLine.fontSize, 8);
+  let peerAfterX = primaryLine.rightEdge - fsPeer * 0.25;
+  let peerDx = growthDx;
+  if (primarySegmentEdits) {
+    for (let i = 0; i < primaryLine.segments.length; i++) {
+      const seg = primaryLine.segments[i];
+      const edit = primarySegmentEdits.find(e => e.run === seg.run) ?? primarySegmentEdits[i];
+      if (edit && edit.newText !== seg.text) {
+        peerAfterX = getRunBounds(seg.run).right;
+      }
+    }
+    const trailer = horizShifts
+      .filter(s => s.run.x >= peerAfterX - 1)
+      .sort((a, b) => a.run.x - b.run.x)[0];
+    if (trailer) peerDx = trailer.dx;
+  }
+  const peerShifts = collectPeerShiftsAfter(primaryLine, flow, peerAfterX, peerDx);
+  if (peerShifts.length > 0) {
+    horizShifts = [...horizShifts, ...peerShifts];
   }
 
   // Apply position shifts FIRST while sourceInstructionIndices still match the

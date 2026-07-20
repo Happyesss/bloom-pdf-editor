@@ -1159,15 +1159,17 @@ function applyGroupedTextEdit(
 }
 
 /** Em-fraction per Space via TJ (negative number → next glyph moves right). */
-const SPACE_TJ_EM = 0.28;
-/** Cap visual advance so mashed Space rivers don't shove the line off-flow. */
-const SPACE_TJ_MAX_CHARS = 3;
+export const SPACE_TJ_EM = 0.28;
+/**
+ * Safety ceiling only — the old cap of 3 clipped intentional multi-space gaps
+ * so glyphs after the spaces stayed left and overlapped the next run.
+ */
+export const SPACE_TJ_MAX_CHARS = 64;
 
 /**
  * Subset/CID resume fonts often encode Space with ~0 advance. Keep space
  * glyphs (for re-interpret) and add TJ advances so gaps survive commit.
- * Cap advance length — uncapped space rivers can orphan the trailing clause
- * onto another flow line.
+ * Advance length must match layout spaceFloor (0.28em × space count).
  */
 export function buildTJWithSpaceAdvances(
   text: string,

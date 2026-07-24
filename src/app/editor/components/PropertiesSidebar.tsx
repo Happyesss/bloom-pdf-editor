@@ -141,8 +141,6 @@ interface PropertiesSidebarProps {
   pdfSignatureFields?: SignatureField[];
   selectedPdfSigFieldId?: string | null;
   setSelectedPdfSigFieldId?: (id: string | null) => void;
-  createFieldMode?: boolean;
-  setCreateFieldMode?: (v: boolean) => void;
   onPlaceIntoSelectedField?: () => void;
   // Phase 9 — certificates / crypto sign
   certificateIdentities?: ManagedIdentity[];
@@ -211,7 +209,6 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
     onLibraryRename, onLibraryDelete, onLibraryDuplicate, onLibraryFavorite,
     pdfSignatureFields = [],
     selectedPdfSigFieldId = null, setSelectedPdfSigFieldId,
-    createFieldMode = false, setCreateFieldMode,
     onPlaceIntoSelectedField,
     certificateIdentities = [],
     selectedCertificateId = null,
@@ -1322,17 +1319,6 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             >
               <PenLine size={14} /> Create signature
             </button>
-            <button
-              type="button"
-              onClick={() => setCreateFieldMode?.(!createFieldMode)}
-              className={`w-full flex items-center justify-center gap-2 py-2 rounded-md text-xs font-semibold transition-colors border ${
-                createFieldMode
-                  ? 'bg-emerald-600/20 border-emerald-500/50 text-emerald-300'
-                  : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-700'
-              }`}
-            >
-              {createFieldMode ? 'Click page to place field…' : 'Create PDF signature field'}
-            </button>
           </div>
 
           {pdfSignatureFields.length > 0 && (
@@ -1412,15 +1398,15 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 })}
               </div>
             )}
-            {selectedPdfSigFieldId && (
+            {certificateIdentities.length > 0 && (
               <button
                 type="button"
                 disabled={cryptoSignBusy}
                 onClick={onCryptographicSign}
-                className="w-full flex items-center justify-center gap-2 py-2 rounded-md bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white text-xs font-semibold"
+                className="w-full flex items-center justify-center gap-2 py-2 rounded-md bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white text-xs font-semibold transition-colors"
               >
                 <ShieldCheck size={14} />
-                {cryptoSignBusy ? 'Signing…' : 'Digitally sign selected field'}
+                {cryptoSignBusy ? 'Signing…' : 'Digitally sign document'}
               </button>
             )}
             <label className="flex items-center gap-2 text-[11px] text-zinc-400 cursor-pointer">
@@ -1583,8 +1569,13 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
           )}
 
           <div className="p-4 flex-1 overflow-y-auto space-y-2">
-            <div className="text-[10px] font-bold tracking-widest text-zinc-400 uppercase mb-2">
-              Library
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-[10px] font-bold tracking-widest text-zinc-400 uppercase">
+                Library
+              </div>
+              <div className="text-[10px] text-zinc-500">
+                Drag to page
+              </div>
             </div>
             {signatureLibraryEntries.length === 0 && (
               <p className="text-[11px] text-zinc-500">No saved signatures yet.</p>
@@ -1594,7 +1585,14 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
               return (
                 <div
                   key={entry.id}
-                  className={`rounded-lg border p-2 cursor-pointer transition-colors ${
+                  draggable={true}
+                  onDragStart={(e) => {
+                    e.dataTransfer.setData('application/x-signature-id', entry.id);
+                    e.dataTransfer.setData('text/plain', entry.id);
+                    e.dataTransfer.effectAllowed = 'copy';
+                    setActiveLibraryId?.(entry.id);
+                  }}
+                  className={`rounded-lg border p-2 cursor-grab active:cursor-grabbing transition-colors ${
                     active
                       ? 'border-blue-500 bg-blue-500/10'
                       : 'border-zinc-700 hover:border-zinc-500 bg-zinc-800/40'

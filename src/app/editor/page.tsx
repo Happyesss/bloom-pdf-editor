@@ -481,8 +481,6 @@ export default function EditorPage() {
   const [signatureCreateOpen, setSignatureCreateOpen] = useState(false);
   const [pdfSignatureFields, setPdfSignatureFields] = useState<SignatureField[]>([]);
   const [selectedPdfSigFieldId, setSelectedPdfSigFieldId] = useState<string | null>(null);
-  /** When true, next empty-page click creates an AcroForm Sig field instead of an overlay. */
-  const [createFieldMode, setCreateFieldMode] = useState(false);
   const [certificateImportOpen, setCertificateImportOpen] = useState(false);
   const [certificateIdentities, setCertificateIdentities] = useState<ManagedIdentity[]>([]);
   const [selectedCertificateId, setSelectedCertificateId] = useState<string | null>(null);
@@ -2005,17 +2003,8 @@ export default function EditorPage() {
   }, []);
 
   const handleCryptographicSign = useCallback(async () => {
-    if (!doc || !selectedPdfSigFieldId) {
-      setError('Select a PDF signature field first.');
-      return;
-    }
-    const field = pdfSignatureFields.find((f) => f.id === selectedPdfSigFieldId);
-    if (!field) {
-      setError('Signature field not found.');
-      return;
-    }
-    if (field.signed) {
-      setError('This field is already signed.');
+    if (!doc) {
+      setError('No document loaded.');
       return;
     }
     const mgr = getCertificateManager();
@@ -2027,6 +2016,38 @@ export default function EditorPage() {
       setError('Import a certificate with a private key to digitally sign.');
       return;
     }
+
+    let field = pdfSignatureFields.find((f) => f.id === selectedPdfSigFieldId);
+    if (!field) {
+      const unsigned = pdfSignatureFields.find((f) => !f.signed);
+      if (unsigned) {
+        field = unsigned;
+      } else {
+        const placedSig = signaturesRef.current.find((s) => s.pageIndex === currentPage) ?? signaturesRef.current[0];
+        const px = placedSig ? placedSig.x : 100;
+        const py = placedSig ? placedSig.y : 100;
+        try {
+          const created = createSignatureFieldAtPoint(doc, currentPage, px, py, {
+            withPlaceholderAppearance: true,
+          });
+          const fieldsOnPage = detectSignatureFieldsOnPage(doc, currentPage);
+          setPdfSignatureFields(fieldsOnPage);
+          field = fieldsOnPage.find((f) => f.id === created.id);
+        } catch (err) {
+          console.error('[Editor] Auto-create sig field failed:', err);
+        }
+      }
+    }
+
+    if (!field) {
+      setError('No valid signature field available for digital signing.');
+      return;
+    }
+    if (field.signed) {
+      setError('This field is already signed.');
+      return;
+    }
+
     setCryptoSignBusy(true);
     setError(null);
     try {
@@ -2528,54 +2549,11 @@ export default function EditorPage() {
         return;
       }
 
-      // Create AcroForm signature field mode
-      if (createFieldMode && doc) {
-        try {
-          const created = createSignatureFieldAtPoint(doc, currentPage, pdfX, pdfY, {
-            withPlaceholderAppearance: true,
-          });
-          setPdfSignatureFields(detectSignatureFieldsOnPage(doc, currentPage));
-          setSelectedPdfSigFieldId(created.id);
-          setCreateFieldMode(false);
-          setIsDirty(true);
-          setRenderKey((k) => k + 1);
-        } catch (err) {
-          console.error('[Editor] Create signature field failed:', err);
-          setError(`Create signature field failed: ${err instanceof Error ? err.message : String(err)}`);
-        }
-        return;
-      }
-
-      const lib = getSignatureLibrary();
-      let entry = activeLibraryId ? lib.get(activeLibraryId) : null;
-      if (!entry) {
-        const list = lib.list();
-        entry = list.find((e) => e.favorite) ?? list[0] ?? null;
-      }
-      if (!entry) {
-        setSignatureCreateOpen(true);
-        return;
-      }
-
-      const maxW = DEFAULT_SIGNATURE_SIZE.width;
-      const scaleFit = Math.min(1, maxW / Math.max(entry.width, 1));
-      const w = Math.max(40, entry.width * scaleFit);
-      const h = Math.max(24, entry.height * scaleFit);
-      const sig = createVisualSignature({
-        pageIndex: currentPage,
-        x: pdfX,
-        y: pdfY,
-        appearanceId: entry.id,
-        appearanceType:
-          entry.source === 'draw' ? 'drawn' : entry.source === 'typed' ? 'typed' : 'uploaded',
-        width: w,
-        height: h,
-      });
-      pushSignatureSnapshot([...signaturesRef.current, sig], 'add-signature');
-      setSelectedSignatureId(sig.id);
-      setActiveLibraryId(entry.id);
+      // Deselect signature if clicking empty canvas space (signatures are placed via drag & drop from library)
+      setSelectedSignatureId(null);
+      setSelectedPdfSigFieldId(null);
     }
-  }, [renderResult, doc, currentPage, scale, activeTool, editingLine, handleEditSubmit, beginEditSession, displayItems, textFontSize, textColor, textFontFamily, highlightColor, formFields, handleFormFieldSelect, linksHighlighted, linkPopoverMode, resolveLinkDisplay, activeLibraryId, pushSignatureSnapshot, pdfSignatureFields, createFieldMode, placeLibrarySignatureIntoField, pushEditorHistory]);
+  }, [renderResult, doc, currentPage, scale, activeTool, editingLine, handleEditSubmit, beginEditSession, displayItems, textFontSize, textColor, textFontFamily, highlightColor, formFields, handleFormFieldSelect, linksHighlighted, linkPopoverMode, resolveLinkDisplay, pdfSignatureFields, placeLibrarySignatureIntoField, pushEditorHistory]);
 
   // Double-click in select mode → enter text edit
   const handleCanvasDoubleClick = useCallback((e: React.MouseEvent) => {
@@ -2616,6 +2594,54 @@ export default function EditorPage() {
       }, 0);
     }
   }, [renderResult, doc, currentPage, scale, activeTool, editingLine, handleEditSubmit, beginEditSession]);
+
+  const handleSignatureDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    const signatureId =
+      e.dataTransfer.getData('application/x-signature-id') ||
+      e.dataTransfer.getData('text/plain');
+    if (!signatureId || !doc || !renderResult) return;
+
+    const lib = getSignatureLibrary();
+    const entry = lib.get(signatureId);
+    if (!entry) return;
+
+    const canvasContainer = canvasContainerRef.current;
+    if (!canvasContainer) return;
+    const rect = canvasContainer.getBoundingClientRect();
+    const cssX = e.clientX - rect.left;
+    const cssY = e.clientY - rect.top;
+
+    const page = doc.pages[currentPage];
+    if (!page) return;
+    const { mediaBox } = page;
+    const { pdfX, pdfY } = canvasToPdf(
+      cssX, cssY, scale,
+      renderResult.pageWidth, renderResult.pageHeight,
+      mediaBox.x, mediaBox.y,
+    );
+
+    const maxW = DEFAULT_SIGNATURE_SIZE.width;
+    const scaleFit = Math.min(1, maxW / Math.max(entry.width, 1));
+    const w = Math.max(40, entry.width * scaleFit);
+    const h = Math.max(24, entry.height * scaleFit);
+
+    const sig = createVisualSignature({
+      pageIndex: currentPage,
+      x: pdfX,
+      y: pdfY,
+      appearanceId: entry.id,
+      appearanceType:
+        entry.source === 'draw' ? 'drawn' : entry.source === 'typed' ? 'typed' : 'uploaded',
+      width: w,
+      height: h,
+    });
+
+    pushSignatureSnapshot([...signaturesRef.current, sig], 'add-signature');
+    setSelectedSignatureId(sig.id);
+    setActiveLibraryId(entry.id);
+    pushRecentSignatureId(entry.id);
+  }, [doc, renderResult, currentPage, scale, pushSignatureSnapshot]);
 
   const applyEraser = useCallback((x: number, y: number, opts?: { deferAnnotRender?: boolean }) => {
     const eraserRadius = eraserSize / 2;
@@ -4372,7 +4398,7 @@ export default function EditorPage() {
       : activeTool === 'draw' ? 'crosshair'
         : activeTool === 'highlight' ? 'pointer'
           : activeTool === 'erase' ? eraserCursorUrl
-            : activeTool === 'sign' ? 'crosshair'
+            : activeTool === 'sign' ? 'default'
               : activeTool === 'select' ? 'grab'
                 : 'default';
 
@@ -4788,8 +4814,6 @@ export default function EditorPage() {
           pdfSignatureFields={pdfSignatureFields}
           selectedPdfSigFieldId={selectedPdfSigFieldId}
           setSelectedPdfSigFieldId={setSelectedPdfSigFieldId}
-          createFieldMode={createFieldMode}
-          setCreateFieldMode={setCreateFieldMode}
           onPlaceIntoSelectedField={() => {
             const field = pdfSignatureFields.find((f) => f.id === selectedPdfSigFieldId);
             if (field) void placeLibrarySignatureIntoField(field);
@@ -4867,6 +4891,11 @@ export default function EditorPage() {
             ref={canvasContainerRef}
             className="relative inline-block shrink-0 shadow-2xl"
             style={{ cursor: cursorForTool }}
+            onDragOver={(e) => {
+              e.preventDefault();
+              e.dataTransfer.dropEffect = 'copy';
+            }}
+            onDrop={handleSignatureDrop}
             onClick={(e) => {
               if (panDragRef.current?.moved || isPanning) {
                 e.preventDefault();

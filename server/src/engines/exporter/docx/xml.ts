@@ -45,9 +45,20 @@ export function runText(text: string, opts: {
   if (opts.vertAlign) rPrParts.push(`<w:vertAlign w:val="${opts.vertAlign}"/>`);
 
   const rPr = rPrParts.length ? `<w:rPr>${rPrParts.join('')}</w:rPr>` : '';
-  // Preserve spaces
-  const xmlSpace = /^\s|\s$/.test(text) || text.includes('  ') ? ' xml:space="preserve"' : '';
-  return `<w:r>${rPr}<w:t${xmlSpace}>${esc(text)}</w:t></w:r>`;
+  if (!text.includes('\n')) {
+    const xmlSpace = /^\s|\s$/.test(text) || text.includes('  ') ? ' xml:space="preserve"' : '';
+    return `<w:r>${rPr}<w:t${xmlSpace}>${esc(text)}</w:t></w:r>`;
+  }
+  // Turn literal newlines into Word line breaks (soft breaks within a paragraph).
+  const parts = text.split('\n');
+  return parts
+    .map((part, i) => {
+      const xmlSpace = /^\s|\s$/.test(part) || part.includes('  ') ? ' xml:space="preserve"' : '';
+      const t = part.length ? `<w:t${xmlSpace}>${esc(part)}</w:t>` : '';
+      const br = i < parts.length - 1 ? '<w:br/>' : '';
+      return `<w:r>${rPr}${t}${br}</w:r>`;
+    })
+    .join('');
 }
 
 export function paragraph(
@@ -60,11 +71,18 @@ export function paragraph(
     line?: number;
     keepNext?: boolean;
     pageBreakBefore?: boolean;
+    /** Right-aligned tab stop in twips (for title … date lines). */
+    rightTabPos?: number;
+    /** Bottom border (section rules under headings), OOXML eighths-of-a-point. */
+    bottomBorder?: { color: string; sz?: number; style?: string };
   } = {},
 ): string {
   const pPr: string[] = [];
   if (opts.style) pPr.push(`<w:pStyle w:val="${esc(opts.style)}"/>`);
   if (opts.align) pPr.push(`<w:jc w:val="${esc(opts.align)}"/>`);
+  if (opts.rightTabPos != null) {
+    pPr.push(`<w:tabs><w:tab w:val="right" w:pos="${opts.rightTabPos}"/></w:tabs>`);
+  }
   if (opts.keepNext) pPr.push('<w:keepNext/>');
   if (opts.pageBreakBefore) pPr.push('<w:pageBreakBefore/>');
   const spacing: string[] = [];
@@ -72,6 +90,14 @@ export function paragraph(
   if (opts.spacingAfter != null) spacing.push(`w:after="${opts.spacingAfter}"`);
   if (opts.line != null) spacing.push(`w:line="${opts.line}" w:lineRule="auto"`);
   if (spacing.length) pPr.push(`<w:spacing ${spacing.join(' ')}/>`);
+  if (opts.bottomBorder) {
+    const color = opts.bottomBorder.color.replace('#', '');
+    const sz = opts.bottomBorder.sz ?? 12;
+    const val = opts.bottomBorder.style ?? 'single';
+    pPr.push(
+      `<w:pBdr><w:bottom w:val="${esc(val)}" w:sz="${sz}" w:space="4" w:color="${esc(color)}"/></w:pBdr>`,
+    );
+  }
   const pPrXml = pPr.length ? `<w:pPr>${pPr.join('')}</w:pPr>` : '';
   return `<w:p>${pPrXml}${runsXml}</w:p>`;
 }

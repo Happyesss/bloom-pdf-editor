@@ -26,6 +26,13 @@ describe('Phase 6 — Semantic Structure Engine', () => {
     expect(reconstructParagraphText('Hello\nworld')).toBe('Hello world');
     expect(reconstructParagraphText('hyphen-\nated')).toBe('hyphenated');
     expect(reconstructParagraphText('Done.\nNext')).toContain('Done.');
+    // Structural lines (bullets / ALL-CAPS headers) must keep their breaks
+    expect(reconstructParagraphText('Deloitte India\n• Analyzed risks')).toBe(
+      'Deloitte India\n• Analyzed risks',
+    );
+    expect(reconstructParagraphText('EDUCATION & QUALIFICATIONS\nCourse Year')).toBe(
+      'EDUCATION & QUALIFICATIONS\nCourse Year',
+    );
   });
 
   it('detects headings from large typography', async () => {

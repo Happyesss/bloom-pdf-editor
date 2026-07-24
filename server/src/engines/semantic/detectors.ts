@@ -10,6 +10,7 @@ import type {
   SemanticImage,
   SemanticList,
   SemanticListItem,
+  SemanticNode,
   SemanticParagraph,
   SemanticQuote,
   SemanticRun,
@@ -68,24 +69,39 @@ export function reconstructParagraphText(raw: string): string {
       break;
     }
     const m = line.match(HYPHEN_BREAK_RE);
-    if (m) {
+    // Never hyphen-merge into a structural next line (bullet / heading-like)
+    if (m && !isStructuralLine(next) && !isStructuralLine(line)) {
       out += line.replace(/-\s*$/, '') + next.trimStart();
       i++;
-      if (i < lines.length - 1) out += ' ';
       continue;
     }
-    // Soft wrap: join with space if current doesn't end sentence-hard
-    if (/[.!?:;]$/.test(line.trim()) || line.trim() === '') {
+    // Keep intentional structure: bullets, short label lines, sentence endings
+    if (
+      /[.!?:;]$/.test(line.trim()) ||
+      line.trim() === '' ||
+      isStructuralLine(line) ||
+      isStructuralLine(next)
+    ) {
       out += line + '\n';
     } else {
       out += line.replace(/\s+$/, '') + ' ' + next.trimStart();
       i++;
-      if (i < lines.length - 1 && !/[.!?:;]$/.test(out.trim())) {
-        /* continue */
-      }
     }
   }
   return out.replace(/[ \t]+\n/g, '\n').trim();
+}
+
+/** Lines that must not be soft-wrapped into neighbors (lists, short headers, contact rows). */
+function isStructuralLine(line: string): boolean {
+  const t = line.trim();
+  if (!t) return true;
+  if (matchListPrefix(t)) return true;
+  if (/^[•●○▪▸►‣◉]/.test(t)) return true;
+  // Short all-caps section headers
+  if (t.length <= 48 && /[A-Z]/.test(t) && t === t.toUpperCase() && /[A-Z]{3,}/.test(t)) return true;
+  // "Label:" rows (Personal Achievements:, Technical Skills:, …) — length uncapped
+  if (/^[A-Z][A-Za-z0-9 /&()-]{1,40}:/.test(t)) return true;
+  return false;
 }
 
 function matchListPrefix(text: string): {
@@ -209,6 +225,10 @@ export function detectHeading(ctx: BlockContext): SemanticHeading | null {
   if (ctx.block.type === 'image') return null;
   const text = reconstructParagraphText(blockPlainText(ctx.block));
   if (!text || text.length > 200) return null;
+  // Table column header rows / field labels — not section headings
+  if (isTableHeaderRow(text)) return null;
+  // "Technical Skills: …" / "Personal Achievements:" are labels, not headings
+  if (/^[A-Z][^:\n]{1,40}:/.test(text.trim())) return null;
 
   const fontSize =
     ctx.styleProfile?.features.fontSize ??
@@ -248,6 +268,13 @@ export function detectHeading(ctx: BlockContext): SemanticHeading | null {
   return null;
 }
 
+function isTableHeaderRow(text: string): boolean {
+  const t = text.trim();
+  if (/\bCourse\b/i.test(t) && /\bYear\b/i.test(t)) return true;
+  if (/\bInstitution\b/i.test(t) && /\bRemarks?\b/i.test(t)) return true;
+  return false;
+}
+
 function makeHeading(
   ctx: BlockContext,
   type: 'title' | 'subtitle' | 'heading',
@@ -269,6 +296,7 @@ function makeHeading(
     styleProfileId: ctx.styleProfile?.id,
     runs: toSemanticRuns(ctx.block, ctx.styleProfile?.id),
     text,
+    alignment: type === 'title' ? (ctx.block.alignment ?? 'center') : 'left',
   };
 }
 
@@ -414,6 +442,9 @@ export function detectImage(ctx: BlockContext): SemanticImage | null {
 
 export function makeParagraph(ctx: BlockContext): SemanticParagraph {
   const text = reconstructParagraphText(blockPlainText(ctx.block));
+  // Prefer left for long body blocks wrongly tagged center/mixed from full-page regions
+  const alignment =
+    ctx.block.alignment === 'center' && text.length > 120 ? 'left' : ctx.block.alignment;
   return {
     id: createId('sp'),
     type: 'paragraph',
@@ -427,9 +458,297 @@ export function makeParagraph(ctx: BlockContext): SemanticParagraph {
     styleProfileId: ctx.styleProfile?.id,
     runs: toSemanticRuns(ctx.block, ctx.styleProfile?.id),
     text,
-    alignment: ctx.block.alignment,
+    alignment,
     writingDirection: ctx.block.writingDirection,
   };
+}
+
+/**
+ * Split multi-line IDM blocks into separate semantic nodes (paragraphs / lists /
+ * headings) so resume-style documents don't collapse into one wall of text.
+ */
+export function expandAndClassifyBlock(
+  ctx: BlockContext,
+  classifyOne: (ctx: BlockContext) => SemanticNode,
+): SemanticNode[] {
+  if (ctx.block.type === 'image' || !('runs' in ctx.block)) {
+    return [classifyOne(ctx)];
+  }
+
+  const raw = blockPlainText(ctx.block);
+  const trimmedLines = raw.split('\n').map((l) => l.trim()).filter(Boolean);
+  if (trimmedLines.length <= 1) {
+    return [classifyOne(ctx)];
+  }
+
+  // Pure list block → keep as one list
+  const parsedAll = trimmedLines.map(matchListPrefix);
+  if (parsedAll.length > 0 && parsedAll.every((p) => p != null)) {
+    const list = detectList(ctx);
+    return list ? [list] : [classifyOne(ctx)];
+  }
+
+  // Collapse PDF soft-wraps / hyphenation first so wrapped bullets don't become
+  // orphan fragments like "ing cost-saving…" after per-line expand.
+  const lineSlices = mergeSoftWrappedLines(splitBlockIntoLines(ctx));
+  if (lineSlices.length <= 1) {
+    return [classifyOne(ctxFromLineSlices(ctx, lineSlices, 0))];
+  }
+
+  const nodes: SemanticNode[] = [];
+  let i = 0;
+  while (i < lineSlices.length) {
+    const slice = lineSlices[i]!;
+    if (matchListPrefix(slice.text)) {
+      const group = [slice];
+      while (
+        i + group.length < lineSlices.length &&
+        matchListPrefix(lineSlices[i + group.length]!.text)
+      ) {
+        group.push(lineSlices[i + group.length]!);
+      }
+      const listCtx = ctxFromLineSlices(ctx, group, i);
+      const listNode = detectList(listCtx);
+      if (listNode) nodes.push(listNode);
+      else {
+        for (let g = 0; g < group.length; g++) {
+          nodes.push(classifyOne(ctxFromLineSlices(ctx, [group[g]!], i + g)));
+        }
+      }
+      i += group.length;
+      continue;
+    }
+
+    // "Personal Achievements: First item text" → label + first list item
+    const labeled = splitInlineLabelContent(slice.text);
+    if (labeled) {
+      const labelSlice = {
+        text: labeled.label,
+        runs: [
+          {
+            ...(slice.runs[0]!),
+            id: createId('run'),
+            text: labeled.label,
+            wordIds: [] as string[],
+            characterIds: [] as string[],
+          },
+        ],
+      };
+      nodes.push(classifyOne(ctxFromLineSlices(ctx, [labelSlice], i)));
+
+      const contentSlice = {
+        text: labeled.content,
+        runs: [
+          {
+            ...(slice.runs[slice.runs.length - 1] ?? slice.runs[0]!),
+            id: createId('run'),
+            text: labeled.content,
+            wordIds: [] as string[],
+            characterIds: [] as string[],
+          },
+        ],
+      };
+      // If following lines are bullets, fold content in as the first list item
+      if (i + 1 < lineSlices.length && matchListPrefix(lineSlices[i + 1]!.text)) {
+        const group = [contentSlice];
+        let j = i + 1;
+        while (j < lineSlices.length && matchListPrefix(lineSlices[j]!.text)) {
+          group.push(lineSlices[j]!);
+          j++;
+        }
+        // Prefix content as a bullet so detectList accepts every line
+        const bulletPrefixed = group.map((g, idx) =>
+          idx === 0 && !matchListPrefix(g.text)
+            ? {
+                text: `• ${g.text}`,
+                runs: [
+                  {
+                    ...(g.runs[0]!),
+                    id: createId('run'),
+                    text: `• ${g.text}`,
+                    wordIds: [] as string[],
+                    characterIds: [] as string[],
+                  },
+                ],
+              }
+            : g,
+        );
+        const listNode = detectList(ctxFromLineSlices(ctx, bulletPrefixed, i));
+        if (listNode) nodes.push(listNode);
+        else nodes.push(classifyOne(ctxFromLineSlices(ctx, [contentSlice], i)));
+        i = j;
+        continue;
+      }
+      nodes.push(classifyOne(ctxFromLineSlices(ctx, [contentSlice], i)));
+      i++;
+      continue;
+    }
+
+    nodes.push(classifyOne(ctxFromLineSlices(ctx, [slice], i)));
+    i++;
+  }
+
+  return nodes.length > 0 ? nodes : [classifyOne(ctx)];
+}
+
+/** Re-join PDF wrapped continuations; keep bullets / headers / sentence breaks. */
+function mergeSoftWrappedLines(
+  slices: Array<{ text: string; runs: Run[] }>,
+): Array<{ text: string; runs: Run[] }> {
+  if (slices.length <= 1) return slices;
+  const out: Array<{ text: string; runs: Run[] }> = [];
+
+  for (const slice of slices) {
+    const prev = out[out.length - 1];
+    if (!prev || !shouldSoftJoinLines(prev.text, slice.text)) {
+      out.push({ text: slice.text, runs: [...slice.runs] });
+      continue;
+    }
+
+    const hyphen = HYPHEN_BREAK_RE.test(prev.text.trimEnd());
+    const joinedText = hyphen
+      ? prev.text.replace(/-\s*$/, '') + slice.text.trimStart()
+      : prev.text.replace(/\s+$/, '') + ' ' + slice.text.trimStart();
+
+    let joinedRuns: Run[];
+    if (hyphen) {
+      joinedRuns = [...stripTrailingHyphenFromRuns(prev.runs), ...slice.runs];
+    } else {
+      const spacer: Run = {
+        ...(prev.runs[prev.runs.length - 1] ?? slice.runs[0]!),
+        id: createId('run'),
+        text: ' ',
+        wordIds: [],
+        characterIds: [],
+      };
+      joinedRuns = [...prev.runs, spacer, ...slice.runs];
+    }
+    out[out.length - 1] = { text: joinedText, runs: joinedRuns };
+  }
+  return out;
+}
+
+function shouldSoftJoinLines(prev: string, next: string): boolean {
+  const a = prev.trimEnd();
+  const b = next.trim();
+  if (!a || !b) return false;
+  // Never join into a new bullet / header / label line
+  if (isStructuralLine(b) || matchListPrefix(b)) return false;
+  // Finished sentence → keep the break
+  if (/[.!?:;]$/.test(a.trim())) return false;
+  if (HYPHEN_BREAK_RE.test(a)) return true;
+  // Wrapped continuation usually starts lowercase / comma
+  if (/^[a-z,;]/.test(b)) return true;
+  // Long body line wrapped onto another capitalized fragment — but never
+  // across a new labeled section (Title Case words + colon handled above).
+  if (a.length > 55 && b.length > 20 && !/^[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+:/.test(b)) return true;
+  return false;
+}
+
+/**
+ * Split "Personal Achievements: First achievement text" into label + content.
+ * Keeps inline skill rows like "Technical Skills: Excel • Word" intact.
+ */
+function splitInlineLabelContent(text: string): { label: string; content: string } | null {
+  const m = text.trim().match(/^([A-Z][A-Za-z0-9 /&()-]{1,40}:)\s+(.+)$/);
+  if (!m) return null;
+  const label = m[1]!.trim();
+  const content = m[2]!.trim();
+  if (content.length < 20) return null;
+  if (/Technical Skills/i.test(label)) return null;
+  if (/[•·]/.test(content)) return null;
+  return { label, content };
+}
+
+function stripTrailingHyphenFromRuns(runs: Run[]): Run[] {
+  if (runs.length === 0) return runs;
+  const copy = runs.map((r) => ({ ...r, wordIds: [...r.wordIds], characterIds: [...r.characterIds] }));
+  for (let i = copy.length - 1; i >= 0; i--) {
+    const r = copy[i]!;
+    if (!r.text) continue;
+    if (r.text.endsWith('-')) {
+      copy[i] = { ...r, text: r.text.replace(/-\s*$/, '') };
+      break;
+    }
+    if (r.text.trim().length > 0) break;
+  }
+  return copy.filter((r) => r.text.length > 0);
+}
+
+function splitBlockIntoLines(
+  ctx: BlockContext,
+): Array<{ text: string; runs: Run[] }> {
+  const block = ctx.block;
+  if (!('runs' in block)) return [];
+  const lines: Array<{ text: string; runs: Run[] }> = [];
+  let runs: Run[] = [];
+  let text = '';
+
+  const flush = () => {
+    if (text.trim().length === 0 && runs.length === 0) {
+      runs = [];
+      text = '';
+      return;
+    }
+    lines.push({ text: text.trimEnd(), runs });
+    runs = [];
+    text = '';
+  };
+
+  for (const run of block.runs) {
+    const parts = run.text.split('\n');
+    for (let pi = 0; pi < parts.length; pi++) {
+      if (pi > 0) flush();
+      const part = parts[pi]!;
+      if (!part) continue;
+      runs.push({
+        ...run,
+        id: createId('run'),
+        text: part,
+        wordIds: [],
+        characterIds: [],
+      });
+      text += part;
+    }
+  }
+  flush();
+  return lines.filter((l) => l.text.trim().length > 0);
+}
+
+function ctxFromLineSlices(
+  ctx: BlockContext,
+  slices: Array<{ text: string; runs: Run[] }>,
+  ord: number,
+): BlockContext {
+  const runs: Run[] = [];
+  for (let s = 0; s < slices.length; s++) {
+    if (s > 0) {
+      const prev = slices[s - 1]!.runs[0] ?? slices[s]!.runs[0]!;
+      runs.push({
+        ...prev,
+        id: createId('run'),
+        text: '\n',
+        wordIds: [],
+        characterIds: [],
+      });
+    }
+    runs.push(...slices[s]!.runs);
+  }
+  const joinedText = slices.map((s) => s.text).join('\n');
+  const block = {
+    ...ctx.block,
+    id: `${ctx.block.id}_L${ord}`,
+    readingOrderIndex: ctx.block.readingOrderIndex + ord * 0.001,
+    // Full-page regions often report center; body/job lines should be left.
+    alignment:
+      ctx.block.alignment === 'center' &&
+      !/@/.test(joinedText) &&
+      !(joinedText.length <= 40 && joinedText === joinedText.toUpperCase())
+        ? 'left'
+        : ctx.block.alignment,
+    runs,
+  } as Block;
+  return { ...ctx, block };
 }
 
 export function bodyMedianFontSize(idm: IntermediateDocument, analysis: TypographyAnalysis): number {

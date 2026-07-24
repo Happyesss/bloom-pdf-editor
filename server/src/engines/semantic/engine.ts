@@ -10,6 +10,7 @@ import {
   detectImage,
   detectList,
   detectQuote,
+  expandAndClassifyBlock,
   isNearImage,
   makeParagraph,
   type BlockContext,
@@ -46,9 +47,13 @@ export class SemanticStructureEngine {
     const nodes: Record<string, SemanticNode> = {};
 
     for (const page of idm.sections.flatMap((s) => s.pages)) {
-      const blocks = [...page.blocks].sort(
-        (a, b) => a.readingOrderIndex - b.readingOrderIndex,
-      );
+      const blocks = [...page.blocks].sort((a, b) => {
+        // Full-page region bboxes are unreliable — sort by first content top instead.
+        const topA = contentTop(a, page.height);
+        const topB = contentTop(b, page.height);
+        if (Math.abs(topA - topB) > 8) return topB - topA;
+        return a.readingOrderIndex - b.readingOrderIndex;
+      });
 
       for (const block of blocks) {
         const profileId = typography.typographyMap.blockToProfile[block.id];
@@ -64,13 +69,14 @@ export class SemanticStructureEngine {
           layoutNearImage: isNearImage(block, layout, page.index),
         };
 
-        const node = classifyBlock(ctx);
-        contentNodes.push(node);
-        nodes[node.id] = node;
-        // Nested list items
-        if (node.type === 'list') {
-          for (const item of node.items) {
-            nodes[item.id] = item;
+        const classified = expandAndClassifyBlock(ctx, classifyBlock);
+        for (const node of classified) {
+          contentNodes.push(node);
+          nodes[node.id] = node;
+          if (node.type === 'list') {
+            for (const item of node.items) {
+              nodes[item.id] = item;
+            }
           }
         }
       }
@@ -78,6 +84,11 @@ export class SemanticStructureEngine {
 
     // Merge consecutive list items into single lists
     const merged = mergeAdjacentLists(contentNodes, nodes);
+    // Drop empty text nodes from reading order
+    const mergedNonEmpty = merged.filter((n) => {
+      if (!('text' in n)) return true;
+      return String(n.text ?? '').trim().length > 0;
+    });
 
     // Hyperlinks from IDM
     for (const link of idm.hyperlinks) {
@@ -97,8 +108,8 @@ export class SemanticStructureEngine {
       nodes[hn.id] = hn;
     }
 
-    const sections = this.BuildSemanticTree(merged, nodes);
-    const readingOrder = merged.map((n) => n.id);
+    const sections = this.BuildSemanticTree(mergedNonEmpty, nodes);
+    const readingOrder = mergedNonEmpty.map((n) => n.id);
 
     // Attach section parents
     for (const section of sections) {
@@ -109,8 +120,8 @@ export class SemanticStructureEngine {
       }
     }
 
-    const quality = scoreQuality(merged);
-    const titleNode = merged.find((n) => n.type === 'title');
+    const quality = scoreQuality(mergedNonEmpty);
+    const titleNode = mergedNonEmpty.find((n) => n.type === 'title');
 
     return {
       id: createId('semantic'),
@@ -235,6 +246,16 @@ function classifyBlock(ctx: BlockContext): SemanticNode {
   if (heading) return heading;
 
   return makeParagraph(ctx);
+}
+
+/** Visual top of block content (PDF y-up). Avoids full-page region bbox skew. */
+function contentTop(block: { bbox?: { y: number; height: number }; runs?: Array<{ bbox?: { y: number; height: number } }>; characters?: Array<{ bbox?: { y: number; height: number } }> }, pageHeight: number): number {
+  const fromRuns = block.runs?.map((r) => (r.bbox ? r.bbox.y + r.bbox.height : null)).filter((v): v is number => v != null);
+  if (fromRuns && fromRuns.length) return Math.max(...fromRuns);
+  const fromChars = block.characters?.map((c) => (c.bbox ? c.bbox.y + c.bbox.height : null)).filter((v): v is number => v != null);
+  if (fromChars && fromChars.length) return Math.max(...fromChars);
+  if (block.bbox) return block.bbox.y + block.bbox.height;
+  return pageHeight;
 }
 
 function mergeAdjacentLists(

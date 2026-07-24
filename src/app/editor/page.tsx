@@ -4018,10 +4018,17 @@ export default function EditorPage() {
     if (!doc || !engineRef.current) {
       throw new Error('No document loaded');
     }
+    // Prefer original PDF bytes when there are no edits. saveQuick() re-serializes
+    // content and currently drops non-black text fill colors / some vector paints,
+    // which destroys green headings and table fills in Word export.
+    const raw = doc.rawBytes;
+    if (!isDirty && raw && raw.byteLength > 5) {
+      return raw instanceof Uint8Array ? raw : new Uint8Array(raw);
+    }
     await commitDrawingsToPdf();
     const bytes = await engineRef.current.saveQuick(doc);
     return bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  }, [doc, commitDrawingsToPdf]);
+  }, [doc, commitDrawingsToPdf, isDirty]);
 
   // ── Download / Save ──
   const handleDownload = useCallback(async () => {

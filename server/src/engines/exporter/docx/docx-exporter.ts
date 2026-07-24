@@ -158,7 +158,7 @@ function packageRels(): string {
 function coreProps(udm: UnifiedDocumentModel): string {
   const title = escXml(udm.metadata.title ?? 'Document');
   const author = escXml(udm.metadata.author ?? 'Bloom');
-  const created = udm.metadata.createdAt;
+  const created = udm.metadata.createdAt ? escXml(udm.metadata.createdAt) : new Date().toISOString();
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties"
   xmlns:dc="http://purl.org/dc/elements/1.1/"
@@ -174,11 +174,12 @@ function coreProps(udm: UnifiedDocumentModel): string {
 }
 
 function appProps(udm: UnifiedDocumentModel): string {
+  const pages = udm.metadata.pageCount ?? 1;
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"
   xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">
   <Application>Bloom Document Intelligence Engine</Application>
-  <Pages>${udm.metadata.pageCount}</Pages>
+  <Pages>${pages}</Pages>
 </Properties>`;
 }
 

@@ -69,6 +69,7 @@ export interface SemanticHeading extends SemanticNodeBase {
   level: HeadingLevel;
   runs: SemanticRun[];
   text: string;
+  alignment?: TextAlignment;
 }
 
 export interface SemanticListItem extends SemanticNodeBase {

@@ -70,41 +70,60 @@ export function reconstructText(input: {
   const sorted = orderCharsRunAware(rawChars);
 
   // Layout clustering often omits space glyphs from sourceObjectIds — re-insert
-  // spaces from horizontal gaps so runs keep word boundaries.
+  // spaces using the SAME break rules as layout clusterWords (gap / style / line),
+  // which already joins words with ' '. Do NOT break merely because parentId
+  // changes — many PDFs emit one glyph per Tj, and that letter-spaces everything.
   const withSpaces: RawCharacter[] = [];
   for (let i = 0; i < sorted.length; i++) {
     const c = sorted[i]!;
     if (i > 0) {
       const prev = sorted[i - 1]!;
-      const sameLine =
-        Math.abs(c.bbox.y - prev.bbox.y) <= Math.max(prev.fontSize, c.fontSize) * 0.35;
+      const fs = Math.max(prev.fontSize, c.fontSize, 1);
+      const sameLine = Math.abs(c.bbox.y - prev.bbox.y) <= fs * 0.35;
       const gap = c.bbox.x - (prev.bbox.x + prev.bbox.width);
-      const spaceThreshold = Math.max(prev.fontSize, c.fontSize) * 0.25;
-      const hasGapSpace = sameLine && gap >= spaceThreshold;
-      // Cross-run x-gaps can be unreliable (see orderCharsRunAware) — a run
-      // boundary with a small/negative computed gap can still be a genuine
-      // word break (e.g. a bold keyword mid-sentence). Fall back to inserting
-      // a space at a run boundary unless punctuation clearly forbids one.
-      const crossesRun = prev.parentId !== c.parentId;
-      const needsFallbackSpace =
-        sameLine &&
-        !hasGapSpace &&
-        crossesRun &&
-        isWordChar(prev.unicode) &&
-        isWordChar(c.unicode);
-      if ((hasGapSpace || needsFallbackSpace) && prev.unicode !== ' ' && c.unicode !== ' ') {
-        withSpaces.push({
-          ...prev,
-          id: `${prev.id}_space`,
-          unicode: ' ',
-          bbox: {
-            x: prev.bbox.x + prev.bbox.width,
-            y: prev.bbox.y,
-            width: Math.max(gap, 0),
-            height: prev.bbox.height,
-          },
-          glyphId: 32,
-        });
+      // Space glyphs are often dropped from layout sourceObjectIds; the leftover
+      // gap is typically ~0.25–0.35em. Use 0.2em so we recover those without
+      // treating near-zero inter-letter kerning as word breaks.
+      const threshold = fs * 0.2;
+      const fontOk =
+        prev.fontName === c.fontName &&
+        Math.abs(prev.fontSize - c.fontSize) < 0.75 &&
+        prev.fontWeight === c.fontWeight &&
+        prev.italic === c.italic;
+      if (prev.unicode !== ' ' && c.unicode !== ' ' && prev.unicode !== '\n' && c.unicode !== '\n') {
+        if (!sameLine) {
+          withSpaces.push({
+            ...prev,
+            id: `${prev.id}_nl`,
+            unicode: '\n',
+            bbox: {
+              x: prev.bbox.x + prev.bbox.width,
+              y: prev.bbox.y,
+              width: 0,
+              height: prev.bbox.height,
+            },
+            glyphId: 10,
+          });
+        } else if (
+          (gap > threshold || !fontOk) &&
+          // Style/gap breaks before punctuation create "Excel ," / "risk ." artifacts
+          // (bold keywords often change fontWeight right before , or .)
+          !/^[,.;:!?\u2013\u2014)\]}%]/.test(c.unicode) &&
+          !/^[(\[{]/.test(prev.unicode)
+        ) {
+          withSpaces.push({
+            ...prev,
+            id: `${prev.id}_space`,
+            unicode: ' ',
+            bbox: {
+              x: prev.bbox.x + prev.bbox.width,
+              y: prev.bbox.y,
+              width: Math.max(gap, 0),
+              height: prev.bbox.height,
+            },
+            glyphId: 32,
+          });
+        }
       }
     }
     withSpaces.push(c);
@@ -161,11 +180,6 @@ export function reconstructText(input: {
     characters,
     plainText: characters.map((c) => c.unicode).join(''),
   };
-}
-
-/** Letters/digits only — used to decide whether a run boundary is a safe place to fall back to inserting a space. */
-function isWordChar(ch: string): boolean {
-  return /[\p{L}\p{N}]/u.test(ch);
 }
 
 function orderCharsRunAware(chars: RawCharacter[]): RawCharacter[] {

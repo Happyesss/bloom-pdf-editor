@@ -167,6 +167,9 @@ function reconstructPage(input: {
 
     if (region.kind === 'header') {
       headers.push({ id: createId('hdr'), blocks: [block] });
+      // Keep in body too — single-page contact/name bands are often tagged
+      // "header" but must still appear in the main reading order / DOCX body.
+      bodyBlocks.push(block);
     } else if (region.kind === 'footer') {
       footers.push({ id: createId('ftr'), blocks: [block] });
     } else if (region.kind === 'footnote') {

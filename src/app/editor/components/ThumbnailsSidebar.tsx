@@ -202,7 +202,7 @@ export function ThumbnailsSidebar({
 
   return (
     <Tooltip.Provider delayDuration={250} skipDelayDuration={100}>
-      <div className={`transition-all duration-300 bg-panel/95 backdrop-blur-md border-l border-app flex flex-col shrink-0 z-40 overflow-y-auto p-3 gap-3 shadow-[0_0_40px_rgba(0,0,0,0.12)] ${isExpanded ? 'absolute right-0 top-0 bottom-0 w-[80vw]' : 'relative w-56'}`}>
+      <div className={`transition-all duration-300 bg-panel/95 backdrop-blur-md border-l border-app flex flex-col shrink-0 overflow-y-auto p-3 gap-3 shadow-[0_0_40px_rgba(0,0,0,0.12)] ${isExpanded ? 'absolute right-0 top-0 bottom-0 w-[80vw] z-30' : 'relative w-56 z-10'}`}>
         <input
           type="file"
           accept="application/pdf"

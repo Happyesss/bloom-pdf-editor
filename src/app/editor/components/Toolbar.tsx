@@ -64,7 +64,7 @@ export function Toolbar({
   const { theme, toggleTheme } = useTheme();
 
   return (
-    <header className="flex items-center justify-between px-4 h-14 bg-panel/90 backdrop-blur-lg border-b border-app shrink-0 z-20">
+    <header className="flex items-center justify-between px-4 h-14 bg-panel/90 backdrop-blur-lg border-b border-app shrink-0 z-40">
       <div className="flex items-center gap-3">
         <button 
           onClick={onClose} 

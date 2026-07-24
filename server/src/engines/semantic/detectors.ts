@@ -156,6 +156,65 @@ function matchListPrefix(text: string): {
   return null;
 }
 
+/** Split a block's runs line-by-line so each line gets its exact run slice. */
+function splitBlockRunsByLine(block: Block, styleProfileId?: string): SemanticRun[][] {
+  const semanticRuns = toSemanticRuns(block, styleProfileId);
+  if (semanticRuns.length === 0) return [];
+
+  const lineRunsList: SemanticRun[][] = [];
+  let currentLineRuns: SemanticRun[] = [];
+
+  for (const r of semanticRuns) {
+    if (!r.text) continue;
+    if (!r.text.includes('\n')) {
+      currentLineRuns.push({ ...r });
+    } else {
+      const parts = r.text.split('\n');
+      for (let pIdx = 0; pIdx < parts.length; pIdx++) {
+        const partText = parts[pIdx]!;
+        if (pIdx > 0) {
+          lineRunsList.push(currentLineRuns);
+          currentLineRuns = [];
+        }
+        if (partText.length > 0) {
+          currentLineRuns.push({ ...r, text: partText });
+        }
+      }
+    }
+  }
+  if (currentLineRuns.length > 0) {
+    lineRunsList.push(currentLineRuns);
+  }
+
+  return lineRunsList;
+}
+
+/** Strip bullet/number marker from the start of a single line's runs. */
+function stripMarkerFromRunArray(rawRuns: SemanticRun[]): SemanticRun[] {
+  if (rawRuns.length === 0) return [];
+  const runs = rawRuns.map((r) => ({ ...r }));
+  for (let i = 0; i < runs.length; i++) {
+    const r = runs[i]!;
+    if (!r.text) continue;
+    let text = r.text;
+    if (i === 0) {
+      text = text.replace(
+        /^\s*([\u2022\u25CF\u25CB\u25AA\u25B8\u25BA\u2023\u25C9*-]|\d{1,3}[.)]|[a-zA-Z][.)]|[ivxlcdmIVXLCDM]{1,6}[.)])\s*/,
+        '',
+      );
+    } else {
+      text = text.trimStart();
+    }
+    r.text = text;
+    if (r.text.length > 0) {
+      const result = runs.slice(i);
+      result[0] = r;
+      return result;
+    }
+  }
+  return runs.filter((r) => r.text.length > 0);
+}
+
 export function detectList(ctx: BlockContext): SemanticList | null {
   const text = blockPlainText(ctx.block).trim();
   if (!text) return null;
@@ -178,11 +237,14 @@ export function detectList(ctx: BlockContext): SemanticList | null {
   const items: SemanticListItem[] = [];
 
   const itemLines = parsed.every((p) => p != null) ? parsed : [first];
+  const blockLineRuns = splitBlockRunsByLine(ctx.block, ctx.styleProfile?.id);
 
   for (let i = 0; i < itemLines.length; i++) {
     const p = itemLines[i]!;
     if (!p) continue;
     const itemId = createId('sitem');
+    const lineRuns = blockLineRuns[i] ?? [];
+    const preservedRuns = stripMarkerFromRunArray(lineRuns);
     const item: SemanticListItem = {
       id: itemId,
       type: 'list_item',
@@ -194,7 +256,9 @@ export function detectList(ctx: BlockContext): SemanticList | null {
       bbox: ctx.block.bbox,
       sourceBlockIds: [ctx.block.id],
       styleProfileId: ctx.styleProfile?.id,
-      runs: [{ id: createId('srun'), text: p.cleaned, styleProfileId: ctx.styleProfile?.id }],
+      runs: preservedRuns.length > 0
+        ? preservedRuns
+        : [{ id: createId('srun'), text: p.cleaned, styleProfileId: ctx.styleProfile?.id }],
       text: p.cleaned,
       level,
       marker: p.marker,

@@ -30,7 +30,6 @@ export function writeDocument(udm: UnifiedDocumentModel): DocumentWriteResult {
   const contentRightTwips = contentRightTabTwips(udm);
   // Full-width table HRs — Pages often ignores w:pBdr; table borders render reliably.
   const sectionRuleColor = (accent.border || accent.text).replace(/^#/, '');
-  const contactRuleColor = '1a1a1a';
 
   const order = udm.semantic.readingOrder;
   for (let oi = 0; oi < order.length; oi++) {
@@ -73,7 +72,11 @@ export function writeDocument(udm: UnifiedDocumentModel): DocumentWriteResult {
       for (const item of items) {
         if (!item || !('text' in item)) continue;
         const text = String(item.text ?? '');
-        body.push(listParagraph(runText(text), numId));
+        // Use runsFromNode to preserve bold/italic/color formatting within list items
+        const itemRuns = 'runs' in item && (item as any).runs?.length
+          ? runsFromNode(item as any)
+          : runText(text);
+        body.push(listParagraph(itemRuns, numId));
       }
       continue;
     }
@@ -118,18 +121,22 @@ export function writeDocument(udm: UnifiedDocumentModel): DocumentWriteResult {
     if (/^[A-Z][^:\n]{1,40}:\s*$/.test(text.trim())) {
       runs = runText(text.trim(), { bold: true, color: nodeColor });
     }
-    // "Extra-Curricular Activities: Hosted… • Represented…" → label + bullets
+    // "Extra-Curricular Activities: Hosted… • Represented…" → label + item 0 inline, items 1+ as bullets
     const extra = splitLabelWithInlineBullets(text);
     if (extra) {
+      const firstItem = extra.items[0] ?? '';
+      // Section labels (Technical Skills:, Personal Achievements:, Extra-Curricular Activities:) are always green
+      const labelRun = runText(extra.label + ' ', { bold: true, color: accent.text });
+      const firstRun = runText(firstItem, { color: nodeColor });
       body.push(
-        paragraph(runText(extra.label, { bold: true, color: nodeColor ?? accent.text }), {
+        paragraph(labelRun + firstRun, {
           spacingBefore: 60,
           spacingAfter: 20,
           line: 240,
         }),
       );
-      for (const item of extra.items) {
-        body.push(listParagraph(runText(item, { color: nodeColor }), 1));
+      for (let ii = 1; ii < extra.items.length; ii++) {
+        body.push(listParagraph(runText(extra.items[ii]!, { color: nodeColor }), 1));
       }
       continue;
     }
@@ -167,11 +174,11 @@ export function writeDocument(udm: UnifiedDocumentModel): DocumentWriteResult {
           align,
           keepNext: true,
           spacingBefore: 120,
-          spacingAfter: 0,
+          spacingAfter: 40,
           line: 240,
+          bottomBorder: { color: sectionRuleColor, sz: 12, space: 1 },
         }),
       );
-      body.push(horizontalRule(sectionRuleColor, contentRightTwips, 12));
       continue;
     }
 
@@ -189,14 +196,14 @@ export function writeDocument(udm: UnifiedDocumentModel): DocumentWriteResult {
               align,
               keepNext: true,
               spacingBefore: node.type === 'title' ? 0 : 120,
-              spacingAfter: node.type === 'heading' ? 0 : 40,
+              spacingAfter: node.type === 'heading' ? 40 : 40,
               line: 240,
+              bottomBorder: node.type === 'heading'
+                ? { color: sectionRuleColor, sz: 12, space: 1 }
+                : undefined,
             },
           ),
         );
-        if (node.type === 'heading') {
-          body.push(horizontalRule(sectionRuleColor, contentRightTwips, 12));
-        }
         continue;
       }
     }
@@ -222,7 +229,7 @@ export function writeDocument(udm: UnifiedDocumentModel): DocumentWriteResult {
       continue;
     }
 
-    // Company lines under job titles → italic (never ALL-CAPS section titles)
+    // Company lines under job titles → green italic (never ALL-CAPS section titles)
     if (
       node.type === 'subtitle' &&
       !splitTitleAndDate(text) &&
@@ -230,7 +237,7 @@ export function writeDocument(udm: UnifiedDocumentModel): DocumentWriteResult {
       text.trim().split(/\s+/).length <= 6
     ) {
       body.push(
-        paragraph(runText(text.trim(), { italic: true, color: nodeColor ?? accent.text }), {
+        paragraph(runText(text.trim(), { italic: true, bold: false, color: accent.text }), {
           spacingBefore: 0,
           spacingAfter: 20,
           line: 240,
@@ -251,17 +258,20 @@ export function writeDocument(udm: UnifiedDocumentModel): DocumentWriteResult {
         style,
         align,
         spacingBefore: node.type === 'title' ? 0 : isHeadingLike ? 120 : 0,
-        spacingAfter: needsRule ? 0 : node.type === 'title' ? 40 : isHeadingLike ? 40 : 40,
+        spacingAfter: needsRule ? 40 : node.type === 'title' ? 40 : isHeadingLike ? 40 : 40,
         line: 240,
         keepNext: isHeadingLike || isContact ? true : undefined,
+        bottomBorder: node.type === 'heading'
+          ? { color: sectionRuleColor, sz: 12, space: 1 }
+          : undefined,
       }),
     );
-    if (needsRule) {
+    if (isContact) {
       body.push(
         horizontalRule(
-          isContact ? contactRuleColor : sectionRuleColor,
+          sectionRuleColor,
           contentRightTwips,
-          isContact ? 8 : 12,
+          12,
         ),
       );
     }
@@ -352,12 +362,12 @@ function runsFromNode(node: {
     return node.runs
       .map((r) =>
         runText(r.text, {
-          bold: r.bold || node.type === 'heading' || node.type === 'title' || node.type === 'subtitle',
+          bold: r.bold || node.type === 'heading' || node.type === 'title',
           italic: r.italic || node.type === 'quote',
           underline: r.underline,
           fontName: r.fontName,
           fontSizePt: r.fontSize,
-          color: forceAccent && isNearBlack(r.color) ? accentText : r.color,
+          color: (forceAccent || node.type === 'subtitle') && (!r.color || isNearBlack(r.color)) ? accentText : r.color,
         }),
       )
       .join('');
@@ -549,7 +559,7 @@ function splitLabelWithInlineBullets(text: string): { label: string; items: stri
   if (!m) return null;
   const label = m[1]!.trim();
   const rest = m[2]!.trim();
-  if (!/Extra-Curricular|Activities/i.test(label)) return null;
+  if (!/Extra-Curricular|Activities|Personal Achievements|Achievements|Technical Skills|Skills|Competencies/i.test(label)) return null;
   if (!/[•·]/.test(rest) && !/\.\s+[A-Z]/.test(rest)) {
     // Single prose blob after label — still split label / body as one item
     if (rest.length < 20) return null;
@@ -699,7 +709,7 @@ function horizontalRule(colorHex: string, widthTwips: number, sz = 12): string {
           <w:right w:val="nil"/>
         </w:tcBorders>
       </w:tcPr>
-      <w:p><w:pPr><w:spacing w:before="0" w:after="60" w:line="20" w:lineRule="exact"/></w:pPr></w:p>
+      <w:p><w:pPr><w:spacing w:before="0" w:after="40" w:line="20" w:lineRule="exact"/></w:pPr></w:p>
     </w:tc>
   </w:tr>
 </w:tbl>`;
@@ -710,15 +720,16 @@ function writeEducationTable(
   accent: { text: string; headerFill: string; border: string; muted: string },
 ): string {
   const headers = ['Course', 'Year', 'Institution/Board', 'Remarks'];
-  const width = Math.round(9000 / headers.length);
+  // Proportional widths: Course narrow, Remarks wide to avoid text wrapping
+  const widths = [2100, 1400, 2500, 4460];
   const fillC = accent.headerFill.replace('#', '');
   const borderC = accent.border.replace('#', '');
   const rowBorderC = 'D0D0D0';
   // PDF: dashed green header band, no vertical grid — only faint row separators
   const headerCells = headers
     .map(
-      (h) =>
-        `<w:tc><w:tcPr><w:tcW w:w="${width}" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="${fillC}"/><w:vAlign w:val="center"/><w:tcBorders><w:top w:val="dashed" w:sz="8" w:space="0" w:color="${borderC}"/><w:left w:val="nil"/><w:bottom w:val="dashed" w:sz="8" w:space="0" w:color="${borderC}"/><w:right w:val="nil"/></w:tcBorders></w:tcPr>${compactCellParagraph(runText(h, { bold: true, color: accent.text, fontSizePt: 9 }))}</w:tc>`,
+      (h, hi) =>
+        `<w:tc><w:tcPr><w:tcW w:w="${widths[hi]}" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="${fillC}"/><w:vAlign w:val="center"/><w:tcBorders><w:top w:val="dashed" w:sz="8" w:space="0" w:color="${borderC}"/><w:left w:val="nil"/><w:bottom w:val="dashed" w:sz="8" w:space="0" w:color="${borderC}"/><w:right w:val="nil"/></w:tcBorders></w:tcPr>${compactCellParagraph(runText(h, { bold: true, color: accent.text, fontSizePt: 9 }))}</w:tc>`,
     )
     .join('');
   const zebraFill = 'F3F7F3';
@@ -727,8 +738,8 @@ function writeEducationTable(
     const rowFill = ri % 2 === 1 ? zebraFill : null;
     const cells = cols
       .map(
-        (c) =>
-          `<w:tc><w:tcPr><w:tcW w:w="${width}" w:type="dxa"/>${rowFill ? `<w:shd w:val="clear" w:color="auto" w:fill="${rowFill}"/>` : ''}<w:vAlign w:val="center"/><w:tcBorders><w:top w:val="nil"/><w:left w:val="nil"/><w:bottom w:val="single" w:sz="4" w:space="0" w:color="${rowBorderC}"/><w:right w:val="nil"/></w:tcBorders></w:tcPr>${compactCellParagraph(runText(c || ' ', { fontSizePt: 8 }))}</w:tc>`,
+        (c, ci) =>
+          `<w:tc><w:tcPr><w:tcW w:w="${widths[ci] ?? widths[3]}" w:type="dxa"/>${rowFill ? `<w:shd w:val="clear" w:color="auto" w:fill="${rowFill}"/>` : ''}<w:vAlign w:val="center"/><w:tcBorders><w:top w:val="nil"/><w:left w:val="nil"/><w:bottom w:val="single" w:sz="4" w:space="0" w:color="${rowBorderC}"/><w:right w:val="nil"/></w:tcBorders></w:tcPr>${compactCellParagraph(runText(c || ' ', { fontSizePt: 8 }))}</w:tc>`,
       )
       .join('');
     return `<w:tr>${cells}</w:tr>`;
@@ -749,7 +760,7 @@ function writeEducationTable(
       <w:insideV w:val="nil"/>
     </w:tblBorders>
   </w:tblPr>
-  <w:tblGrid>${headers.map(() => `<w:gridCol w:w="${width}"/>`).join('')}</w:tblGrid>
+  <w:tblGrid>${widths.map((w) => `<w:gridCol w:w="${w}"/>`).join('')}</w:tblGrid>
   <w:tr>${headerCells}</w:tr>
   ${rows.join('\n')}
 </w:tbl>`;

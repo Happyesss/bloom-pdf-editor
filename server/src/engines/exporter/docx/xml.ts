@@ -74,7 +74,7 @@ export function paragraph(
     /** Right-aligned tab stop in twips (for title … date lines). */
     rightTabPos?: number;
     /** Bottom border (section rules under headings), OOXML eighths-of-a-point. */
-    bottomBorder?: { color: string; sz?: number; style?: string };
+    bottomBorder?: { color: string; sz?: number; style?: string; space?: number };
   } = {},
 ): string {
   const pPr: string[] = [];
@@ -94,8 +94,9 @@ export function paragraph(
     const color = opts.bottomBorder.color.replace('#', '');
     const sz = opts.bottomBorder.sz ?? 12;
     const val = opts.bottomBorder.style ?? 'single';
+    const space = opts.bottomBorder.space ?? 4;
     pPr.push(
-      `<w:pBdr><w:bottom w:val="${esc(val)}" w:sz="${sz}" w:space="4" w:color="${esc(color)}"/></w:pBdr>`,
+      `<w:pBdr><w:bottom w:val="${esc(val)}" w:sz="${sz}" w:space="${space}" w:color="${esc(color)}"/></w:pBdr>`,
     );
   }
   const pPrXml = pPr.length ? `<w:pPr>${pPr.join('')}</w:pPr>` : '';

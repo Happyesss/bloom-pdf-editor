@@ -8,7 +8,7 @@ import { TableDetectionEngine } from '../engines/table/engine.js';
 import { GraphicsReconstructionEngine } from '../engines/graphics/engine.js';
 import { DocumentStructureEngine } from '../engines/structure/engine.js';
 import { assembleUnifiedDocument } from '../engines/udm/assemble.js';
-import { DocxExporter } from '../engines/exporter/docx/docx-exporter.js';
+import { DocxExporter } from '../engines/exporter/docx/index.js';
 import { readZipEntry } from '../engines/exporter/zip.js';
 import { ExportManager } from '../engines/exporter/export-manager.js';
 import {

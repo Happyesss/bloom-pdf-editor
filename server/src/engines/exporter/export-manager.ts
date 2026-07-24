@@ -1,7 +1,7 @@
 import type { ExportResult, IExportManager } from '../common/interfaces.js';
 import type { UnifiedDocumentModel } from '../udm/types.js';
 import type { ConvertTarget } from '../../jobs/types.js';
-import { DocxExporter } from './docx/docx-exporter.js';
+import { DocxExporter } from './docx/index.js';
 import { EpubExporter } from './epub/epub-exporter.js';
 import { HtmlExporter } from './html/html-exporter.js';
 import { JsonExporter } from './json/json-exporter.js';

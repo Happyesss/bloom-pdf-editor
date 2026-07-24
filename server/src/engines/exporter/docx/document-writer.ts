@@ -28,8 +28,11 @@ export function writeDocument(udm: UnifiedDocumentModel): DocumentWriteResult {
 
   const accent = pickAccentColors(udm);
   const contentRightTwips = contentRightTabTwips(udm);
-  // Full-width table HRs — Pages often ignores w:pBdr; table borders render reliably.
-  const sectionRuleColor = (accent.border || accent.text).replace(/^#/, '');
+  // Section underlines: match heading text green (darker). Contact rule is thicker separately.
+  const sectionRuleColor = accent.text.replace(/^#/, '');
+  const contactRuleColor = accent.text.replace(/^#/, '');
+  const SECTION_RULE_SZ = 8; // 1pt — original section lines are thin
+  const CONTACT_RULE_SZ = 24; // 3pt — original contact rule is visibly thicker
 
   const order = udm.semantic.readingOrder;
   for (let oi = 0; oi < order.length; oi++) {
@@ -117,26 +120,50 @@ export function writeDocument(udm: UnifiedDocumentModel): DocumentWriteResult {
     const style = styleForType(node.type, 'level' in node ? Number(node.level) : undefined);
     const nodeColor = firstRunColor(node as { runs?: Array<{ color?: string }> });
     let runs = runsFromNode(node, accent.text);
-    // Label-only lines ("Personal Achievements:") → bold body text
+    // Label-only lines ("Personal Achievements:") → bold accent green (match original)
     if (/^[A-Z][^:\n]{1,40}:\s*$/.test(text.trim())) {
-      runs = runText(text.trim(), { bold: true, color: nodeColor });
+      const labelColor =
+        /Personal Achievements|Technical Skills|Extra-Curricular|Achievements|Skills|Activities|Competencies/i.test(
+          text,
+        )
+          ? accent.text
+          : nodeColor;
+      runs = runText(text.trim(), { bold: true, color: labelColor });
     }
-    // "Extra-Curricular Activities: Hosted… • Represented…" → label + item 0 inline, items 1+ as bullets
+    // Competency/skills labels with inline • content
     const extra = splitLabelWithInlineBullets(text);
     if (extra) {
-      const firstItem = extra.items[0] ?? '';
-      // Section labels (Technical Skills:, Personal Achievements:, Extra-Curricular Activities:) are always green
+      const isTechnicalSkills = /Technical Skills|^Skills:/i.test(extra.label);
       const labelRun = runText(extra.label + ' ', { bold: true, color: accent.text });
-      const firstRun = runText(firstItem, { color: nodeColor });
-      body.push(
-        paragraph(labelRun + firstRun, {
-          spacingBefore: 60,
-          spacingAfter: 20,
-          line: 240,
-        }),
-      );
-      for (let ii = 1; ii < extra.items.length; ii++) {
-        body.push(listParagraph(runText(extra.items[ii]!, { color: nodeColor }), 1));
+      if (isTechnicalSkills) {
+        // Original: "Technical Skills: MS Excel • MS Word • …" on one line
+        const joined = extra.items.join(' • ');
+        body.push(
+          paragraph(labelRun + runText(joined, { color: nodeColor }), {
+            spacingBefore: 40,
+            spacingAfter: 20,
+            line: 240,
+          }),
+        );
+      } else {
+        // Original: first item after label; later items as "• …" plain lines (not Word lists)
+        const firstItem = extra.items[0] ?? '';
+        body.push(
+          paragraph(labelRun + runText(firstItem, { color: nodeColor }), {
+            spacingBefore: 40,
+            spacingAfter: 20,
+            line: 240,
+          }),
+        );
+        for (let ii = 1; ii < extra.items.length; ii++) {
+          body.push(
+            paragraph(runText(`• ${extra.items[ii]!}`, { color: nodeColor }), {
+              spacingBefore: 0,
+              spacingAfter: 20,
+              line: 240,
+            }),
+          );
+        }
       }
       continue;
     }
@@ -173,10 +200,10 @@ export function writeDocument(udm: UnifiedDocumentModel): DocumentWriteResult {
           style: 'Heading3',
           align,
           keepNext: true,
-          spacingBefore: 120,
-          spacingAfter: 40,
+          spacingBefore: 80,
+          spacingAfter: 20,
           line: 240,
-          bottomBorder: { color: sectionRuleColor, sz: 12, space: 1 },
+          bottomBorder: { color: sectionRuleColor, sz: SECTION_RULE_SZ, space: 1 },
         }),
       );
       continue;
@@ -195,11 +222,11 @@ export function writeDocument(udm: UnifiedDocumentModel): DocumentWriteResult {
               style,
               align,
               keepNext: true,
-              spacingBefore: node.type === 'title' ? 0 : 120,
-              spacingAfter: node.type === 'heading' ? 40 : 40,
+              spacingBefore: node.type === 'title' ? 0 : 80,
+              spacingAfter: 20,
               line: 240,
               bottomBorder: node.type === 'heading'
-                ? { color: sectionRuleColor, sz: 12, space: 1 }
+                ? { color: sectionRuleColor, sz: SECTION_RULE_SZ, space: 1 }
                 : undefined,
             },
           ),
@@ -213,15 +240,16 @@ export function writeDocument(udm: UnifiedDocumentModel): DocumentWriteResult {
     if (split && (node.type === 'paragraph' || node.type === 'subtitle' || node.type === 'heading')) {
       const titleColor =
         nodeColor && !isNearBlack(nodeColor) ? nodeColor : accent.text;
+      const titleBold = node.type === 'heading' || node.type === 'subtitle';
       const titleRun = runText(split.title, {
-        bold: node.type === 'heading' || node.type === 'subtitle',
+        bold: titleBold,
         color: titleColor,
       });
       const dateRun = runText(split.date, { italic: true, color: accent.muted });
       body.push(
         paragraph(`${titleRun}<w:r><w:tab/></w:r>${dateRun}`, {
           rightTabPos: contentRightTwips,
-          spacingBefore: 80,
+          spacingBefore: 60,
           spacingAfter: 0,
           line: 240,
         }),
@@ -252,26 +280,25 @@ export function writeDocument(udm: UnifiedDocumentModel): DocumentWriteResult {
       node.type === 'title' ||
       (style != null && style.startsWith('Heading'));
     const isContact = looksLikeContactLine(text);
-    const needsRule = node.type === 'heading' || isContact;
     body.push(
       paragraph(runs, {
         style,
         align,
-        spacingBefore: node.type === 'title' ? 0 : isHeadingLike ? 120 : 0,
-        spacingAfter: needsRule ? 40 : node.type === 'title' ? 40 : isHeadingLike ? 40 : 40,
+        spacingBefore: node.type === 'title' ? 0 : isHeadingLike ? 80 : 0,
+        spacingAfter: isContact || isHeadingLike ? 20 : 40,
         line: 240,
         keepNext: isHeadingLike || isContact ? true : undefined,
         bottomBorder: node.type === 'heading'
-          ? { color: sectionRuleColor, sz: 12, space: 1 }
+          ? { color: sectionRuleColor, sz: SECTION_RULE_SZ, space: 1 }
           : undefined,
       }),
     );
     if (isContact) {
       body.push(
         horizontalRule(
-          sectionRuleColor,
+          contactRuleColor,
           contentRightTwips,
-          12,
+          CONTACT_RULE_SZ,
         ),
       );
     }
@@ -513,8 +540,8 @@ function listParagraph(runsXml: string, numId: number): string {
   return `<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="${numId}"/></w:numPr><w:spacing w:before="0" w:after="20" w:line="240" w:lineRule="auto"/></w:pPr>${runsXml}</w:p>`;
 }
 
-function compactCellParagraph(runsXml: string): string {
-  return paragraph(runsXml, { spacingBefore: 0, spacingAfter: 0, line: 240 });
+function compactCellParagraph(runsXml: string, align?: string): string {
+  return paragraph(runsXml, { spacingBefore: 0, spacingAfter: 0, line: 240, align });
 }
 
 /** OOXML bookmark names must be [A-Za-z0-9_] (no spaces / punctuation). */
@@ -709,7 +736,7 @@ function horizontalRule(colorHex: string, widthTwips: number, sz = 12): string {
           <w:right w:val="nil"/>
         </w:tcBorders>
       </w:tcPr>
-      <w:p><w:pPr><w:spacing w:before="0" w:after="40" w:line="20" w:lineRule="exact"/></w:pPr></w:p>
+      <w:p><w:pPr><w:spacing w:before="0" w:after="20" w:line="20" w:lineRule="exact"/></w:pPr></w:p>
     </w:tc>
   </w:tr>
 </w:tbl>`;
@@ -725,22 +752,26 @@ function writeEducationTable(
   const fillC = accent.headerFill.replace('#', '');
   const borderC = accent.border.replace('#', '');
   const rowBorderC = 'D0D0D0';
-  // PDF: dashed green header band, no vertical grid — only faint row separators
+  // Original: dashed green header band + light gray vertical column rules; no zebra
+  const vBorder = (side: 'left' | 'right', isEdge: boolean) =>
+    isEdge
+      ? `<w:${side} w:val="nil"/>`
+      : `<w:${side} w:val="single" w:sz="4" w:space="0" w:color="${rowBorderC}"/>`;
   const headerCells = headers
-    .map(
-      (h, hi) =>
-        `<w:tc><w:tcPr><w:tcW w:w="${widths[hi]}" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="${fillC}"/><w:vAlign w:val="center"/><w:tcBorders><w:top w:val="dashed" w:sz="8" w:space="0" w:color="${borderC}"/><w:left w:val="nil"/><w:bottom w:val="dashed" w:sz="8" w:space="0" w:color="${borderC}"/><w:right w:val="nil"/></w:tcBorders></w:tcPr>${compactCellParagraph(runText(h, { bold: true, color: accent.text, fontSizePt: 9 }))}</w:tc>`,
-    )
+    .map((h, hi) => {
+      const align = hi === 3 ? undefined : 'center';
+      return `<w:tc><w:tcPr><w:tcW w:w="${widths[hi]}" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="${fillC}"/><w:vAlign w:val="center"/><w:tcBorders><w:top w:val="dashed" w:sz="8" w:space="0" w:color="${borderC}"/>${vBorder('left', hi === 0)}${vBorder('right', hi === headers.length - 1)}<w:bottom w:val="dashed" w:sz="8" w:space="0" w:color="${borderC}"/></w:tcBorders></w:tcPr>${compactCellParagraph(runText(h, { bold: true, color: accent.text, fontSizePt: 9 }), align)}</w:tc>`;
+    })
     .join('');
-  const zebraFill = 'F3F7F3';
-  const rows = rowTexts.map((rt, ri) => {
+  const rows = rowTexts.map((rt) => {
     const cols = parseEducationRow(rt);
-    const rowFill = ri % 2 === 1 ? zebraFill : null;
     const cells = cols
-      .map(
-        (c, ci) =>
-          `<w:tc><w:tcPr><w:tcW w:w="${widths[ci] ?? widths[3]}" w:type="dxa"/>${rowFill ? `<w:shd w:val="clear" w:color="auto" w:fill="${rowFill}"/>` : ''}<w:vAlign w:val="center"/><w:tcBorders><w:top w:val="nil"/><w:left w:val="nil"/><w:bottom w:val="single" w:sz="4" w:space="0" w:color="${rowBorderC}"/><w:right w:val="nil"/></w:tcBorders></w:tcPr>${compactCellParagraph(runText(c || ' ', { fontSizePt: 8 }))}</w:tc>`,
-      )
+      .map((c, ci) => {
+        const align = ci === 3 ? undefined : 'center';
+        const isFirst = ci === 0;
+        const isLast = ci === cols.length - 1;
+        return `<w:tc><w:tcPr><w:tcW w:w="${widths[ci] ?? widths[3]}" w:type="dxa"/><w:vAlign w:val="center"/><w:tcBorders><w:top w:val="nil"/>${vBorder('left', isFirst)}${vBorder('right', isLast)}<w:bottom w:val="single" w:sz="4" w:space="0" w:color="${rowBorderC}"/></w:tcBorders></w:tcPr>${compactCellParagraph(runText(c || ' ', { fontSizePt: 8 }), align)}</w:tc>`;
+      })
       .join('');
     return `<w:tr>${cells}</w:tr>`;
   });

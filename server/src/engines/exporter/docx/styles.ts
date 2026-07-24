@@ -12,7 +12,7 @@ export function buildStylesXml(): string {
     <w:qFormat/>
     <w:pPr>
       <w:keepNext/>
-      <w:spacing w:before="${n === 1 ? 0 : 120}" w:after="40" w:line="240" w:lineRule="auto"/>
+      <w:spacing w:before="${n === 1 ? 0 : 80}" w:after="20" w:line="240" w:lineRule="auto"/>
       <w:outlineLvl w:val="${n - 1}"/>
     </w:pPr>
     <w:rPr>

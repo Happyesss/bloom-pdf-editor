@@ -348,7 +348,6 @@ export function applyLineTextEdit(
     : 0;
   const growthDx = Math.max(segmentGrowthDx, lineGrowthDx);
   const dSpaces = (newText.match(/\s/g) || []).length - (oldText.match(/\s/g) || []).length;
-  const dChars = newText.length - oldText.length;
 
   // Peer origin: just after the last changed segment (or classic right-column fence).
   const fsPeer = Math.max(primaryLine.fontSize, 8);
@@ -378,6 +377,14 @@ export function applyLineTextEdit(
     horizShifts = [...horizShifts, ...peerShifts];
   }
 
+  // Second pass: close rivers / overlaps left by width-estimate error (or a
+  // first-pass shift that failed to land). Uses measured glyph bounds.
+  // Skip when a pending fontSize enlarge will need that slack next.
+  // Also skip when spaces were inserted: subset fonts often measure space
+  // width ≈ 0, so residual packing pulls trailers back and live gaps vanish
+  // on commit (spaces in Tj, but next run still at old X).
+  const skipResidualForSpaces = dSpaces > 0;
+
   // Apply position shifts FIRST while sourceInstructionIndices still match the
   // stream. applyTextEdits inserts erase ops that invalidate those indices, so
   // shifting afterward silently no-ops and trailing runs overlap grown text.
@@ -393,13 +400,6 @@ export function applyLineTextEdit(
   const editResult = applyTextEdits(bytes, page, objects, edits);
   bytes = editResult.newContentBytes;
 
-  // Second pass: close rivers / overlaps left by width-estimate error (or a
-  // first-pass shift that failed to land). Uses measured glyph bounds.
-  // Skip when a pending fontSize enlarge will need that slack next.
-  // Also skip when spaces were inserted: subset fonts often measure space
-  // width ≈ 0, so residual packing pulls trailers back and live gaps vanish
-  // on commit (spaces in Tj, but next run still at old X).
-  const skipResidualForSpaces = dSpaces > 0;
   if (
     !options?.skipResidualCorrection
     && !skipResidualForSpaces

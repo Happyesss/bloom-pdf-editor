@@ -1182,6 +1182,22 @@ export const SPACE_TJ_EM = 0.28;
 export const SPACE_TJ_MAX_CHARS = 64;
 
 /**
+ * Extra TJ (thousandths of em) needed beyond the font's native Space advance
+ * so total ≈ SPACE_TJ_EM. Subset fonts often have ~0 Space width; Standard 14
+ * Helvetica Space is already ~278 — adding a full 0.28em TJ on top doubles gaps.
+ */
+export function spaceSupplementalTJ(
+  fontData: FontData | null,
+  useWinAnsi: boolean,
+): number {
+  const desired = Math.round(SPACE_TJ_EM * 1000);
+  const glyphW = fontData?.widths?.get(32)
+    ?? fontData?.widths?.get(0x20)
+    ?? (useWinAnsi ? 278 : 0);
+  return Math.max(0, desired - Math.max(0, glyphW));
+}
+
+/**
  * Subset/CID resume fonts often encode Space with ~0 advance. Keep space
  * glyphs (for re-interpret) and add TJ advances so gaps survive commit.
  * Advance length must match layout spaceFloor (0.28em × space count).
@@ -1193,13 +1209,16 @@ export function buildTJWithSpaceAdvances(
 ): PDFArray {
   const items: PDFObject[] = [];
   const parts = text.split(/([ ]+)/);
+  const supplemental = spaceSupplementalTJ(fontData, useWinAnsi);
   for (const part of parts) {
     if (!part) continue;
     if (/^ +$/.test(part)) {
       const enc = useWinAnsi ? encodeTextWinAnsi(part) : encodeTextForFont(part, fontData);
       items.push(enc.pdfString);
-      const advChars = Math.min(part.length, SPACE_TJ_MAX_CHARS);
-      items.push(new PDFNumber(-Math.round(advChars * SPACE_TJ_EM * 1000)));
+      if (supplemental > 0) {
+        const advChars = Math.min(part.length, SPACE_TJ_MAX_CHARS);
+        items.push(new PDFNumber(-Math.round(advChars * supplemental)));
+      }
       continue;
     }
     const enc = useWinAnsi ? encodeTextWinAnsi(part) : encodeTextForFont(part, fontData);

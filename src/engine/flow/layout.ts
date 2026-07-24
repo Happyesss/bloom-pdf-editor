@@ -133,10 +133,14 @@ export function computeHorizontalShiftsFromEdits(
     const unchanged = newText === seg.text;
 
     let gap = 0;
+    let nextLeft: number | null = null;
     if (i < line.segments.length - 1) {
-      const nextBounds = getRunBounds(line.segments[i + 1].run);
-      gap = nextBounds.left - bounds.right;
-      if (gap < 0) gap = fs * 0.12;
+      nextLeft = getRunBounds(line.segments[i + 1].run).left;
+      gap = nextLeft - bounds.right;
+      // Adjacent/overlapping PDF runs are common (kerning). Inventing a positive
+      // gutter here cascades dx across unchanged prefix segments and spreads the
+      // whole line when a later segment grows (e.g. mid-word spaces).
+      if (gap < 0) gap = 0;
     }
 
     // Unchanged runs keep measured width (re-estimating invented gutters), but
@@ -148,7 +152,9 @@ export function computeHorizontalShiftsFromEdits(
       if (Math.abs(dx) > 0.01) {
         shifts.push({ run, dx, dy: 0 });
       }
-      cursor = bounds.left + dx + bounds.width + gap;
+      // Preserve native run-to-run spacing instead of bounds.width + gap, which
+      // drifts when glyph bounds don't abut cleanly.
+      cursor = nextLeft != null ? nextLeft + dx : bounds.left + dx + bounds.width;
       newLinePos += newText.length;
       continue;
     }

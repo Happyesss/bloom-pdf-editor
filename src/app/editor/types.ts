@@ -1,34 +1,33 @@
-import React from 'react';
 import { 
-  MousePointer2, 
-  Type, 
-  Highlighter, 
-  PenTool, 
-  Eraser,
-  Stamp,
-  PenLine,
-  Shield,
-  LucideIcon
-} from 'lucide-react';
+  SelectToolIcon, 
+  TextToolIcon, 
+  HighlightToolIcon, 
+  DrawToolIcon, 
+  EraseToolIcon,
+  WatermarkToolIcon,
+  SignToolIcon,
+  SecurityToolIcon,
+  CustomIconProps
+} from './components/EditorToolIcons';
 
 export type EditorTool = 'select' | 'text' | 'addtext' | 'highlight' | 'draw' | 'erase' | 'watermark' | 'redact' | 'sign' | 'link' | 'security';
 
 export interface ToolDef {
   id: EditorTool;
   label: string;
-  icon: LucideIcon;
+  icon: React.ComponentType<CustomIconProps>;
   shortcut: string;
 }
 
 export const TOOLS: ToolDef[] = [
-  { id: 'select',    label: 'Select',    icon: MousePointer2,  shortcut: 'V' },
-  { id: 'text',      label: 'Edit Text', icon: Type,  shortcut: 'T' },
-  { id: 'highlight', label: 'Highlight', icon: Highlighter, shortcut: 'H' },
-  { id: 'draw',      label: 'Draw',      icon: PenTool,  shortcut: 'D' },
-  { id: 'erase',     label: 'Erase',     icon: Eraser,  shortcut: 'E' },
-  { id: 'watermark', label: 'Watermark', icon: Stamp,   shortcut: 'W' },
-  { id: 'sign',      label: 'Sign',      icon: PenLine, shortcut: 'S' },
-  { id: 'security',  label: 'Security',  icon: Shield,  shortcut: 'X' },
+  { id: 'select',    label: 'Select',    icon: SelectToolIcon,    shortcut: 'V' },
+  { id: 'text',      label: 'Edit Text', icon: TextToolIcon,      shortcut: 'T' },
+  { id: 'highlight', label: 'Highlight', icon: HighlightToolIcon, shortcut: 'H' },
+  { id: 'draw',      label: 'Draw',      icon: DrawToolIcon,      shortcut: 'D' },
+  { id: 'erase',     label: 'Erase',     icon: EraseToolIcon,     shortcut: 'E' },
+  { id: 'watermark', label: 'Watermark', icon: WatermarkToolIcon, shortcut: 'W' },
+  { id: 'sign',      label: 'Sign',      icon: SignToolIcon,      shortcut: 'S' },
+  { id: 'security',  label: 'Security',  icon: SecurityToolIcon,  shortcut: 'X' },
 ];
 
 export type PathType = 'draw' | 'highlight';

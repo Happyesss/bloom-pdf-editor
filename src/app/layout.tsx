@@ -3,9 +3,13 @@ import "./globals.css";
 import { ThemeProvider } from "./theme/ThemeProvider";
 
 export const metadata: Metadata = {
-  title: "PDF Editor — Pure TypeScript PDF Engine",
+  title: "BloomPDF Editor — Pure TypeScript PDF Engine",
   description:
-    "A robust PDF editor built from scratch in pure TypeScript. Zero external dependencies. Adobe Acrobat-class capabilities.",
+    "A robust PDF editor built from scratch in pure TypeScript. Zero external dependencies. Professional-grade PDF capabilities.",
+  icons: {
+    icon: "/logo.png",
+    apple: "/logo.png",
+  },
 };
 
 export default function RootLayout({

@@ -1,4 +1,6 @@
 import React from 'react';
+import Image from 'next/image';
+import Link from 'next/link';
 import { ChevronLeft, ChevronRight, ZoomOut, ZoomIn, X, Undo2, Redo2, Search, FileOutput, Sun, Moon } from 'lucide-react';
 import type { DrawnPath } from '../types';
 import type { PDFDocumentData } from '@/engine';
@@ -68,12 +70,26 @@ export function Toolbar({
       <div className="flex items-center gap-3">
         <button 
           onClick={onClose} 
-          className="p-1.5 text-app-muted hover:text-red-400 hover:bg-red-500/10 rounded-md transition-all duration-200" 
-          title="Close file"
+          className="p-1.5 text-app-muted hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-all duration-200" 
+          title="Close file & return home"
         >
           <X size={18} />
         </button>
-        <span className="text-app font-medium text-sm truncate max-w-[250px] opacity-90">{fileName}</span>
+        <Link href="/" className="flex items-center gap-2 mr-1.5 group">
+          <Image
+            src="/logo.png"
+            alt="BloomPDF Logo"
+            width={32}
+            height={32}
+            className="w-7 h-7 object-contain shrink-0"
+            priority
+          />
+          <span className="font-bold text-sm tracking-tight text-app group-hover:text-[#E8607A] transition-colors">
+            Bloom<span className="text-[#E8607A]">PDF</span>
+          </span>
+        </Link>
+        <div className="w-[1px] h-4 bg-[var(--border)] hidden sm:block" />
+        <span className="text-app font-medium text-xs sm:text-sm truncate max-w-[200px] opacity-90">{fileName}</span>
       </div>
 
       <div className="flex items-center gap-2 bg-panel-elevated px-2 py-1.5 rounded-lg border border-app shadow-sm">
@@ -131,7 +147,7 @@ export function Toolbar({
         {onToggleSearch && (
           <button
             onClick={onToggleSearch}
-            className={`p-2 rounded-lg transition-colors border ${isSearchOpen ? 'bg-blue-600/20 text-blue-500 border-blue-500/50' : 'bg-panel-elevated text-app-muted hover:text-app border-app'}`}
+            className={`p-2 rounded-lg transition-colors border ${isSearchOpen ? 'bg-[#E8607A]/20 text-[#E8607A] border-[#E8607A]/50' : 'bg-panel-elevated text-app-muted hover:text-app border-app'}`}
             title="Toggle Find & Replace"
           >
             <Search size={16} />

@@ -3,12 +3,13 @@ import {
   Type, TextCursorInput, Image, PenTool, Highlighter, Eraser, MousePointer2,
   X, Trash2, Bold, Italic, Underline, AlignLeft, AlignCenter, AlignRight, Minus, Plus, Stamp, Link2,
   PenLine, Star, Copy, Lock, Unlock, RotateCw, KeyRound, ShieldCheck,
-  ArrowRight, Square, Circle,
+  ArrowRight, Square, Circle, PanelLeftClose,
 } from 'lucide-react';
 import type { DrawMode, EditorTool } from '../types';
 import type { TextRun, ImageItem, PathItem, AcroFormWidget, VisualSignature, SignatureLibraryEntry, SignatureField, ManagedIdentity, ValidationReport, LtvStatus, ManagedSignature, RevisionViewEntry } from '@/engine';
 
 interface PropertiesSidebarProps {
+  onClose?: () => void;
   activeTool: EditorTool;
   setActiveTool: (tool: EditorTool) => void;
   selectedRun: TextRun | null;
@@ -163,6 +164,7 @@ interface PropertiesSidebarProps {
 
 export function PropertiesSidebar(props: PropertiesSidebarProps) {
   const {
+    onClose,
     activeTool, setActiveTool, selectedRun,
     textFontFamily, setTextFontFamily, textFontSize, setTextFontSize,
     textBold, setTextBold, textItalic, setTextItalic, textUnderline, setTextUnderline, textColor, setTextColor,
@@ -267,25 +269,38 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
       className="w-64 bg-panel/95 backdrop-blur-md border-r border-app flex flex-col shrink-0 z-10 overflow-y-auto shadow-[4px_0_24px_rgba(0,0,0,0.08)]"
       data-keep-text-edit
     >
+      {/* Top Bar with Hide Panel Button */}
+      {onClose && (
+        <div className="flex items-center justify-between px-4 pt-3 pb-2 border-b border-app/40 text-xs text-app-muted">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-app-muted">Options Panel</span>
+          <button
+            onClick={onClose}
+            title="Hide panel"
+            className="p-1 rounded-lg text-app-muted hover:text-app hover:bg-panel-elevated transition-colors"
+          >
+            <PanelLeftClose size={14} />
+          </button>
+        </div>
+      )}
       {/* TEXT TOOL PROPERTIES */}
       {(activeTool === 'text' || activeTool === 'addtext') && (
         <div className="p-4 space-y-4 animate-in fade-in slide-in-from-left-4 duration-300">
-          <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-zinc-400 uppercase">
+          <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-app-muted uppercase">
             <Type size={14} />
             Text Properties
           </div>
 
           {/* Selected run info */}
           {selectedRun && (
-            <div className="bg-zinc-800/60 rounded-lg p-2.5 text-[11px] text-zinc-400 border border-zinc-700/50">
-              <span className="text-zinc-200 font-medium">Editing:</span>{' '}
+            <div className="bg-panel-elevated rounded-lg p-2.5 text-[11px] text-app-muted border border-app">
+              <span className="text-app font-medium">Editing:</span>{' '}
               &quot;{selectedRun.text.substring(0, 40)}{selectedRun.text.length > 40 ? '…' : ''}&quot;
             </div>
           )}
 
           {/* Font Family */}
           <div className="space-y-1.5">
-            <label className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase">Font</label>
+            <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Font</label>
             {(() => {
               const isResourceId = !textFontFamily || /^F\d+$/i.test(textFontFamily);
               const fontValue = isResourceId
@@ -297,7 +312,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   value={fontValue}
                   onChange={(e) => setTextFontFamily(e.target.value)}
                   onFocus={(e) => e.stopPropagation()}
-                  className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-xs text-zinc-200 outline-none focus:border-blue-500 transition-colors cursor-pointer"
+                  className="w-full bg-panel-elevated border border-app rounded-lg px-3 py-2 text-xs text-app outline-none focus:border-[#E8607A] transition-colors cursor-pointer"
                 >
                   {showCurrent && (
                     <option value={fontValue}>{fontValue}</option>
@@ -312,12 +327,12 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
 
           {/* Font Size */}
           <div className="space-y-1.5">
-            <label className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase">Size</label>
+            <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Size</label>
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setTextFontSize(s => Math.max(4, s - 1))}
                 onMouseDown={(e) => e.preventDefault()}
-                className="p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-md text-zinc-400 transition-colors border border-zinc-700"
+                className="p-1.5 bg-panel-elevated hover:bg-panel-elevated/80 rounded-md text-app-muted transition-colors border border-app"
               >
                 <Minus size={12} />
               </button>
@@ -326,12 +341,12 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 value={textFontSize}
                 onChange={(e) => setTextFontSize(Math.max(4, Math.min(200, parseInt(e.target.value) || 12)))}
                 onMouseDown={(e) => e.preventDefault()}
-                className="w-16 bg-zinc-800 border border-zinc-700 rounded-lg px-2 py-1.5 text-xs text-zinc-200 text-center outline-none focus:border-blue-500"
+                className="w-16 bg-panel-elevated border border-app rounded-lg px-2 py-1.5 text-xs text-app text-center outline-none focus:border-[#E8607A]"
               />
               <button
                 onClick={() => setTextFontSize(s => Math.min(200, s + 1))}
                 onMouseDown={(e) => e.preventDefault()}
-                className="p-1.5 bg-zinc-800 hover:bg-zinc-700 rounded-md text-zinc-400 transition-colors border border-zinc-700"
+                className="p-1.5 bg-panel-elevated hover:bg-panel-elevated/80 rounded-md text-app-muted transition-colors border border-app"
               >
                 <Plus size={12} />
               </button>
@@ -342,7 +357,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   key={s}
                   onClick={() => setTextFontSize(s)}
                   onMouseDown={(e) => e.preventDefault()}
-                  className={`px-2 py-0.5 rounded text-[10px] font-medium transition-all ${textFontSize === s ? 'bg-blue-600 text-white shadow-sm' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 border border-zinc-700/50'}`}
+                  className={`px-2 py-0.5 rounded text-[10px] font-medium transition-all ${textFontSize === s ? 'bg-[#E8607A] text-white shadow-sm' : 'bg-panel-elevated text-app-muted hover:text-app hover:bg-panel-elevated/80 border border-app'}`}
                 >
                   {s}
                 </button>
@@ -352,12 +367,12 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
 
           {/* Style */}
           <div className="space-y-1.5">
-            <label className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase">Style</label>
+            <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Style</label>
             <div className="flex gap-2">
               <button
                 onClick={() => setTextBold(b => !b)}
                 onMouseDown={(e) => e.preventDefault()}
-                className={`flex-1 py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${textBold ? 'bg-blue-600/20 text-blue-400 border border-blue-500/50' : 'bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700'}`}
+                className={`flex-1 py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${textBold ? 'bg-[#E8607A]/20 text-[#E8607A] border border-[#E8607A]/50' : 'bg-panel-elevated text-app-muted border border-app hover:text-app hover:bg-panel-elevated/80'}`}
                 title="Bold"
               >
                 <Bold size={16} />
@@ -365,7 +380,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
               <button
                 onClick={() => setTextItalic(i => !i)}
                 onMouseDown={(e) => e.preventDefault()}
-                className={`flex-1 py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${textItalic ? 'bg-blue-600/20 text-blue-400 border border-blue-500/50' : 'bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700'}`}
+                className={`flex-1 py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${textItalic ? 'bg-[#E8607A]/20 text-[#E8607A] border border-[#E8607A]/50' : 'bg-panel-elevated text-app-muted border border-app hover:text-app hover:bg-panel-elevated/80'}`}
                 title="Italic"
               >
                 <Italic size={16} />
@@ -373,7 +388,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
               <button
                 onClick={() => setTextUnderline(u => !u)}
                 onMouseDown={(e) => e.preventDefault()}
-                className={`flex-1 py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${textUnderline ? 'bg-blue-600/20 text-blue-400 border border-blue-500/50' : 'bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700'}`}
+                className={`flex-1 py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${textUnderline ? 'bg-[#E8607A]/20 text-[#E8607A] border border-[#E8607A]/50' : 'bg-panel-elevated text-app-muted border border-app hover:text-app hover:bg-panel-elevated/80'}`}
                 title="Underline"
               >
                 <Underline size={16} />
@@ -383,13 +398,13 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
 
           {/* Color */}
           <div className="space-y-1.5">
-            <label className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase">Color</label>
+            <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Color</label>
             <div className="flex items-center gap-2">
               <input
                 type="color"
                 value={textColor}
                 onChange={(e) => setTextColor(e.target.value)}
-                className="w-8 h-8 rounded-lg border border-zinc-700 cursor-pointer bg-transparent"
+                className="w-8 h-8 rounded-lg border border-app cursor-pointer bg-transparent"
               />
               <input
                 type="text"
@@ -399,7 +414,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   if (!val.startsWith('#')) val = '#' + val;
                   setTextColor(val);
                 }}
-                className="w-16 bg-transparent border-b border-zinc-700 text-[11px] text-zinc-300 font-mono focus:outline-none focus:border-blue-500 uppercase pb-0.5"
+                className="w-16 bg-transparent border-b border-app text-[11px] text-app font-mono focus:outline-none focus:border-[#E8607A] uppercase pb-0.5"
                 maxLength={7}
               />
             </div>
@@ -409,7 +424,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   key={c}
                   onClick={() => setTextColor(c)}
                   onMouseDown={(e) => e.preventDefault()}
-                  className={`w-5 h-5 rounded-full border-2 transition-transform ${textColor.toLowerCase() === c ? 'scale-125 border-blue-400' : 'border-zinc-700 hover:scale-110'}`}
+                  className={`w-5 h-5 rounded-full border-2 transition-transform ${textColor.toLowerCase() === c ? 'scale-125 border-[#FF9BB3]' : 'border-app hover:scale-110'}`}
                   style={{ backgroundColor: c }}
                 />
               ))}
@@ -418,8 +433,8 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
 
           {/* Alignment */}
           <div className="space-y-1.5">
-            <label className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase">Alignment</label>
-            <div className="flex gap-1 bg-zinc-800 p-1 rounded-lg border border-zinc-700">
+            <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Alignment</label>
+            <div className="flex gap-1 bg-panel-elevated p-1 rounded-lg border border-app">
               {([
                 { val: 'left' as const, icon: <AlignLeft size={14} /> },
                 { val: 'center' as const, icon: <AlignCenter size={14} /> },
@@ -429,7 +444,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   key={a.val}
                   onClick={() => setTextAlign(a.val)}
                   onMouseDown={(e) => e.preventDefault()}
-                  className={`flex-1 py-1.5 rounded-md flex items-center justify-center transition-all ${textAlign === a.val ? 'bg-blue-600 text-white shadow-sm' : 'text-zinc-400 hover:text-zinc-200'}`}
+                  className={`flex-1 py-1.5 rounded-md flex items-center justify-center transition-all ${textAlign === a.val ? 'bg-[#E8607A] text-white shadow-sm' : 'text-app-muted hover:text-app'}`}
                 >
                   {a.icon}
                 </button>
@@ -439,7 +454,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
 
           {/* Links — scan highlights on the PDF; edit/open via page hover popover */}
           <div className="space-y-1.5">
-            <label className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase">
+            <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">
               Links {pageLinkCount > 0 ? `(${pageLinkCount})` : ''}
             </label>
 
@@ -450,8 +465,8 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 onMouseDown={(e) => e.preventDefault()}
                 className={`w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-semibold transition-colors border ${
                   linksHighlighted
-                    ? 'bg-blue-600/25 text-blue-300 border-blue-500/40'
-                    : 'bg-zinc-800 text-zinc-300 border-zinc-700 hover:bg-zinc-700'
+                    ? 'bg-[#E8607A]/25 text-[#E8607A] border-[#E8607A]/40'
+                    : 'bg-panel-elevated text-app border-app hover:bg-panel-elevated/80'
                 }`}
               >
                 <Link2 size={14} />
@@ -460,14 +475,14 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             )}
 
             {linkCreatePending ? (
-              <div className="space-y-2 rounded-lg border border-blue-500/30 bg-blue-500/5 p-2.5">
-                <p className="text-[10px] text-blue-300 font-medium">New link URL</p>
+              <div className="space-y-2 rounded-lg border border-[#E8607A]/30 bg-[#E8607A]/5 p-2.5">
+                <p className="text-[10px] text-[#E8607A] font-medium">New link URL</p>
                 <input
                   type="url"
                   value={selectedLinkUrl}
                   onChange={(e) => onSelectedLinkUrlChange?.(e.target.value)}
                   placeholder="https://example.com"
-                  className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-xs text-zinc-200 outline-none focus:border-blue-500"
+                  className="w-full bg-panel-elevated border border-app rounded-lg px-3 py-2 text-xs text-app outline-none focus:border-[#E8607A]"
                   autoFocus
                 />
                 <div className="flex gap-2">
@@ -475,7 +490,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                     type="button"
                     onClick={onSaveSelectedLink}
                     onMouseDown={(e) => e.preventDefault()}
-                    className="flex-1 py-1.5 rounded-lg bg-blue-600 text-white text-[11px] font-semibold hover:bg-blue-500"
+                    className="flex-1 py-1.5 rounded-lg bg-[#E8607A] text-white text-[11px] font-semibold hover:bg-[#D94D6A]"
                   >
                     Save
                   </button>
@@ -496,13 +511,13 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                     type="button"
                     onClick={onAddLink}
                     onMouseDown={(e) => e.preventDefault()}
-                    className="w-full flex items-center justify-center gap-2 py-2 rounded-lg bg-blue-600/15 text-blue-400 border border-blue-500/30 hover:bg-blue-600/25 text-xs font-semibold transition-colors"
+                    className="w-full flex items-center justify-center gap-2 py-2 rounded-lg bg-[#E8607A]/15 text-[#E8607A] border border-[#E8607A]/30 hover:bg-[#D94D6A]/25 text-xs font-semibold transition-colors"
                   >
                     <Link2 size={14} />
                     Add link to selection
                   </button>
                 )}
-                <p className="text-[10px] text-zinc-500 leading-relaxed">
+                <p className="text-[10px] text-app-faint leading-relaxed">
                   {linksHighlighted
                     ? 'Hover a highlighted link on the page to edit or open it.'
                     : 'Click Scan for links to highlight them on the PDF. Select text to add a new one.'}
@@ -520,20 +535,20 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 min="0" max="100"
                 value={textOpacity}
                 onChange={(e) => setTextOpacity(parseInt(e.target.value))}
-                className="flex-1 accent-blue-500"
+                className="flex-1 accent-[#E8607A]"
               />
               <span className="text-[11px] text-zinc-400 w-8 text-right font-mono">{textOpacity}%</span>
             </div>
           </div>
 
           {/* Add Content */}
-          <div className="pt-4 mt-4 border-t border-zinc-800/80 space-y-2">
-            <div className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase mb-2">
+          <div className="pt-4 mt-4 border-t border-app space-y-2">
+            <div className="text-[10px] font-bold tracking-widest text-app-faint uppercase mb-2">
               Add Content
             </div>
             <button
               onClick={() => setActiveTool('addtext')}
-              className={`w-full flex items-center justify-center gap-2 py-2 rounded-md transition-colors text-xs font-semibold ${activeTool === 'addtext' ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30' : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'}`}
+              className={`w-full flex items-center justify-center gap-2 py-2 rounded-md transition-colors text-xs font-semibold ${activeTool === 'addtext' ? 'bg-[#E8607A]/20 text-[#E8607A] border border-[#E8607A]/30' : 'bg-panel-elevated text-app hover:bg-panel-elevated/80'}`}
             >
               <TextCursorInput size={14} />
               Add Text Box
@@ -541,7 +556,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             {onDuplicateLineBelow && selectedRun && (
               <button
                 onClick={onDuplicateLineBelow}
-                className="w-full flex items-center justify-center gap-2 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-md transition-colors text-xs font-semibold"
+                className="w-full flex items-center justify-center gap-2 py-2 bg-panel-elevated hover:bg-panel-elevated/80 text-app rounded-md transition-colors text-xs font-semibold border border-app"
                 title="Copy this line one row below (table / form rows)"
               >
                 <Plus size={14} />
@@ -553,7 +568,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 <div className="text-[10px] font-bold tracking-widest text-emerald-400 uppercase">
                   Table {tableInfo.rows}×{tableInfo.cols}
                 </div>
-                <p className="text-[10px] text-zinc-500 leading-relaxed">
+                <p className="text-[10px] text-app-faint leading-relaxed">
                   Cell r{tableInfo.row + 1}, c{tableInfo.col + 1}. Green boxes mark detected cells — click one cell to edit it.
                 </p>
                 {onAddTableRow && (
@@ -586,7 +601,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   fileInputRef.current.click();
                 }
               }}
-              className="w-full flex items-center justify-center gap-2 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-md transition-colors text-xs font-semibold"
+              className="w-full flex items-center justify-center gap-2 py-2 bg-panel-elevated hover:bg-panel-elevated/80 text-app rounded-md transition-colors text-xs font-semibold border border-app"
             >
               <Image size={14} />
               Add Image
@@ -598,13 +613,13 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
       {/* DRAW TOOL PROPERTIES */}
       {activeTool === 'draw' && (
         <div className="p-4 space-y-4 animate-in fade-in slide-in-from-left-4 duration-300">
-          <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-zinc-400 uppercase">
+          <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-app-muted uppercase">
             <PenTool size={14} />
             Draw Properties
           </div>
           {setDrawMode && (
             <div className="space-y-1.5">
-              <label className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase">Shape</label>
+              <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Shape</label>
               <div className="grid grid-cols-5 gap-1.5">
                 {([
                   { id: 'freehand' as DrawMode, icon: PenTool, title: 'Freehand' },
@@ -620,8 +635,8 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                     onClick={() => setDrawMode(id)}
                     className={`flex items-center justify-center h-9 rounded-lg border transition-colors ${
                       drawMode === id
-                        ? 'bg-blue-600/20 text-blue-400 border-blue-500/50'
-                        : 'bg-zinc-800/50 text-zinc-400 border-zinc-700/50 hover:text-zinc-200'
+                        ? 'bg-[#E8607A]/20 text-[#E8607A] border-[#E8607A]/50'
+                        : 'bg-panel-elevated text-app-muted border-app hover:text-app hover:bg-panel-elevated/80'
                     }`}
                   >
                     <Icon size={15} />
@@ -631,13 +646,13 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             </div>
           )}
           <div className="space-y-1.5">
-            <label className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase">Color</label>
+            <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Color</label>
             <div className="flex items-center gap-2">
               <input
                 type="color"
                 value={drawColor}
                 onChange={(e) => setDrawColor(e.target.value)}
-                className="w-8 h-8 rounded-lg border border-zinc-700 cursor-pointer bg-transparent"
+                className="w-8 h-8 rounded-lg border border-app cursor-pointer bg-transparent"
               />
               <input
                 type="text"
@@ -647,36 +662,36 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   if (!val.startsWith('#')) val = '#' + val;
                   setDrawColor(val);
                 }}
-                className="w-16 bg-transparent border-b border-zinc-700 text-[11px] text-zinc-300 font-mono focus:outline-none focus:border-blue-500 uppercase pb-0.5"
+                className="w-16 bg-transparent border-b border-app text-[11px] text-app font-mono focus:outline-none focus:border-[#E8607A] uppercase pb-0.5"
                 maxLength={7}
               />
             </div>
-            <div className="grid grid-cols-4 gap-2 p-2 bg-zinc-800/50 rounded-lg border border-zinc-700/50">
+            <div className="grid grid-cols-4 gap-2 p-2 bg-panel-elevated rounded-lg border border-app">
               {['#ef4444', '#3b82f6', '#22c55e', '#f59e0b', '#a855f7', '#ec4899', '#14b8a6', '#f4f4f5'].map(color => (
                 <button
                   key={color}
                   onClick={() => setDrawColor(color)}
-                  className={`w-6 h-6 rounded-full mx-auto transition-transform ${drawColor.toLowerCase() === color.toLowerCase() ? 'scale-125 ring-2 ring-zinc-300 ring-offset-2 ring-offset-zinc-900' : 'hover:scale-110'}`}
+                  className={`w-6 h-6 rounded-full mx-auto transition-transform ${drawColor.toLowerCase() === color.toLowerCase() ? 'scale-125 ring-2 ring-bloom-500 ring-offset-2 ring-offset-panel' : 'hover:scale-110'}`}
                   style={{ backgroundColor: color }}
                 />
               ))}
             </div>
           </div>
           <div className="space-y-1.5">
-            <label className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase">Brush Size</label>
+            <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Brush Size</label>
             <div className="flex items-center gap-2">
               <input
                 type="range"
                 min="1" max="20"
                 value={drawSize}
                 onChange={(e) => setDrawSize(parseInt(e.target.value))}
-                className="flex-1 accent-blue-500"
+                className="flex-1 accent-[#E8607A]"
               />
-              <span className="text-[11px] text-zinc-400 w-8 text-right font-mono">{drawSize}px</span>
+              <span className="text-[11px] text-app-muted w-8 text-right font-mono">{drawSize}px</span>
             </div>
           </div>
           <div className="flex items-center gap-2 pt-1">
-            <span className="text-[10px] text-zinc-500">Preview:</span>
+            <span className="text-[10px] text-app-faint">Preview:</span>
             <div
               className="rounded-full"
               style={{ width: drawSize + 4, height: drawSize + 4, backgroundColor: drawColor }}
@@ -688,18 +703,18 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
       {/* HIGHLIGHT TOOL PROPERTIES */}
       {activeTool === 'highlight' && (
         <div className="p-4 space-y-4 animate-in fade-in slide-in-from-left-4 duration-300">
-          <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-zinc-400 uppercase">
+          <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-app-muted uppercase">
             <Highlighter size={14} />
             Highlight Properties
           </div>
           <div className="space-y-1.5">
-            <label className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase">Color</label>
+            <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Color</label>
             <div className="flex items-center gap-2">
               <input
                 type="color"
                 value={highlightColor}
                 onChange={(e) => setHighlightColor(e.target.value)}
-                className="w-8 h-8 rounded-lg border border-zinc-700 cursor-pointer bg-transparent"
+                className="w-8 h-8 rounded-lg border border-app cursor-pointer bg-transparent"
               />
               <input
                 type="text"
@@ -709,23 +724,23 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   if (!val.startsWith('#')) val = '#' + val;
                   setHighlightColor(val);
                 }}
-                className="w-16 bg-transparent border-b border-zinc-700 text-[11px] text-zinc-300 font-mono focus:outline-none focus:border-blue-500 uppercase pb-0.5"
+                className="w-16 bg-transparent border-b border-app text-[11px] text-app font-mono focus:outline-none focus:border-[#E8607A] uppercase pb-0.5"
                 maxLength={7}
               />
             </div>
-            <div className="grid grid-cols-4 gap-2 p-2 bg-zinc-800/50 rounded-lg border border-zinc-700/50">
+            <div className="grid grid-cols-4 gap-2 p-2 bg-panel-elevated rounded-lg border border-app">
               {['#fffb00', '#00ff00', '#00e5ff', '#ff00ff', '#ff8c00', '#ff6b6b', '#a78bfa', '#67e8f9'].map(color => (
                 <button
                   key={color}
                   onClick={() => setHighlightColor(color)}
-                  className={`w-6 h-6 rounded-full mx-auto transition-transform ${highlightColor.toLowerCase() === color.toLowerCase() ? 'scale-125 ring-2 ring-zinc-300 ring-offset-2 ring-offset-zinc-900' : 'hover:scale-110'}`}
+                  className={`w-6 h-6 rounded-full mx-auto transition-transform ${highlightColor.toLowerCase() === color.toLowerCase() ? 'scale-125 ring-2 ring-amber-400 ring-offset-2 ring-offset-panel' : 'hover:scale-110'}`}
                   style={{ backgroundColor: color }}
                 />
               ))}
             </div>
           </div>
           <div className="space-y-1.5">
-            <label className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase">Thickness</label>
+            <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Thickness</label>
             <div className="flex items-center gap-2">
               <input
                 type="range"
@@ -734,42 +749,40 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 onChange={(e) => setHighlightSize(parseInt(e.target.value))}
                 className="flex-1 accent-yellow-400"
               />
-              <span className="text-[11px] text-zinc-400 w-8 text-right font-mono">{highlightSize}px</span>
+              <span className="text-[11px] text-app-muted w-8 text-right font-mono">{highlightSize}px</span>
             </div>
           </div>
-          <p className="text-[10px] text-zinc-500 leading-relaxed">
+          <p className="text-[10px] text-app-faint leading-relaxed">
             Click a line to highlight it. Drag to freehand highlight.
           </p>
         </div>
       )}
 
-      {/* LINK TOOL PROPERTIES — removed; links live in Text Properties */}
-
       {/* ERASER PROPERTIES */}
       {activeTool === 'erase' && (
         <div className="p-4 space-y-4 animate-in fade-in slide-in-from-left-4 duration-300">
-          <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-zinc-400 uppercase">
+          <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-app-muted uppercase">
             <Eraser size={14} />
             Eraser Properties
           </div>
           <div className="space-y-1.5">
-            <label className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase">Eraser Size</label>
+            <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Eraser Size</label>
             <div className="flex items-center gap-2">
               <input
                 type="range"
                 min="5" max="50"
                 value={eraserSize}
                 onChange={(e) => setEraserSize(parseInt(e.target.value))}
-                className="flex-1 accent-zinc-400"
+                className="flex-1 accent-rose-400"
               />
-              <span className="text-[11px] text-zinc-400 w-8 text-right font-mono">{eraserSize}px</span>
+              <span className="text-[11px] text-app-muted w-8 text-right font-mono">{eraserSize}px</span>
             </div>
           </div>
           <div className="flex items-center gap-2 pt-1">
-            <span className="text-[10px] text-zinc-500">Preview:</span>
+            <span className="text-[10px] text-app-faint">Preview:</span>
             <div
-              className="rounded-full border-2 border-zinc-500"
-              style={{ width: eraserSize, height: eraserSize, backgroundColor: 'rgba(255,255,255,0.15)' }}
+              className="rounded-full border-2 border-app-strong"
+              style={{ width: eraserSize, height: eraserSize, backgroundColor: 'rgba(232,96,122,0.15)' }}
             />
           </div>
         </div>
@@ -778,36 +791,36 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
       {/* SELECT TOOL — SELECTED IMAGE/SIGNATURE INFO */}
       {activeTool === 'select' && selectedDisplayItem && (
         <div className="p-4 space-y-4 animate-in fade-in slide-in-from-left-4 duration-300">
-          <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-zinc-400 uppercase">
+          <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-app-muted uppercase">
             {selectedDisplayItem.type === 'image' ? <Image size={14} /> : <PenTool size={14} />}
             {selectedDisplayItem.type === 'image' ? 'Image Properties' : 'Drawing / Signature'}
           </div>
           <div className="space-y-2 text-[11px]">
-            <div className="flex justify-between bg-zinc-800/50 rounded-md px-3 py-2 border border-zinc-700/50">
-              <span className="text-zinc-500">Type</span>
-              <span className="text-zinc-200 font-medium capitalize">{selectedDisplayItem.type}</span>
+            <div className="flex justify-between bg-panel-elevated rounded-md px-3 py-2 border border-app">
+              <span className="text-app-faint">Type</span>
+              <span className="text-app font-medium capitalize">{selectedDisplayItem.type}</span>
             </div>
-            <div className="flex justify-between bg-zinc-800/50 rounded-md px-3 py-2 border border-zinc-700/50">
-              <span className="text-zinc-500">Position</span>
-              <span className="text-zinc-200 font-mono">{Math.round(selectedDisplayItem.x)}, {Math.round(selectedDisplayItem.y)}</span>
+            <div className="flex justify-between bg-panel-elevated rounded-md px-3 py-2 border border-app">
+              <span className="text-app-faint">Position</span>
+              <span className="text-app font-mono">{Math.round(selectedDisplayItem.x)}, {Math.round(selectedDisplayItem.y)}</span>
             </div>
-            <div className="flex justify-between bg-zinc-800/50 rounded-md px-3 py-2 border border-zinc-700/50">
-              <span className="text-zinc-500">Size</span>
-              <span className="text-zinc-200 font-mono">{Math.round(selectedDisplayItem.width)} × {Math.round(selectedDisplayItem.height)} pt</span>
+            <div className="flex justify-between bg-panel-elevated rounded-md px-3 py-2 border border-app">
+              <span className="text-app-faint">Size</span>
+              <span className="text-app font-mono">{Math.round(selectedDisplayItem.width)} × {Math.round(selectedDisplayItem.height)} pt</span>
             </div>
           </div>
           <div className="space-y-2 pt-2">
             {selectedDisplayItem.type === 'image' && (
               <button
                 onClick={() => onReplaceSelectedImage?.()}
-                className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-medium bg-blue-500/10 text-blue-400 border border-blue-500/30 hover:bg-blue-500/20 transition-colors"
+                className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-medium bg-[#E8607A]/10 text-[#E8607A] border border-[#E8607A]/30 hover:bg-[#D94D6A]/20 transition-colors"
               >
                 <Image size={12} /> Replace Image
               </button>
             )}
             <button
               onClick={() => setSelectedDisplayItem(null)}
-              className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-medium bg-zinc-800 text-zinc-300 border border-zinc-700 hover:bg-zinc-700 transition-colors"
+              className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-medium bg-panel-elevated text-app border border-app hover:bg-panel-elevated/80 transition-colors"
             >
               <X size={12} /> Deselect
             </button>
@@ -824,21 +837,21 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
       {/* SELECT TOOL — NO SELECTION */}
       {activeTool === 'select' && !selectedDisplayItem && (
         <div className="p-4 space-y-3 animate-in fade-in slide-in-from-left-4 duration-300">
-          <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-zinc-400 uppercase">
+          <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-app-muted uppercase">
             <MousePointer2 size={14} />
             Select Tool
           </div>
-          <p className="text-[11px] text-zinc-500 leading-relaxed">
+          <p className="text-[11px] text-app-faint leading-relaxed">
             Click on images or drawings to select them. Double-click text to edit.
           </p>
           {displayItems.length > 0 && (
-            <div className="bg-zinc-800/50 rounded-lg p-2.5 border border-zinc-700/50">
-              <span className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase">Detected</span>
+            <div className="bg-panel-elevated rounded-lg p-2.5 border border-app">
+              <span className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Detected</span>
               <div className="flex gap-3 mt-2">
-                <span className="text-[11px] text-blue-400">
+                <span className="text-[11px] text-[#E8607A]">
                   {displayItems.filter(d => d.type === 'image').length} images
                 </span>
-                <span className="text-[11px] text-green-400">
+                <span className="text-[11px] text-emerald-500">
                   {displayItems.filter(d => d.type === 'path').length} drawings
                 </span>
               </div>
@@ -849,15 +862,15 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
 
       {/* FORM FIELDS — Select + Text tools */}
       {(activeTool === 'select' || activeTool === 'text' || activeTool === 'addtext') && (
-      <div className="p-4 space-y-3 border-t border-zinc-800 animate-in fade-in slide-in-from-left-4 duration-300">
+      <div className="p-4 space-y-3 border-t border-app animate-in fade-in slide-in-from-left-4 duration-300">
           <div className="flex items-center justify-between">
-            <span className="text-[10px] font-bold tracking-widest text-zinc-400 uppercase">
+            <span className="text-[10px] font-bold tracking-widest text-app-muted uppercase">
               Form Fields {formFields.length > 0 ? `(${formFields.length})` : ''}
             </span>
             {onFlattenForms && formFields.length > 0 && (
               <button
                 onClick={onFlattenForms}
-                className="text-[10px] font-medium px-2 py-1 rounded bg-amber-500/10 text-amber-400 border border-amber-500/30 hover:bg-amber-500/20 transition-colors"
+                className="text-[10px] font-medium px-2 py-1 rounded bg-amber-500/10 text-amber-500 border border-amber-500/30 hover:bg-amber-500/20 transition-colors"
               >
                 Flatten All
               </button>
@@ -865,12 +878,12 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
           </div>
 
           {formFields.length === 0 ? (
-            <p className="text-[11px] text-zinc-500 leading-relaxed">
+            <p className="text-[11px] text-app-faint leading-relaxed">
               No AcroForm fields on this page. Open a fillable PDF to edit text, checkbox, and dropdown fields here. Amber boxes appear on the page when fields are detected.
             </p>
           ) : (
           <>
-          <p className="text-[10px] text-zinc-500 leading-relaxed">
+          <p className="text-[10px] text-app-faint leading-relaxed">
             Click an amber box on the page or a field below to edit its value.
           </p>
           <div className="space-y-1 max-h-40 overflow-y-auto">
@@ -880,37 +893,37 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 onClick={() => onFormFieldSelect?.(field)}
                 className={`w-full text-left px-2.5 py-2 rounded-lg text-[11px] transition-colors ${
                   selectedFormField?.ref.toKey() === field.ref.toKey()
-                    ? 'bg-blue-500/15 text-blue-300 border border-blue-500/30'
-                    : 'bg-zinc-800/50 text-zinc-400 border border-zinc-700/50 hover:bg-zinc-800'
+                    ? 'bg-[#E8607A]/15 text-[#E8607A] border border-[#E8607A]/30'
+                    : 'bg-panel-elevated text-app-muted border border-app hover:bg-panel-elevated/80'
                 }`}
               >
                 <div className="font-medium truncate">{field.fieldName || 'Unnamed'}</div>
-                <div className="text-[10px] text-zinc-500">{field.fieldType}</div>
+                <div className="text-[10px] text-app-faint">{field.fieldType}</div>
               </button>
             ))}
           </div>
 
           {selectedFormField && selectedFormField.fieldType === 'Tx' && onFormFieldChange && (
             <div className="space-y-2">
-              <label className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase">Value</label>
+              <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Value</label>
               <input
                 type="text"
                 value={formFieldDraft}
                 onChange={(e) => onFormFieldChange(e.target.value)}
-                className="w-full px-3 py-2 text-sm bg-zinc-800 border border-zinc-700 rounded-lg text-zinc-200 focus:outline-none focus:border-blue-500"
+                className="w-full px-3 py-2 text-sm bg-panel-elevated border border-app rounded-lg text-app focus:outline-none focus:border-[#E8607A]"
               />
             </div>
           )}
 
           {selectedFormField && selectedFormField.fieldType === 'Btn' && onFormFieldChange && (
             <div className="space-y-2">
-              <label className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase">Checkbox / Radio</label>
+              <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Checkbox / Radio</label>
               <button
                 onClick={() => {
                   const checked = !(selectedFormField.value === true || selectedFormField.value === 'Yes' || selectedFormField.value === 'On');
                   onFormFieldChange(checked ? 'Yes' : 'Off');
                 }}
-                className="w-full py-2 rounded-lg text-xs font-semibold bg-zinc-800 border border-zinc-700 text-zinc-200 hover:bg-zinc-700"
+                className="w-full py-2 rounded-lg text-xs font-semibold bg-panel-elevated border border-app text-app hover:bg-panel-elevated/80"
               >
                 {(selectedFormField.value === true || selectedFormField.value === 'Yes' || selectedFormField.value === 'On')
                   ? 'Checked — click to uncheck'
@@ -921,13 +934,13 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
 
           {selectedFormField && selectedFormField.fieldType === 'Ch' && onFormFieldChange && (
             <div className="space-y-2">
-              <label className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase">Choice value</label>
+              <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Choice value</label>
               <input
                 type="text"
                 value={formFieldDraft}
                 onChange={(e) => onFormFieldChange(e.target.value)}
                 placeholder="Enter option value"
-                className="w-full px-3 py-2 text-sm bg-zinc-800 border border-zinc-700 rounded-lg text-zinc-200 focus:outline-none focus:border-blue-500"
+                className="w-full px-3 py-2 text-sm bg-panel-elevated border border-app rounded-lg text-app focus:outline-none focus:border-[#E8607A]"
               />
             </div>
           )}
@@ -938,46 +951,46 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
 
       {/* WATERMARK PROPERTIES */}
       {activeTool === 'watermark' && (
-        <div className="flex flex-col h-full bg-zinc-900/95 animate-in fade-in slide-in-from-left-4 duration-300">
+        <div className="flex flex-col h-full bg-panel/95 animate-in fade-in slide-in-from-left-4 duration-300">
           <div className="p-4 pb-2">
-            <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-zinc-400 uppercase">
+            <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-app-muted uppercase">
               <Stamp size={14} />
               Watermark options
             </div>
           </div>
           
-          <div className="flex border-b border-zinc-700/50 mt-2">
+          <div className="flex border-b border-app mt-2">
             <button
               onClick={() => setWatermarkType?.('text')}
-              className={`flex-1 py-3 flex flex-col items-center gap-2 text-[11px] font-medium transition-colors ${watermarkType === 'text' ? 'text-zinc-100 bg-zinc-800/50' : 'text-zinc-400 hover:text-zinc-200'}`}
+              className={`flex-1 py-3 flex flex-col items-center gap-2 text-[11px] font-medium transition-colors ${watermarkType === 'text' ? 'text-app bg-panel-elevated' : 'text-app-muted hover:text-app'}`}
             >
-              <div className={`text-xl font-serif ${watermarkType === 'text' ? 'border-b-2 border-zinc-200 text-zinc-200' : 'border-b-2 border-zinc-500 text-zinc-500'}`}>A</div>
+              <div className={`text-xl font-serif ${watermarkType === 'text' ? 'border-b-2 border-app text-app' : 'border-b-2 border-app-faint text-app-faint'}`}>A</div>
               Text
             </button>
             <button
               onClick={() => setWatermarkType?.('image')}
-              className={`flex-1 py-3 flex flex-col items-center gap-2 text-[11px] font-medium relative transition-colors ${watermarkType === 'image' ? 'text-zinc-100 bg-zinc-800/50' : 'text-zinc-400 hover:text-zinc-200'}`}
+              className={`flex-1 py-3 flex flex-col items-center gap-2 text-[11px] font-medium relative transition-colors ${watermarkType === 'image' ? 'text-app bg-panel-elevated' : 'text-app-muted hover:text-app'}`}
             >
-              <Image size={20} className={watermarkType === 'image' ? 'text-zinc-200' : 'text-zinc-500'} />
+              <Image size={20} className={watermarkType === 'image' ? 'text-app' : 'text-app-faint'} />
               Image
             </button>
             <button
               onClick={() => setWatermarkType?.('shape')}
-              className={`flex-1 py-3 flex flex-col items-center gap-2 text-[11px] font-medium transition-colors ${watermarkType === 'shape' ? 'text-zinc-100 bg-zinc-800/50' : 'text-zinc-400 hover:text-zinc-200'}`}
+              className={`flex-1 py-3 flex flex-col items-center gap-2 text-[11px] font-medium transition-colors ${watermarkType === 'shape' ? 'text-app bg-panel-elevated' : 'text-app-muted hover:text-app'}`}
             >
-              <div className={`w-5 h-5 rounded border-2 ${watermarkType === 'shape' ? 'border-zinc-200' : 'border-zinc-500'}`} />
+              <div className={`w-5 h-5 rounded border-2 ${watermarkType === 'shape' ? 'border-app' : 'border-app-faint'}`} />
               Shape
             </button>
           </div>
           
           {/* Live Preview Toggle */}
-          <div className="p-4 border-b border-zinc-700/50 flex items-center justify-between bg-zinc-900/80">
-            <span className="text-xs font-semibold text-zinc-300">Live Preview</span>
+          <div className="p-4 border-b border-app flex items-center justify-between bg-panel/80">
+            <span className="text-xs font-semibold text-app">Live Preview</span>
             <button 
               onClick={() => setWatermarkLivePreview?.(!watermarkLivePreview)}
-              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${watermarkLivePreview ? 'bg-blue-600' : 'bg-zinc-600'}`}
+              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${watermarkLivePreview ? 'bg-[#E8607A]' : 'bg-panel-elevated border border-app'}`}
             >
-              <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${watermarkLivePreview ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
+              <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${watermarkLivePreview ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
             </button>
           </div>
 
@@ -985,21 +998,21 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             {watermarkType === 'text' ? (
               <>
                 <div className="space-y-1.5">
-                  <label className="text-[11px] font-medium text-zinc-300">Text:</label>
+                  <label className="text-[11px] font-medium text-app">Text:</label>
                   <input
                     type="text"
                     value={watermarkText}
                     onChange={(e) => setWatermarkText?.(e.target.value)}
-                    className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-xs text-zinc-200 outline-none focus:border-blue-500 transition-colors"
+                    className="w-full bg-panel-elevated border border-app rounded px-3 py-2 text-xs text-app outline-none focus:border-[#E8607A] transition-colors"
                   />
                 </div>
 
                 <div className="space-y-1.5">
-                  <label className="text-[11px] font-medium text-zinc-300">Text format:</label>
+                  <label className="text-[11px] font-medium text-app">Text format:</label>
                   <select
                     value={watermarkFontName}
                     onChange={(e) => setWatermarkFontName?.(e.target.value)}
-                    className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-xs text-zinc-200 outline-none focus:border-blue-500 transition-colors appearance-none cursor-pointer"
+                    className="w-full bg-panel-elevated border border-app rounded px-3 py-2 text-xs text-app outline-none focus:border-[#E8607A] transition-colors appearance-none cursor-pointer"
                   >
                     <option value="Arial">Arial</option>
                     <option value="Helvetica">Helvetica</option>
@@ -1009,7 +1022,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 </div>
 
                 <div className="space-y-1.5">
-                  <label className="text-[11px] font-medium text-zinc-300">Color:</label>
+                  <label className="text-[11px] font-medium text-app">Color:</label>
                   <div className="flex items-center gap-3">
                     <input
                       type="color"
@@ -1017,18 +1030,18 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                       onChange={(e) => setWatermarkColor?.(e.target.value)}
                       className="w-8 h-8 cursor-pointer rounded overflow-hidden"
                     />
-                    <span className="text-[11px] text-zinc-400 font-mono uppercase">{watermarkColor}</span>
+                    <span className="text-[11px] text-app-muted font-mono uppercase">{watermarkColor}</span>
                   </div>
                 </div>
               </>
             ) : watermarkType === 'shape' ? (
               <>
                 <div className="space-y-1.5">
-                  <label className="text-[11px] font-medium text-zinc-300">Shape:</label>
+                  <label className="text-[11px] font-medium text-app">Shape:</label>
                   <select
                     value={watermarkShapeType}
                     onChange={(e) => setWatermarkShapeType?.(e.target.value as any)}
-                    className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-xs text-zinc-200 outline-none focus:border-blue-500 transition-colors appearance-none cursor-pointer"
+                    className="w-full bg-panel-elevated border border-app rounded px-3 py-2 text-xs text-app outline-none focus:border-[#E8607A] transition-colors appearance-none cursor-pointer"
                   >
                     <option value="rectangle">Rectangle</option>
                     <option value="circle">Circle</option>
@@ -1036,17 +1049,17 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   </select>
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-[11px] font-medium text-zinc-300">Text (inside shape):</label>
+                  <label className="text-[11px] font-medium text-app">Text (inside shape):</label>
                   <input
                     type="text"
                     value={watermarkText}
                     onChange={(e) => setWatermarkText?.(e.target.value)}
-                    className="w-full bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-xs text-zinc-200 outline-none focus:border-blue-500 transition-colors"
+                    className="w-full bg-panel-elevated border border-app rounded px-3 py-2 text-xs text-app outline-none focus:border-[#E8607A] transition-colors"
                   />
                 </div>
                 <div className="flex gap-4">
                   <div className="space-y-1.5 flex-1">
-                    <label className="text-[11px] font-medium text-zinc-300">Text Color:</label>
+                    <label className="text-[11px] font-medium text-app">Text Color:</label>
                     <div className="flex items-center gap-3">
                       <input
                         type="color"
@@ -1057,7 +1070,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                     </div>
                   </div>
                   <div className="space-y-1.5 flex-1">
-                    <label className="text-[11px] font-medium text-zinc-300">Border Color:</label>
+                    <label className="text-[11px] font-medium text-app">Border Color:</label>
                     <div className="flex items-center gap-3">
                       <input
                         type="color"
@@ -1080,12 +1093,12 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                       fileInput.onchange = (e) => onWatermarkImageUpload?.(e as any);
                       fileInput.click();
                     }}
-                    className="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white px-8 py-3 rounded text-xs font-medium transition-colors"
+                    className="flex items-center gap-2 bg-[#E8607A] hover:bg-[#D94D6A] text-white px-8 py-3 rounded text-xs font-medium transition-colors"
                   >
                     <Image size={16} /> ADD IMAGE
                   </button>
                   {watermarkImageFile && (
-                    <p className="text-[10px] text-green-400 mt-2 truncate w-full text-center absolute top-12">
+                    <p className="text-[10px] text-emerald-500 mt-2 truncate w-full text-center absolute top-12">
                       Loaded: {watermarkImageFile.name}
                     </p>
                   )}
@@ -1102,25 +1115,25 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             )}
 
             <div className="space-y-1.5">
-              <label className="text-[11px] font-medium text-zinc-300">Position:</label>
+              <label className="text-[11px] font-medium text-app">Position:</label>
               <div className="flex items-start gap-4">
-                <div className="grid grid-cols-3 grid-rows-3 gap-0 border border-zinc-600 w-16 h-16 relative">
+                <div className="grid grid-cols-3 grid-rows-3 gap-0 border border-app w-16 h-16 relative">
                   {(['top-left', 'top-center', 'top-right', 'center-left', 'center', 'center-right', 'bottom-left', 'bottom-center', 'bottom-right'] as const).map((pos) => (
                     <button
                       key={pos}
                       onClick={() => setWatermarkPosition?.(pos)}
-                      className="border border-zinc-600/50 flex items-center justify-center hover:bg-zinc-700/50 transition-colors"
+                      className="border border-app flex items-center justify-center hover:bg-panel-elevated transition-colors"
                     >
-                      {(watermarkPosition === pos || watermarkMosaic) && <div className="w-3 h-3 bg-red-500 rounded-full" />}
+                      {(watermarkPosition === pos || watermarkMosaic) && <div className="w-3 h-3 bg-[#E8607A] rounded-full" />}
                     </button>
                   ))}
                 </div>
-                <label className="flex items-center gap-2 text-[11px] text-zinc-300 cursor-pointer pt-1">
+                <label className="flex items-center gap-2 text-[11px] text-app cursor-pointer pt-1">
                   <input
                     type="checkbox"
                     checked={watermarkMosaic}
                     onChange={(e) => setWatermarkMosaic?.(e.target.checked)}
-                    className="rounded border-zinc-700 bg-zinc-800 text-blue-500 cursor-pointer"
+                    className="rounded border-app bg-panel-elevated text-[#E8607A] cursor-pointer"
                   />
                   Mosaic
                 </label>
@@ -1129,7 +1142,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
 
             <div className="flex gap-4">
               <div className="space-y-1.5 flex-1">
-                <label className="text-[11px] font-medium text-zinc-300">Transparency:</label>
+                <label className="text-[11px] font-medium text-app">Transparency:</label>
                 <select
                   value={watermarkOpacity === 100 ? 'No transparency' : `${100 - watermarkOpacity}%`}
                   onChange={(e) => {
@@ -1137,7 +1150,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                     if (val === 'No transparency') setWatermarkOpacity?.(100);
                     else setWatermarkOpacity?.(100 - parseInt(val));
                   }}
-                  className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-2 text-[11px] text-zinc-200 outline-none focus:border-blue-500 transition-colors appearance-none cursor-pointer"
+                  className="w-full bg-panel-elevated border border-app rounded px-2 py-2 text-[11px] text-app outline-none focus:border-[#E8607A] transition-colors appearance-none cursor-pointer"
                 >
                   <option value="No transparency">No transparency</option>
                   <option value="25%">25%</option>
@@ -1146,7 +1159,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 </select>
               </div>
               <div className="space-y-1.5 flex-1">
-                <label className="text-[11px] font-medium text-zinc-300">Rotation:</label>
+                <label className="text-[11px] font-medium text-app">Rotation:</label>
                 <select
                   value={watermarkRotation === 0 ? 'Do not rotate' : `${watermarkRotation} degrees`}
                   onChange={(e) => {
@@ -1154,7 +1167,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                     if (val === 'Do not rotate') setWatermarkRotation?.(0);
                     else setWatermarkRotation?.(parseInt(val));
                   }}
-                  className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-2 text-[11px] text-zinc-200 outline-none focus:border-blue-500 transition-colors appearance-none cursor-pointer"
+                  className="w-full bg-panel-elevated border border-app rounded px-2 py-2 text-[11px] text-app outline-none focus:border-[#E8607A] transition-colors appearance-none cursor-pointer"
                 >
                   <option value="Do not rotate">Do not rotate</option>
                   <option value="45 degrees">45 degrees</option>
@@ -1166,11 +1179,11 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             </div>
 
             <div className="space-y-1.5">
-              <label className="text-[11px] font-medium text-zinc-300">Blend Mode:</label>
+              <label className="text-[11px] font-medium text-app">Blend Mode:</label>
               <select
                 value={watermarkBlendMode}
                 onChange={(e) => setWatermarkBlendMode?.(e.target.value)}
-                className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-2 text-[11px] text-zinc-200 outline-none focus:border-blue-500 transition-colors appearance-none cursor-pointer"
+                className="w-full bg-panel-elevated border border-app rounded px-2 py-2 text-[11px] text-app outline-none focus:border-[#E8607A] transition-colors appearance-none cursor-pointer"
               >
                 <option value="Normal">Normal (source-over)</option>
                 <option value="Multiply">Multiply</option>
@@ -1192,9 +1205,9 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             </div>
 
             <div className="space-y-1.5">
-              <label className="flex items-center justify-between text-[11px] font-medium text-zinc-300">
+              <label className="flex items-center justify-between text-[11px] font-medium text-app">
                 Size
-                <span className="text-zinc-400 font-mono">{watermarkSize}%</span>
+                <span className="text-app-muted font-mono">{watermarkSize}%</span>
               </label>
               <input
                 type="range"
@@ -1202,49 +1215,49 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 max="300"
                 value={watermarkSize}
                 onChange={(e) => setWatermarkSize?.(parseInt(e.target.value))}
-                className="w-full accent-blue-500"
+                className="w-full accent-[#E8607A]"
               />
             </div>
 
             <div className="space-y-1.5">
-              <label className="text-[11px] font-medium text-zinc-300">Pages:</label>
+              <label className="text-[11px] font-medium text-app">Pages:</label>
               <div className="flex items-center gap-2">
-                <div className="flex items-center border border-zinc-700 rounded bg-zinc-800">
-                  <span className="px-2 text-[11px] text-zinc-400 border-r border-zinc-700">from page</span>
+                <div className="flex items-center border border-app rounded bg-panel-elevated">
+                  <span className="px-2 text-[11px] text-app-muted border-r border-app">from page</span>
                   <input
                     type="number"
                     min="1"
                     value={watermarkPageFrom}
                     onChange={(e) => setWatermarkPageFrom?.(Math.max(1, parseInt(e.target.value) || 1))}
-                    className="w-12 bg-transparent py-1.5 text-xs text-center text-zinc-200 outline-none"
+                    className="w-12 bg-transparent py-1.5 text-xs text-center text-app outline-none"
                   />
                 </div>
-                <div className="flex items-center border border-zinc-700 rounded bg-zinc-800">
-                  <span className="px-2 text-[11px] text-zinc-400 border-r border-zinc-700">to</span>
+                <div className="flex items-center border border-app rounded bg-panel-elevated">
+                  <span className="px-2 text-[11px] text-app-muted border-r border-app">to</span>
                   <input
                     type="number"
                     min="1"
                     value={watermarkPageTo}
                     onChange={(e) => setWatermarkPageTo?.(Math.max(1, parseInt(e.target.value) || 1))}
-                    className="w-12 bg-transparent py-1.5 text-xs text-center text-zinc-200 outline-none"
+                    className="w-12 bg-transparent py-1.5 text-xs text-center text-app outline-none"
                   />
                 </div>
               </div>
             </div>
 
             <div className="space-y-1.5">
-              <label className="text-[11px] font-medium text-zinc-300">Layer</label>
+              <label className="text-[11px] font-medium text-app">Layer</label>
               <div className="flex gap-2">
                 <button
                   onClick={() => setWatermarkLayer?.('above')}
-                  className={`flex-1 py-6 flex flex-col items-center justify-center gap-2 rounded border transition-colors ${watermarkLayer === 'above' ? 'bg-zinc-800/80 border-red-500/50 text-red-400' : 'bg-zinc-800/40 border-zinc-700/50 text-zinc-500 hover:text-zinc-300'}`}
+                  className={`flex-1 py-6 flex flex-col items-center justify-center gap-2 rounded border transition-colors ${watermarkLayer === 'above' ? 'bg-[#E8607A]/15 border-[#E8607A]/50 text-[#E8607A]' : 'bg-panel-elevated border-app text-app-muted hover:text-app'}`}
                 >
                   <div className="rotate-45 w-4 h-4 bg-current" />
                   <span className="text-[10px] text-center px-2">Over the PDF content</span>
                 </button>
                 <button
                   onClick={() => setWatermarkLayer?.('below')}
-                  className={`flex-1 py-6 flex flex-col items-center justify-center gap-2 rounded border transition-colors ${watermarkLayer === 'below' ? 'bg-zinc-800/80 border-red-500/50 text-red-400' : 'bg-zinc-800/40 border-zinc-700/50 text-zinc-500 hover:text-zinc-300'}`}
+                  className={`flex-1 py-6 flex flex-col items-center justify-center gap-2 rounded border transition-colors ${watermarkLayer === 'below' ? 'bg-[#E8607A]/15 border-[#E8607A]/50 text-[#E8607A]' : 'bg-panel-elevated border-app text-app-muted hover:text-app'}`}
                 >
                   <div className="rotate-45 w-4 h-4 border-2 border-current" />
                   <span className="text-[10px] text-center px-2">Below the PDF content</span>
@@ -1255,7 +1268,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             <div className="pt-2 flex flex-col gap-2 pb-4">
               <button
                 onClick={onApplyWatermark}
-                className="w-full bg-red-600 hover:bg-red-700 text-white rounded py-2.5 text-xs font-semibold transition-colors"
+                className="w-full bg-[#E8607A] hover:bg-[#D94D6A] text-white rounded py-2.5 text-xs font-semibold transition-colors"
               >
                 Add watermark
               </button>
@@ -1263,7 +1276,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
               {!hasScannedWatermarks ? (
                 <button
                   onClick={onScanWatermarks}
-                  className="w-full bg-zinc-800 hover:bg-red-900/50 hover:text-red-400 text-zinc-300 border border-zinc-700 hover:border-red-800/50 rounded py-2 text-xs font-semibold transition-colors"
+                  className="w-full bg-panel-elevated text-app border border-app hover:bg-panel-elevated/80 rounded py-2 text-xs font-semibold transition-colors"
                 >
                   Scan for Watermarks
                 </button>
@@ -1272,7 +1285,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   <div className="flex gap-2">
                     <button
                       onClick={onCancelScan}
-                      className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700 rounded py-2 text-xs font-semibold transition-colors"
+                      className="flex-1 bg-panel-elevated text-app border border-app rounded py-2 text-xs font-semibold transition-colors"
                     >
                       Cancel
                     </button>
@@ -1286,9 +1299,9 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                     )}
                   </div>
                   {detectedWatermarksCount === 0 && (
-                    <div className="text-center p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-md">
-                      <p className="text-yellow-400 text-xs font-medium mb-1">no watermark found in scan process</p>
-                      <p className="text-zinc-400 text-[10px]">if you are seeing any watermark, it may be image, so please go to image section to remove</p>
+                    <div className="text-center p-3 bg-amber-500/10 border border-amber-500/20 rounded-md">
+                      <p className="text-amber-500 text-xs font-medium mb-1">no watermark found in scan process</p>
+                      <p className="text-app-faint text-[10px]">if you are seeing any watermark, it may be image, so please go to image section to remove</p>
                     </div>
                   )}
                 </div>
@@ -1300,13 +1313,13 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
 
       {/* SIGNATURE PROPERTIES */}
       {activeTool === 'sign' && (
-        <div className="flex flex-col h-full bg-zinc-900/95 animate-in fade-in slide-in-from-left-4 duration-300">
+        <div className="flex flex-col h-full bg-panel/95 animate-in fade-in slide-in-from-left-4 duration-300">
           <div className="p-4 pb-2">
-            <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-zinc-400 uppercase">
+            <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-app-muted uppercase">
               <PenLine size={14} />
               Signature
             </div>
-            <p className="text-[10px] text-zinc-500 mt-1">
+            <p className="text-[10px] text-app-faint mt-1">
               Click the page to place. Create or pick a library signature first.
             </p>
           </div>
@@ -1315,15 +1328,15 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             <button
               type="button"
               onClick={onOpenSignatureCreate}
-              className="w-full flex items-center justify-center gap-2 py-2 rounded-md bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold transition-colors"
+              className="w-full flex items-center justify-center gap-2 py-2 rounded-md bg-[#E8607A] hover:bg-[#D94D6A] text-white text-xs font-semibold transition-colors"
             >
               <PenLine size={14} /> Create signature
             </button>
           </div>
 
           {pdfSignatureFields.length > 0 && (
-            <div className="px-4 pb-3 space-y-2 border-b border-zinc-700/50">
-              <div className="text-[10px] font-bold tracking-widest text-zinc-400 uppercase">
+            <div className="px-4 pb-3 space-y-2 border-b border-app">
+              <div className="text-[10px] font-bold tracking-widest text-app-muted uppercase">
                 PDF fields on page
               </div>
               {pdfSignatureFields.map((field) => {
@@ -1335,12 +1348,12 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                     onClick={() => setSelectedPdfSigFieldId?.(field.id)}
                     className={`w-full text-left rounded-md border px-2 py-1.5 text-[11px] transition-colors ${
                       active
-                        ? 'border-emerald-500 bg-emerald-500/10 text-emerald-200'
-                        : 'border-zinc-700 text-zinc-300 hover:border-zinc-500'
+                        ? 'border-emerald-500 bg-emerald-500/10 text-emerald-500'
+                        : 'border-app text-app hover:border-app-strong'
                     }`}
                   >
                     <div className="font-medium truncate">{field.fieldName}</div>
-                    <div className="text-[10px] text-zinc-500">
+                    <div className="text-[10px] text-app-faint">
                       {field.signed ? 'Signed' : 'Unsigned'}
                       {field.hasAppearance ? ' · has /AP' : ''}
                     </div>
@@ -1359,19 +1372,19 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             </div>
           )}
 
-          <div className="px-4 pb-3 space-y-2 border-b border-zinc-700/50">
-            <div className="text-[10px] font-bold tracking-widest text-zinc-400 uppercase flex items-center gap-1.5">
+          <div className="px-4 pb-3 space-y-2 border-b border-app">
+            <div className="text-[10px] font-bold tracking-widest text-app-muted uppercase flex items-center gap-1.5">
               <KeyRound size={12} /> Certificate
             </div>
             <button
               type="button"
               onClick={onOpenCertificateImport}
-              className="w-full flex items-center justify-center gap-2 py-2 rounded-md bg-zinc-800 border border-zinc-700 text-zinc-200 hover:bg-zinc-700 text-xs font-semibold"
+              className="w-full flex items-center justify-center gap-2 py-2 rounded-md bg-panel-elevated border border-app text-app hover:bg-panel-elevated/80 text-xs font-semibold"
             >
               <KeyRound size={14} /> Import / manage certificates
             </button>
             {certificateIdentities.length === 0 ? (
-              <p className="text-[11px] text-zinc-500">
+              <p className="text-[11px] text-app-faint">
                 Import a PEM/P12 identity before digitally signing.
               </p>
             ) : (
@@ -1385,12 +1398,12 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                       onClick={() => onSelectCertificate?.(id.id)}
                       className={`w-full text-left rounded-md border px-2 py-1.5 text-[11px] transition-colors ${
                         active
-                          ? 'border-blue-500 bg-blue-500/10 text-blue-100'
-                          : 'border-zinc-700 text-zinc-300 hover:border-zinc-500'
+                          ? 'border-[#E8607A] bg-[#E8607A]/10 text-[#E8607A]'
+                          : 'border-app text-app hover:border-app-strong'
                       }`}
                     >
                       <div className="font-medium truncate">{id.label}</div>
-                      <div className="text-[10px] text-zinc-500">
+                      <div className="text-[10px] text-app-faint">
                         {id.hasPrivateKey ? 'Ready to sign' : 'Cert only — re-import key'}
                       </div>
                     </button>
@@ -1409,65 +1422,65 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 {cryptoSignBusy ? 'Signing…' : 'Digitally sign document'}
               </button>
             )}
-            <label className="flex items-center gap-2 text-[11px] text-zinc-400 cursor-pointer">
+            <label className="flex items-center gap-2 text-[11px] text-app-muted cursor-pointer">
               <input
                 type="checkbox"
                 checked={enableTimestamp}
                 onChange={(e) => setEnableTimestamp?.(e.target.checked)}
-                className="rounded border-zinc-600"
+                className="rounded border-app"
               />
               Request RFC 3161 timestamp (TSA)
             </label>
           </div>
 
-          <div className="px-4 pb-3 space-y-2 border-b border-zinc-700/50">
-            <div className="text-[10px] font-bold tracking-widest text-zinc-400 uppercase flex items-center gap-1.5">
+          <div className="px-4 pb-3 space-y-2 border-b border-app">
+            <div className="text-[10px] font-bold tracking-widest text-app-muted uppercase flex items-center gap-1.5">
               <ShieldCheck size={12} /> Validation & LTV
             </div>
             <button
               type="button"
               disabled={validationBusy}
               onClick={onValidateSignatures}
-              className="w-full py-1.5 rounded-md bg-zinc-800 border border-zinc-700 hover:bg-zinc-700 disabled:opacity-50 text-zinc-200 text-[11px] font-semibold"
+              className="w-full py-1.5 rounded-md bg-panel-elevated border border-app hover:bg-panel-elevated/80 disabled:opacity-50 text-app text-[11px] font-semibold"
             >
               {validationBusy ? 'Validating…' : 'Validate all signatures'}
             </button>
             {validationReport && (
-              <div className="rounded-md border border-zinc-700 bg-zinc-800/50 p-2 space-y-1.5">
+              <div className="rounded-md border border-app bg-panel-elevated p-2 space-y-1.5">
                 <div className="flex items-center justify-between text-[11px]">
-                  <span className="text-zinc-400">Document</span>
+                  <span className="text-app-muted">Document</span>
                   <span
                     className={
                       validationReport.documentStatus === 'Valid'
-                        ? 'text-emerald-400 font-semibold'
+                        ? 'text-emerald-500 font-semibold'
                         : validationReport.documentStatus === 'Modified'
-                          ? 'text-red-400 font-semibold'
-                          : 'text-amber-400 font-semibold'
+                          ? 'text-red-500 font-semibold'
+                          : 'text-amber-500 font-semibold'
                     }
                   >
                     {validationReport.documentStatus}
                   </span>
                 </div>
-                <div className="text-[10px] text-zinc-500">
+                <div className="text-[10px] text-app-faint">
                   {validationReport.signatures.length} signature(s) · {validationReport.revisionCount} revision(s)
                 </div>
                 {validationReport.signatures.map((s) => (
-                  <div key={s.fieldId} className="text-[10px] border-t border-zinc-700/60 pt-1">
+                  <div key={s.fieldId} className="text-[10px] border-t border-app pt-1">
                     <div className="flex justify-between gap-2">
-                      <span className="text-zinc-300 truncate">{s.fieldName}</span>
+                      <span className="text-app truncate">{s.fieldName}</span>
                       <span
                         className={
                           s.status === 'Valid'
-                            ? 'text-emerald-400'
+                            ? 'text-emerald-500'
                             : s.status === 'Modified' || s.status === 'Revoked'
-                              ? 'text-red-400'
-                              : 'text-amber-400'
+                              ? 'text-red-500'
+                              : 'text-amber-500'
                         }
                       >
                         {s.status}
                       </span>
                     </div>
-                    <div className="text-zinc-500 truncate">{s.summary}</div>
+                    <div className="text-app-faint truncate">{s.summary}</div>
                   </div>
                 ))}
               </div>
@@ -1475,18 +1488,18 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             <button
               type="button"
               onClick={onEnableLtv}
-              className="w-full py-1.5 rounded-md bg-zinc-800 border border-zinc-700 hover:bg-zinc-700 text-zinc-200 text-[11px] font-semibold"
+              className="w-full py-1.5 rounded-md bg-panel-elevated border border-app hover:bg-panel-elevated/80 text-app text-[11px] font-semibold"
             >
               Enable LTV (embed DSS)
             </button>
             {ltvStatus && (
-              <p className="text-[10px] text-zinc-500">{ltvStatus.summary}</p>
+              <p className="text-[10px] text-app-faint">{ltvStatus.summary}</p>
             )}
           </div>
 
           {(managedSignatures.length > 0 || revisionEntries.length > 0) && (
-            <div className="px-4 pb-3 space-y-2 border-b border-zinc-700/50">
-              <div className="text-[10px] font-bold tracking-widest text-zinc-400 uppercase">
+            <div className="px-4 pb-3 space-y-2 border-b border-app">
+              <div className="text-[10px] font-bold tracking-widest text-app-muted uppercase">
                 Signatures & revisions
               </div>
               {managedSignatures.map((m) => (
@@ -1494,19 +1507,19 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   key={m.field.id}
                   type="button"
                   onClick={() => setSelectedPdfSigFieldId?.(m.field.id)}
-                  className="w-full text-left rounded-md border border-zinc-700 px-2 py-1.5 text-[11px] text-zinc-300 hover:border-zinc-500"
+                  className="w-full text-left rounded-md border border-app px-2 py-1.5 text-[11px] text-app hover:border-app-strong"
                 >
                   <div className="font-medium truncate">
                     #{m.index + 1} {m.signerName || m.field.fieldName}
                   </div>
-                  <div className="text-[10px] text-zinc-500 truncate">
+                  <div className="text-[10px] text-app-faint truncate">
                     {m.signingTime || 'No time'} · {m.reason || 'No reason'}
                     {m.validation ? ` · ${m.validation.status}` : ''}
                   </div>
                 </button>
               ))}
               {revisionEntries.length > 0 && (
-                <div className="text-[10px] text-zinc-500 space-y-0.5">
+                <div className="text-[10px] text-app-faint space-y-0.5">
                   {revisionEntries.map((r) => (
                     <div key={r.revision.index}>
                       Rev {r.revision.index + 1}: xref @{r.revision.xrefOffset}
@@ -1521,10 +1534,10 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
           )}
 
           {selectedSignature && (
-            <div className="px-4 pb-4 space-y-3 border-b border-zinc-700/50">
-              <div className="text-[10px] font-bold tracking-widest text-zinc-400 uppercase">Selected</div>
+            <div className="px-4 pb-4 space-y-3 border-b border-app">
+              <div className="text-[10px] font-bold tracking-widest text-app-muted uppercase">Selected</div>
               <div className="space-y-1.5">
-                <label className="text-[11px] text-zinc-300">Opacity</label>
+                <label className="text-[11px] text-app">Opacity</label>
                 <input
                   type="range"
                   min={10}
@@ -1533,13 +1546,13 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   onChange={(e) =>
                     onSignatureOpacity?.(selectedSignature.id, Number(e.target.value) / 100)
                   }
-                  className="w-full"
+                  className="w-full accent-[#E8607A]"
                 />
               </div>
               <div className="flex gap-2">
                 <button
                   type="button"
-                  className="flex-1 flex items-center justify-center gap-1 py-1.5 text-[11px] rounded bg-zinc-800 border border-zinc-700 text-zinc-200 hover:bg-zinc-700"
+                  className="flex-1 flex items-center justify-center gap-1 py-1.5 text-[11px] rounded bg-panel-elevated border border-app text-app hover:bg-panel-elevated/80"
                   onClick={() =>
                     onSignatureRotate?.(
                       selectedSignature.id,
@@ -1551,7 +1564,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 </button>
                 <button
                   type="button"
-                  className="flex-1 flex items-center justify-center gap-1 py-1.5 text-[11px] rounded bg-zinc-800 border border-zinc-700 text-zinc-200 hover:bg-zinc-700"
+                  className="flex-1 flex items-center justify-center gap-1 py-1.5 text-[11px] rounded bg-panel-elevated border border-app text-app hover:bg-panel-elevated/80"
                   onClick={() => onSignatureLockToggle?.(selectedSignature.id)}
                 >
                   {selectedSignature.locked ? <Unlock size={12} /> : <Lock size={12} />}
@@ -1559,7 +1572,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 </button>
                 <button
                   type="button"
-                  className="flex items-center justify-center gap-1 px-2 py-1.5 text-[11px] rounded bg-red-600/20 border border-red-500/40 text-red-300 hover:bg-red-600/30"
+                  className="flex items-center justify-center gap-1 px-2 py-1.5 text-[11px] rounded bg-red-500/20 border border-red-500/40 text-red-500 hover:bg-red-500/30"
                   onClick={() => onSignatureDelete?.(selectedSignature.id)}
                 >
                   <Trash2 size={12} />
@@ -1570,15 +1583,15 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
 
           <div className="p-4 flex-1 overflow-y-auto space-y-2">
             <div className="flex items-center justify-between mb-2">
-              <div className="text-[10px] font-bold tracking-widest text-zinc-400 uppercase">
+              <div className="text-[10px] font-bold tracking-widest text-app-muted uppercase">
                 Library
               </div>
-              <div className="text-[10px] text-zinc-500">
+              <div className="text-[10px] text-app-faint">
                 Drag to page
               </div>
             </div>
             {signatureLibraryEntries.length === 0 && (
-              <p className="text-[11px] text-zinc-500">No saved signatures yet.</p>
+              <p className="text-[11px] text-app-faint">No saved signatures yet.</p>
             )}
             {signatureLibraryEntries.map((entry) => {
               const active = activeLibraryId === entry.id;
@@ -1594,12 +1607,12 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   }}
                   className={`rounded-lg border p-2 cursor-grab active:cursor-grabbing transition-colors ${
                     active
-                      ? 'border-blue-500 bg-blue-500/10'
-                      : 'border-zinc-700 hover:border-zinc-500 bg-zinc-800/40'
+                      ? 'border-[#E8607A] bg-[#E8607A]/10'
+                      : 'border-app hover:border-app-strong bg-panel-elevated/60'
                   }`}
                   onClick={() => setActiveLibraryId?.(entry.id)}
                 >
-                  <div className="h-12 rounded bg-white flex items-center justify-center overflow-hidden mb-2">
+                  <div className="h-12 rounded bg-white flex items-center justify-center overflow-hidden mb-2 border border-app">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
                       src={entry.imageDataUrl}
@@ -1611,13 +1624,13 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                     value={entry.name}
                     onClick={(e) => e.stopPropagation()}
                     onChange={(e) => onLibraryRename?.(entry.id, e.target.value)}
-                    className="w-full bg-transparent text-[11px] text-zinc-200 outline-none border-b border-transparent focus:border-zinc-600"
+                    className="w-full bg-transparent text-[11px] text-app outline-none border-b border-transparent focus:border-app-strong"
                   />
                   <div className="flex items-center gap-1 mt-1.5">
                     <button
                       type="button"
                       title="Favorite"
-                      className={`p-1 rounded ${entry.favorite ? 'text-amber-400' : 'text-zinc-500 hover:text-zinc-300'}`}
+                      className={`p-1 rounded ${entry.favorite ? 'text-amber-500' : 'text-app-faint hover:text-app'}`}
                       onClick={(e) => {
                         e.stopPropagation();
                         onLibraryFavorite?.(entry.id);
@@ -1628,7 +1641,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                     <button
                       type="button"
                       title="Duplicate"
-                      className="p-1 rounded text-zinc-500 hover:text-zinc-300"
+                      className="p-1 rounded text-app-faint hover:text-app"
                       onClick={(e) => {
                         e.stopPropagation();
                         onLibraryDuplicate?.(entry.id);
@@ -1639,7 +1652,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                     <button
                       type="button"
                       title="Delete"
-                      className="p-1 rounded text-zinc-500 hover:text-red-400 ml-auto"
+                      className="p-1 rounded text-app-faint hover:text-red-500 ml-auto"
                       onClick={(e) => {
                         e.stopPropagation();
                         onLibraryDelete?.(entry.id);

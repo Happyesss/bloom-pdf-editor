@@ -139,7 +139,7 @@ export function CertificateImportDialog({
                   type="button"
                   disabled={busy}
                   onClick={() => fileRef.current?.click()}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-semibold"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#E8607A] hover:bg-[#D94D6A] disabled:opacity-50 text-white text-xs font-semibold"
                 >
                   <Upload size={14} /> Browse
                 </button>

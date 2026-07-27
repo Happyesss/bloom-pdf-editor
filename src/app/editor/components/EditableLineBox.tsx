@@ -415,8 +415,7 @@ export function EditableLineBox(props: EditableLineBoxProps) {
 
       {/* Selection chrome */}
       <div
-        className="absolute inset-0 border border-dashed border-blue-500 rounded-sm pointer-events-none"
-        style={{ boxShadow: '0 0 0 1px rgba(59,130,246,0.25)' }}
+        className="absolute inset-0 border border-dashed border-[#E8607A] rounded-sm pointer-events-none shadow-[0_0_0_1px_rgba(232,96,122,0.3)]"
       />
 
       {/* Move hit targets */}
@@ -440,7 +439,7 @@ export function EditableLineBox(props: EditableLineBoxProps) {
         title="Drag to move"
       />
       <div
-        className="absolute -top-3 left-1/2 -translate-x-1/2 px-2 py-0.5 bg-blue-500 text-white text-[9px] rounded-sm cursor-grab active:cursor-grabbing z-40 select-none whitespace-nowrap"
+        className="absolute -top-3.5 left-1/2 -translate-x-1/2 px-2 py-0.5 bg-[#E8607A] text-white text-[9px] font-bold rounded shadow-md cursor-grab active:cursor-grabbing z-40 select-none whitespace-nowrap border border-white/30"
         onPointerDown={(e) => startDrag('move', e)}
       >
         Drag
@@ -454,7 +453,8 @@ export function EditableLineBox(props: EditableLineBoxProps) {
           style={{
             left: selLeftPx,
             width: selWidthPx,
-            background: 'rgba(59,130,246,0.28)',
+            background: 'rgba(232, 96, 122, 0.30)',
+            borderBottom: '2px solid #E8607A',
           }}
         />
       )}
@@ -550,7 +550,7 @@ export function EditableLineBox(props: EditableLineBoxProps) {
         title="Resize height"
       />
       <div
-        className="absolute -right-1.5 -bottom-1.5 w-3.5 h-3.5 bg-blue-500 border-2 border-white rounded-sm cursor-se-resize z-40 shadow"
+        className="absolute -right-1.5 -bottom-1.5 w-3.5 h-3.5 bg-[#E8607A] border-2 border-white rounded-sm cursor-se-resize z-40 shadow"
         onPointerDown={(e) => startDrag('resize-se', e)}
         title="Resize"
       />

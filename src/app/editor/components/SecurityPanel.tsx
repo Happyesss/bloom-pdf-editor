@@ -12,6 +12,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   Loader2,
+  PanelLeftClose,
 } from 'lucide-react';
 import type { PDFDocumentData, FullSecurityReport } from '@/engine';
 
@@ -20,11 +21,12 @@ interface SecurityPanelProps {
   engine: typeof import('@/engine') | null;
   onDocChange: (doc: PDFDocumentData) => void;
   markDirty?: () => void;
+  onClose?: () => void;
 }
 
 type Tab = 'inspect' | 'protect' | 'sanitize' | 'policies';
 
-export function SecurityPanel({ doc, engine, onDocChange, markDirty }: SecurityPanelProps) {
+export function SecurityPanel({ doc, engine, onDocChange, markDirty, onClose }: SecurityPanelProps) {
   const [tab, setTab] = useState<Tab>('inspect');
   const [report, setReport] = useState<FullSecurityReport | null>(null);
   const [busy, setBusy] = useState(false);
@@ -75,30 +77,41 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty }: SecurityP
 
   if (!doc || !engine) {
     return (
-      <div className="w-72 bg-zinc-900/95 border-r border-zinc-800 p-4 text-xs text-zinc-500">
+      <div className="w-72 bg-panel/95 border-r border-app p-4 text-xs text-app-faint">
         Load a PDF to manage security.
       </div>
     );
   }
 
   return (
-    <div className="w-72 bg-zinc-900/95 backdrop-blur-md border-r border-zinc-800/80 flex flex-col shrink-0 z-10 overflow-hidden shadow-[4px_0_24px_rgba(0,0,0,0.2)]">
-      <div className="p-4 pb-2 border-b border-zinc-800">
-        <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-zinc-400 uppercase">
-          <Shield size={14} className="text-amber-400" />
-          Document Security
+    <div className="w-72 bg-panel/95 backdrop-blur-md border-r border-app flex flex-col shrink-0 z-10 overflow-hidden shadow-[4px_0_24px_rgba(0,0,0,0.08)]">
+      <div className="p-4 pb-2 border-b border-app">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-emerald-500 uppercase">
+            <Shield size={14} className="text-emerald-500" />
+            Document Security
+          </div>
+          {onClose && (
+            <button
+              onClick={onClose}
+              title="Hide sidebar panel"
+              className="text-app-muted hover:text-app p-1 rounded-lg hover:bg-panel-elevated transition-colors"
+            >
+              <PanelLeftClose size={14} />
+            </button>
+          )}
         </div>
         {report && (
           <div className="mt-2 flex items-center justify-between text-xs">
-            <span className="text-zinc-400">Score</span>
-            <span className={`font-semibold ${report.score >= 70 ? 'text-emerald-400' : report.score >= 40 ? 'text-amber-400' : 'text-red-400'}`}>
+            <span className="text-app-muted">Score</span>
+            <span className={`font-semibold ${report.score >= 70 ? 'text-emerald-500' : report.score >= 40 ? 'text-amber-500' : 'text-red-500'}`}>
               {report.score}/100
             </span>
           </div>
         )}
       </div>
 
-      <div className="flex border-b border-zinc-800 text-[10px]">
+      <div className="flex border-b border-app text-[10px]">
         {([
           ['inspect', 'Inspect'],
           ['protect', 'Protect'],
@@ -110,7 +123,7 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty }: SecurityP
             type="button"
             onClick={() => setTab(id)}
             className={`flex-1 py-2.5 font-semibold uppercase tracking-wide transition-colors ${
-              tab === id ? 'text-amber-400 border-b-2 border-amber-400 bg-zinc-800/40' : 'text-zinc-500 hover:text-zinc-300'
+              tab === id ? 'text-amber-500 border-b-2 border-amber-500 bg-panel-elevated' : 'text-app-muted hover:text-app'
             }`}
           >
             {label}
@@ -130,9 +143,9 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty }: SecurityP
             <Row label="Redact marks" value={String(report.redactionMarks)} />
 
             <div className="pt-2 space-y-1.5">
-              <div className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase">Recommendations</div>
+              <div className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Recommendations</div>
               {report.recommendations.map((r) => (
-                <div key={r} className="flex gap-2 text-zinc-400 leading-relaxed">
+                <div key={r} className="flex gap-2 text-app-muted leading-relaxed">
                   <AlertTriangle size={12} className="shrink-0 mt-0.5 text-amber-500" />
                   <span>{r}</span>
                 </div>
@@ -146,7 +159,7 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty }: SecurityP
                 await engine.securityEngine.integrity.scan(doc);
                 return 'Integrity scan complete';
               })}
-              className="w-full mt-2 flex items-center justify-center gap-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 py-2 text-zinc-200"
+              className="w-full mt-2 flex items-center justify-center gap-2 rounded-lg bg-panel-elevated hover:bg-panel-elevated/80 py-2 text-app border border-app font-medium"
             >
               <FileSearch size={14} /> Rescan
             </button>
@@ -155,27 +168,27 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty }: SecurityP
 
         {tab === 'protect' && (
           <>
-            <label className="block text-[10px] font-bold tracking-widest text-zinc-500 uppercase">User password</label>
+            <label className="block text-[10px] font-bold tracking-widest text-app-faint uppercase">User password</label>
             <input
               type="password"
               value={userPassword}
               onChange={(e) => setUserPassword(e.target.value)}
-              className="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-zinc-200 outline-none focus:border-amber-500"
+              className="w-full rounded-lg border border-app bg-panel-elevated px-3 py-2 text-app outline-none focus:border-amber-500"
               placeholder="Optional open password"
             />
-            <label className="block text-[10px] font-bold tracking-widest text-zinc-500 uppercase">Owner password</label>
+            <label className="block text-[10px] font-bold tracking-widest text-app-faint uppercase">Owner password</label>
             <input
               type="password"
               value={ownerPassword}
               onChange={(e) => setOwnerPassword(e.target.value)}
-              className="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-zinc-200 outline-none focus:border-amber-500"
+              className="w-full rounded-lg border border-app bg-panel-elevated px-3 py-2 text-app outline-none focus:border-amber-500"
               placeholder="Required for permissions"
             />
-            <label className="block text-[10px] font-bold tracking-widest text-zinc-500 uppercase">Algorithm</label>
+            <label className="block text-[10px] font-bold tracking-widest text-app-faint uppercase">Algorithm</label>
             <select
               value={algorithm}
               onChange={(e) => setAlgorithm(e.target.value as typeof algorithm)}
-              className="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-zinc-200"
+              className="w-full rounded-lg border border-app bg-panel-elevated px-3 py-2 text-app"
             >
               <option value="AES-256">AES-256 (recommended)</option>
               <option value="AES-128">AES-128</option>
@@ -209,7 +222,7 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty }: SecurityP
                 });
                 return 'Document encrypted';
               })}
-              className="w-full flex items-center justify-center gap-2 rounded-lg bg-amber-600 hover:bg-amber-500 disabled:opacity-50 py-2 text-white font-medium"
+              className="w-full flex items-center justify-center gap-2 rounded-lg bg-amber-600 hover:bg-amber-500 disabled:opacity-50 py-2 text-white font-medium shadow-sm"
             >
               {busy ? <Loader2 size={14} className="animate-spin" /> : <Lock size={14} />}
               Encrypt PDF
@@ -223,7 +236,7 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty }: SecurityP
                   await engine.securityEngine.decrypt(doc, userPassword);
                   return 'Document decrypted (Encrypt dict removed)';
                 })}
-                className="w-full flex items-center justify-center gap-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 py-2 text-zinc-200"
+                className="w-full flex items-center justify-center gap-2 rounded-lg bg-panel-elevated hover:bg-panel-elevated/80 py-2 text-app border border-app"
               >
                 <Unlock size={14} /> Remove encryption
               </button>
@@ -233,7 +246,7 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty }: SecurityP
 
         {tab === 'sanitize' && (
           <>
-            <p className="text-zinc-500 leading-relaxed">
+            <p className="text-app-faint leading-relaxed">
               Remove metadata, JavaScript, attachments, and unused objects.
             </p>
             <button
@@ -243,7 +256,7 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty }: SecurityP
                 const r = await engine.securityEngine.sanitization.sanitize(doc);
                 return r.report.join(' · ') || 'Sanitized';
               })}
-              className="w-full flex items-center justify-center gap-2 rounded-lg bg-amber-600 hover:bg-amber-500 py-2 text-white font-medium"
+              className="w-full flex items-center justify-center gap-2 rounded-lg bg-amber-600 hover:bg-amber-500 py-2 text-white font-medium shadow-sm"
             >
               <Eraser size={14} /> Sanitize document
             </button>
@@ -254,7 +267,7 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty }: SecurityP
                 engine.securityEngine.javascript.removeJavaScript(doc);
                 return 'JavaScript / risky actions removed';
               })}
-              className="w-full flex items-center justify-center gap-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 py-2 text-zinc-200"
+              className="w-full flex items-center justify-center gap-2 rounded-lg bg-panel-elevated hover:bg-panel-elevated/80 py-2 text-app border border-app"
             >
               Remove JavaScript
             </button>
@@ -265,7 +278,7 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty }: SecurityP
                 const n = engine.securityEngine.embeddedFiles.removeAllAttachments(doc);
                 return `Removed ${n} attachment(s)`;
               })}
-              className="w-full flex items-center justify-center gap-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 py-2 text-zinc-200"
+              className="w-full flex items-center justify-center gap-2 rounded-lg bg-panel-elevated hover:bg-panel-elevated/80 py-2 text-app border border-app"
             >
               Remove attachments
             </button>
@@ -276,7 +289,7 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty }: SecurityP
                 engine.securityEngine.metadata.stripMetadata(doc);
                 return 'Metadata stripped';
               })}
-              className="w-full flex items-center justify-center gap-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 py-2 text-zinc-200"
+              className="w-full flex items-center justify-center gap-2 rounded-lg bg-panel-elevated hover:bg-panel-elevated/80 py-2 text-app border border-app"
             >
               Strip metadata
             </button>
@@ -287,7 +300,7 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty }: SecurityP
                 const r = await engine.securityEngine.optimizer.optimizeWithReport(doc);
                 return r.notes.join(' · ');
               })}
-              className="w-full flex items-center justify-center gap-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 py-2 text-zinc-200"
+              className="w-full flex items-center justify-center gap-2 rounded-lg bg-panel-elevated hover:bg-panel-elevated/80 py-2 text-app border border-app"
             >
               <Sparkles size={14} /> Optimize (keep security)
             </button>
@@ -296,20 +309,20 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty }: SecurityP
 
         {tab === 'policies' && (
           <>
-            <label className="block text-[10px] font-bold tracking-widest text-zinc-500 uppercase">Policy</label>
+            <label className="block text-[10px] font-bold tracking-widest text-app-faint uppercase">Policy</label>
             <select
               value={policyName}
               onChange={(e) => setPolicyName(e.target.value)}
-              className="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-zinc-200"
+              className="w-full rounded-lg border border-app bg-panel-elevated px-3 py-2 text-app"
             >
               {policies.map((p) => (
                 <option key={p} value={p}>{p}</option>
               ))}
             </select>
-            <p className="text-zinc-500 leading-relaxed">
+            <p className="text-app-faint leading-relaxed">
               {engine.securityEngine.policy.getPolicy(policyName)?.description}
             </p>
-            <p className="text-[10px] text-zinc-600 leading-relaxed">
+            <p className="text-[10px] text-app-faint leading-relaxed">
               Policies that encrypt use built-in sample passwords — set your own via Protect tab for production use.
             </p>
             <button
@@ -322,7 +335,7 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty }: SecurityP
                 });
                 return `Applied policy: ${policyName}`;
               })}
-              className="w-full flex items-center justify-center gap-2 rounded-lg bg-amber-600 hover:bg-amber-500 py-2 text-white font-medium"
+              className="w-full flex items-center justify-center gap-2 rounded-lg bg-amber-600 hover:bg-amber-500 py-2 text-white font-medium shadow-sm"
             >
               <ScrollText size={14} /> Apply policy
             </button>
@@ -330,13 +343,13 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty }: SecurityP
         )}
 
         {message && (
-          <div className="flex gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2 text-emerald-300">
+          <div className="flex gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2 text-emerald-500 font-medium">
             <CheckCircle2 size={14} className="shrink-0 mt-0.5" />
             <span>{message}</span>
           </div>
         )}
         {error && (
-          <div className="flex gap-2 rounded-lg border border-red-500/30 bg-red-500/10 p-2 text-red-300">
+          <div className="flex gap-2 rounded-lg border border-red-500/30 bg-red-500/10 p-2 text-red-500 font-medium">
             <AlertTriangle size={14} className="shrink-0 mt-0.5" />
             <span>{error}</span>
           </div>
@@ -349,8 +362,8 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty }: SecurityP
 function Row({ label, value, warn }: { label: string; value: string; warn?: boolean }) {
   return (
     <div className="flex items-center justify-between gap-2">
-      <span className="text-zinc-500">{label}</span>
-      <span className={`font-medium text-right ${warn ? 'text-amber-400' : 'text-zinc-200'}`}>{value}</span>
+      <span className="text-app-faint">{label}</span>
+      <span className={`font-medium text-right ${warn ? 'text-amber-500' : 'text-app'}`}>{value}</span>
     </div>
   );
 }
@@ -366,15 +379,15 @@ function Toggle({
 }) {
   return (
     <label className="flex items-center justify-between gap-2 cursor-pointer">
-      <span className="text-zinc-400">{label}</span>
+      <span className="text-app-muted">{label}</span>
       <button
         type="button"
         role="switch"
         aria-checked={checked}
         onClick={() => onChange(!checked)}
-        className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${checked ? 'bg-amber-600' : 'bg-zinc-600'}`}
+        className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${checked ? 'bg-amber-500' : 'bg-panel-elevated border border-app'}`}
       >
-        <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${checked ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
+        <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${checked ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
       </button>
     </label>
   );

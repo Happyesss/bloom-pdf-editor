@@ -126,13 +126,13 @@ export function EmbeddedImageOverlay(props: EmbeddedImageOverlayProps) {
 
   return (
     <div
-      className="absolute z-30 border-2 border-blue-500 border-dashed bg-blue-500/5 cursor-move"
+      className="absolute z-30 border-2 border-[#E8607A] border-dashed bg-[#E8607A]/5 cursor-move"
       style={{ left: box.left, top: box.top, width: box.width, height: box.height }}
       onClick={(e) => e.stopPropagation()}
       onPointerDown={(e) => begin('move', e)}
     >
       <div className="absolute -top-7 left-0 flex items-center gap-1">
-        <span className="flex items-center gap-1 px-1.5 py-0.5 bg-blue-600 text-white text-[10px] rounded shadow">
+        <span className="flex items-center gap-1 px-1.5 py-0.5 bg-[#E8607A] text-white text-[10px] rounded shadow">
           <ImageIcon size={10} /> Image
         </span>
         <button
@@ -164,7 +164,7 @@ export function EmbeddedImageOverlay(props: EmbeddedImageOverlayProps) {
       {([[0, 0], [1, 0], [0, 1], [1, 1]] as const).map(([hx, hy]) => (
         <div
           key={`${hx}-${hy}`}
-          className={`absolute w-2.5 h-2.5 bg-blue-500 border border-white rounded-sm ${
+          className={`absolute w-2.5 h-2.5 bg-[#E8607A] border border-white rounded-sm ${
             hx === 1 && hy === 1 ? 'cursor-se-resize z-40' : 'pointer-events-none'
           }`}
           style={{

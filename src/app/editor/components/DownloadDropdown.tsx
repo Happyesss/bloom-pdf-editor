@@ -119,12 +119,12 @@ export function DownloadDropdown({
 
   return (
     <div className="relative" ref={dropdownRef}>
-      <div className="flex items-stretch">
+      <div className="flex items-stretch shadow-md shadow-[#E8607A]/15 rounded-xl">
         <button
           onClick={onDownload}
           disabled={isSaving}
           title="Download original / edited PDF (no recompression)"
-          className="flex items-center gap-2 text-xs font-medium pl-4 pr-3 py-2 bg-gradient-to-b from-blue-500 to-blue-600 hover:from-blue-400 hover:to-blue-500 disabled:from-zinc-700 disabled:to-zinc-800 disabled:text-zinc-500 text-white rounded-l-xl transition-all duration-200 ease-out shadow-lg shadow-blue-900/25 active:scale-[0.98]"
+          className="flex items-center gap-2 text-xs font-semibold pl-4 pr-3 py-2 bg-gradient-to-b from-[#E8607A] to-[#D94D6A] hover:from-[#FF6B8E] hover:to-[#E8607A] disabled:from-zinc-700 disabled:to-zinc-800 disabled:text-zinc-500 text-white rounded-l-xl transition-all duration-200 ease-out active:scale-[0.98]"
         >
           {isSaving ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
           Download
@@ -134,7 +134,7 @@ export function DownloadDropdown({
           onClick={() => setIsOpen(!isOpen)}
           disabled={isSaving}
           title="Download options"
-          className="flex items-center px-2 py-2 bg-gradient-to-b from-blue-500 to-blue-600 hover:from-blue-400 hover:to-blue-500 disabled:from-zinc-700 disabled:to-zinc-800 disabled:text-zinc-500 text-white rounded-r-xl border-l border-blue-400/30 transition-all duration-200 ease-out shadow-lg shadow-blue-900/25 active:scale-[0.98]"
+          className="flex items-center px-2 py-2 bg-gradient-to-b from-[#E8607A] to-[#D94D6A] hover:from-[#FF6B8E] hover:to-[#E8607A] disabled:from-zinc-700 disabled:to-zinc-800 disabled:text-zinc-500 text-white rounded-r-xl border-l border-[#FFC5D3]/30 transition-all duration-200 ease-out active:scale-[0.98]"
         >
           <ChevronDown
             size={14}
@@ -145,43 +145,42 @@ export function DownloadDropdown({
 
       {isOpen && (
         <div
-          className="absolute right-0 top-full mt-2 w-[380px] bg-zinc-900/98 backdrop-blur-2xl border border-zinc-700/60 rounded-2xl shadow-2xl shadow-black/50 overflow-hidden z-50"
+          className="absolute right-0 top-full mt-2 w-[380px] bg-panel/98 backdrop-blur-2xl border border-app rounded-2xl shadow-2xl shadow-black/50 overflow-hidden z-50 text-app"
           style={{ animation: 'dropdownIn 0.25s cubic-bezier(0.16, 1, 0.3, 1)' }}
         >
-          <div className="px-5 pt-4 pb-3 border-b border-zinc-800/60">
+          <div className="px-5 pt-4 pb-3 border-b border-app">
             <div className="flex items-center gap-2 mb-1">
-              <HardDrive size={13} className="text-zinc-500" />
-              <span className="text-[11px] font-medium text-zinc-400 uppercase tracking-wider">Current File</span>
+              <HardDrive size={13} className="text-app-muted" />
+              <span className="text-[11px] font-medium text-app-muted uppercase tracking-wider">Current File</span>
             </div>
-            <div className="text-lg font-semibold text-white tracking-tight">
+            <div className="text-lg font-semibold text-app tracking-tight">
               {currentSize > 0 ? formatFileSize(currentSize) : '—'}
             </div>
             {sizeEstimation && sizeEstimation.imageCount > 0 && (
-              <p className="text-[10px] text-zinc-600 mt-1">
+              <p className="text-[10px] text-app-faint mt-1">
                 {sizeEstimation.imageCount} image{sizeEstimation.imageCount > 1 ? 's' : ''} · {sizeEstimation.pageCount} page{sizeEstimation.pageCount > 1 ? 's' : ''}
               </p>
             )}
           </div>
 
-          <div className="px-5 py-3 border-b border-zinc-800/60">
+          <div className="px-5 py-3 border-b border-app">
             <div className="flex items-center gap-1.5 mb-2">
-              <label className="text-[11px] font-medium text-zinc-400 uppercase tracking-wider block">
+              <label className="text-[11px] font-medium text-app-muted uppercase tracking-wider block">
                 Save Mode
               </label>
               <div className="group relative flex items-center justify-center">
-                <Info size={12} className="text-zinc-500 hover:text-zinc-300 cursor-help transition-colors" />
-                <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 w-56 p-2.5 bg-zinc-800 border border-zinc-700/60 rounded-xl shadow-xl text-[10.5px] text-zinc-300 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-[60] leading-relaxed">
-                  <strong className="text-zinc-100">Save Mode</strong> determines how changes are saved.
-                  <ul className="mt-1.5 space-y-1 list-disc pl-3.5 text-zinc-400">
-                    <li><strong className="text-zinc-200">Optimized:</strong> Rebuilds the file and removes unused data. Slower, but results in a smaller file.</li>
-                    <li><strong className="text-zinc-200">Quick:</strong> Appends changes to the end. Faster, but file size grows over time.</li>
+                <Info size={12} className="text-app-muted hover:text-app cursor-help transition-colors" />
+                <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 w-56 p-2.5 bg-panel-elevated border border-app rounded-xl shadow-xl text-[10.5px] text-app opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-[60] leading-relaxed">
+                  <strong className="text-app font-semibold">Save Mode</strong> determines how changes are saved.
+                  <ul className="mt-1.5 space-y-1 list-disc pl-3.5 text-app-muted">
+                    <li><strong className="text-app">Optimized:</strong> Rebuilds the file and removes unused data. Slower, but results in a smaller file.</li>
+                    <li><strong className="text-app">Quick:</strong> Appends changes to the end. Faster, but file size grows over time.</li>
                   </ul>
-                  <div className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 border-[6px] border-transparent border-t-zinc-700/60" />
-                  <div className="absolute -bottom-[5px] left-1/2 -translate-x-1/2 border-[5px] border-transparent border-t-zinc-800" />
+                  <div className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 border-[6px] border-transparent border-t-app" />
                 </div>
               </div>
             </div>
-            <div className="flex gap-1.5 p-1 bg-zinc-800/50 rounded-xl">
+            <div className="flex gap-1.5 p-1 bg-panel-elevated rounded-xl border border-app">
               {[
                 { value: 'optimized' as const, label: 'Optimized', desc: 'GC + dedup' },
                 { value: 'quick' as const, label: 'Quick', desc: 'Incremental' },
@@ -191,36 +190,35 @@ export function DownloadDropdown({
                   onClick={() => onSaveModeChange(opt.value)}
                   className={`flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all duration-200 ${
                     saveMode === opt.value
-                      ? 'bg-zinc-700 text-white shadow-sm'
-                      : 'text-zinc-500 hover:text-zinc-300'
+                      ? 'bg-[#E8607A] text-white shadow-sm font-semibold'
+                      : 'text-app-muted hover:text-app'
                   }`}
                 >
                   {opt.label}
-                  <span className="block text-[9px] opacity-50 mt-0.5">{opt.desc}</span>
+                  <span className="block text-[9px] opacity-70 mt-0.5">{opt.desc}</span>
                 </button>
               ))}
             </div>
           </div>
 
-          <div className="px-5 py-3 border-b border-zinc-800/60">
+          <div className="px-5 py-3 border-b border-app">
             <div className="flex items-center gap-2 mb-2">
-              <Gauge size={13} className="text-zinc-500" />
+              <Gauge size={13} className="text-app-muted" />
               <div className="flex items-center gap-1.5">
-                <label className="text-[11px] font-medium text-zinc-400 uppercase tracking-wider">
+                <label className="text-[11px] font-medium text-app-muted uppercase tracking-wider">
                   Resolution
                 </label>
                 <div className="group relative flex items-center justify-center">
-                  <Info size={12} className="text-zinc-500 hover:text-zinc-300 cursor-help transition-colors" />
-                  <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 w-56 p-2.5 bg-zinc-800 border border-zinc-700/60 rounded-xl shadow-xl text-[10.5px] text-zinc-300 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-[60] leading-relaxed">
-                    <strong className="text-zinc-100">DPI (Dots Per Inch)</strong> controls image clarity. Higher DPI looks better but makes the file bigger.
-                    <ul className="mt-1.5 space-y-1 list-disc pl-3.5 text-zinc-400">
-                      <li><strong className="text-zinc-200">72:</strong> Good for sharing on web/email.</li>
-                      <li><strong className="text-zinc-200">150:</strong> Good balance for viewing on screens.</li>
-                      <li><strong className="text-zinc-200">300:</strong> Standard for high-quality printing.</li>
-                      <li><strong className="text-zinc-200">600:</strong> Maximum detail (very large file).</li>
+                  <Info size={12} className="text-app-muted hover:text-app cursor-help transition-colors" />
+                  <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 w-56 p-2.5 bg-panel-elevated border border-app rounded-xl shadow-xl text-[10.5px] text-app opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-[60] leading-relaxed">
+                    <strong className="text-app font-semibold">DPI (Dots Per Inch)</strong> controls image clarity. Higher DPI looks better but makes the file bigger.
+                    <ul className="mt-1.5 space-y-1 list-disc pl-3.5 text-app-muted">
+                      <li><strong className="text-app">72:</strong> Good for sharing on web/email.</li>
+                      <li><strong className="text-app">150:</strong> Good balance for viewing on screens.</li>
+                      <li><strong className="text-app">300:</strong> Standard for high-quality printing.</li>
+                      <li><strong className="text-app">600:</strong> Maximum detail (very large file).</li>
                     </ul>
-                    <div className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 border-[6px] border-transparent border-t-zinc-700/60" />
-                    <div className="absolute -bottom-[5px] left-1/2 -translate-x-1/2 border-[5px] border-transparent border-t-zinc-800" />
+                    <div className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 border-[6px] border-transparent border-t-app" />
                   </div>
                 </div>
               </div>
@@ -232,8 +230,8 @@ export function DownloadDropdown({
                   onClick={() => setSelectedDpi(preset.value)}
                   className={`px-2 py-2 rounded-lg text-center transition-all duration-200 ${
                     selectedDpi === preset.value
-                      ? 'bg-blue-500/15 text-blue-400 border border-blue-500/30 ring-1 ring-blue-500/20'
-                      : 'bg-zinc-800/40 text-zinc-500 border border-zinc-800 hover:bg-zinc-800/80 hover:text-zinc-300'
+                      ? 'bg-[#E8607A]/15 text-[#E8607A] border border-[#E8607A]/40 ring-1 ring-[#E8607A]/20 font-semibold'
+                      : 'bg-panel-elevated text-app-muted border border-app hover:text-app'
                   }`}
                 >
                   <div className="text-xs font-medium">{preset.label}</div>
@@ -241,25 +239,24 @@ export function DownloadDropdown({
                 </button>
               ))}
             </div>
-            <p className="text-[9px] text-zinc-600 mt-2">
+            <p className="text-[9px] text-app-faint mt-2">
               Downsamples embedded images denser than the selected DPI.
             </p>
           </div>
 
-          <div className="px-5 py-3 border-b border-zinc-800/60">
+          <div className="px-5 py-3 border-b border-app">
             <div className="flex items-center gap-2 mb-2">
-              <Target size={13} className="text-zinc-500" />
+              <Target size={13} className="text-app-muted" />
               <div className="flex items-center gap-1.5">
-                <label className="text-[11px] font-medium text-zinc-400 uppercase tracking-wider">
+                <label className="text-[11px] font-medium text-app-muted uppercase tracking-wider">
                   Compression
                 </label>
                 <div className="group relative flex items-center justify-center">
-                  <Info size={12} className="text-zinc-500 hover:text-zinc-300 cursor-help transition-colors" />
-                  <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 w-56 p-2.5 bg-zinc-800 border border-zinc-700/60 rounded-xl shadow-xl text-[10.5px] text-zinc-300 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-[60] leading-relaxed">
-                    <strong className="text-zinc-100">Compression</strong> shrinks the file size.
-                    <p className="mt-1.5 text-zinc-400">Lower quality makes images smaller but slightly blurrier. We also remove unused fonts to save space.</p>
-                    <div className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 border-[6px] border-transparent border-t-zinc-700/60" />
-                    <div className="absolute -bottom-[5px] left-1/2 -translate-x-1/2 border-[5px] border-transparent border-t-zinc-800" />
+                  <Info size={12} className="text-app-muted hover:text-app cursor-help transition-colors" />
+                  <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 w-56 p-2.5 bg-panel-elevated border border-app rounded-xl shadow-xl text-[10.5px] text-app opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-[60] leading-relaxed">
+                    <strong className="text-app font-semibold">Compression</strong> shrinks the file size.
+                    <p className="mt-1.5 text-app-muted">Lower quality makes images smaller but slightly blurrier. We also remove unused fonts to save space.</p>
+                    <div className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 border-[6px] border-transparent border-t-app" />
                   </div>
                 </div>
               </div>
@@ -271,8 +268,8 @@ export function DownloadDropdown({
                   onClick={() => setCompressionQuality(preset.value)}
                   className={`px-2 py-2 rounded-lg text-center transition-all duration-200 ${
                     compressionQuality === preset.value
-                      ? 'bg-blue-500/15 text-blue-400 border border-blue-500/30 ring-1 ring-blue-500/20'
-                      : 'bg-zinc-800/40 text-zinc-500 border border-zinc-800 hover:bg-zinc-800/80 hover:text-zinc-300'
+                      ? 'bg-[#E8607A]/15 text-[#E8607A] border border-[#E8607A]/40 ring-1 ring-[#E8607A]/20 font-semibold'
+                      : 'bg-panel-elevated text-app-muted border border-app hover:text-app'
                   }`}
                 >
                   <div className="text-xs font-medium">{preset.label}</div>
@@ -283,14 +280,13 @@ export function DownloadDropdown({
           </div>
 
           <div className="px-5 py-3">
-            <p className="text-[10px] text-zinc-500 mb-2 leading-relaxed">
+            <p className="text-[10px] text-app-faint mb-2 leading-relaxed">
               Use this button to apply compression. The left “Download” saves without recompressing.
-              Small text PDFs barely shrink; large image/scan PDFs shrink the most.
             </p>
             <button
               onClick={handleOptionsDownload}
               disabled={isSaving}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-b from-blue-500 to-blue-600 hover:from-blue-400 hover:to-blue-500 disabled:from-zinc-700 disabled:to-zinc-800 disabled:text-zinc-500 text-white font-medium text-sm rounded-xl shadow-lg shadow-blue-900/25 transition-all duration-200 ease-out active:scale-[0.98]"
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-b from-[#E8607A] to-[#D94D6A] hover:from-[#FF6B8E] hover:to-[#E8607A] disabled:from-zinc-700 disabled:to-zinc-800 disabled:text-zinc-500 text-white font-medium text-sm rounded-xl shadow-lg shadow-[#E8607A]/25 transition-all duration-200 ease-out active:scale-[0.98]"
             >
               {isSaving ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
               {`Download (${compressionQuality}% · ${selectedDpi} DPI)`}

@@ -1,57 +1,154 @@
 'use client';
 
-import { useState } from 'react';
-import { Search, Replace } from 'lucide-react';
+import React from 'react';
+import { Search, Replace, ChevronUp, ChevronDown, CaseSensitive, X, Loader2 } from 'lucide-react';
 
-interface FindReplacePanelProps {
-  onFindReplace: (find: string, replace: string) => Promise<number>;
+export interface FindReplacePanelProps {
+  findText: string;
+  onFindTextChange: (val: string) => void;
+  replaceText: string;
+  onReplaceTextChange: (val: string) => void;
+  matchCount: number;
+  currentMatchIndex: number;
+  onNextMatch: () => void;
+  onPrevMatch: () => void;
+  onReplaceCurrent: () => void;
+  onReplaceAll: () => void;
+  caseSensitive: boolean;
+  onToggleCaseSensitive: () => void;
+  onClose?: () => void;
+  busy?: boolean;
 }
 
-export function FindReplacePanel({ onFindReplace }: FindReplacePanelProps) {
-  const [find, setFind] = useState('');
-  const [replace, setReplace] = useState('');
-  const [count, setCount] = useState<number | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  const run = async () => {
-    if (!find) return;
-    setBusy(true);
-    try {
-      const n = await onFindReplace(find, replace);
-      setCount(n);
-    } finally {
-      setBusy(false);
+export function FindReplacePanel({
+  findText,
+  onFindTextChange,
+  replaceText,
+  onReplaceTextChange,
+  matchCount,
+  currentMatchIndex,
+  onNextMatch,
+  onPrevMatch,
+  onReplaceCurrent,
+  onReplaceAll,
+  caseSensitive,
+  onToggleCaseSensitive,
+  onClose,
+  busy = false,
+}: FindReplacePanelProps) {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (e.shiftKey) {
+        onPrevMatch();
+      } else {
+        onNextMatch();
+      }
     }
   };
 
   return (
-    <div className="p-3 space-y-3 bg-zinc-900/95">
-      <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-zinc-400 uppercase">
-        <Search size={12} /> Find & Replace
+    <div className="p-3 space-y-2.5 bg-zinc-900/95 backdrop-blur-md rounded-xl border border-zinc-700/80 shadow-2xl w-72 font-sans">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-1.5 text-[11px] font-bold tracking-wider text-zinc-300 uppercase">
+          <Search size={13} className="text-[#E8607A]" />
+          Find & Replace
+        </div>
+        {onClose && (
+          <button
+            onClick={onClose}
+            className="text-zinc-400 hover:text-zinc-100 p-1 rounded-md hover:bg-zinc-800 transition-colors"
+            title="Close Search"
+          >
+            <X size={14} />
+          </button>
+        )}
       </div>
-      <input
-        value={find}
-        onChange={(e) => setFind(e.target.value)}
-        placeholder="Find"
-        className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-xs text-zinc-200"
-      />
-      <input
-        value={replace}
-        onChange={(e) => setReplace(e.target.value)}
-        placeholder="Replace with"
-        className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-xs text-zinc-200"
-      />
-      <button
-        onClick={() => void run()}
-        disabled={busy || !find}
-        className="w-full flex items-center justify-center gap-2 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-md text-xs font-semibold disabled:opacity-40"
-      >
-        <Replace size={12} />
-        {busy ? 'Working…' : 'Replace all on page'}
-      </button>
-      {count != null && (
-        <div className="text-[10px] text-zinc-500">{count} replacement(s)</div>
-      )}
+
+      {/* Find input row with navigation & case sensitive controls */}
+      <div className="space-y-1">
+        <div className="relative flex items-center">
+          <input
+            value={findText}
+            onChange={(e) => onFindTextChange(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Search text in PDF..."
+            autoFocus
+            className="w-full bg-zinc-800/90 border border-zinc-700 focus:border-[#E8607A] focus:ring-1 focus:ring-[#E8607A] rounded-lg pl-2.5 pr-20 py-1.5 text-xs text-zinc-100 placeholder-zinc-500 outline-none transition-all"
+          />
+
+          <div className="absolute right-1 flex items-center gap-0.5">
+            {/* Match Counter Badge */}
+            {findText.trim() !== '' && (
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-zinc-700/60 text-zinc-300 mr-1">
+                {matchCount > 0 ? `${currentMatchIndex + 1}/${matchCount}` : '0'}
+              </span>
+            )}
+
+            {/* Case Sensitivity Toggle */}
+            <button
+              onClick={onToggleCaseSensitive}
+              title={caseSensitive ? 'Match Case (Active)' : 'Match Case (Inactive)'}
+              className={`p-1 rounded transition-colors ${
+                caseSensitive
+                  ? 'bg-[#E8607A]/20 text-[#E8607A] font-bold'
+                  : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/50'
+              }`}
+            >
+              <CaseSensitive size={14} />
+            </button>
+
+            {/* Prev / Next Buttons */}
+            <button
+              onClick={onPrevMatch}
+              disabled={matchCount === 0}
+              title="Previous Match (Shift+Enter)"
+              className="p-1 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700/50 rounded disabled:opacity-30 transition-colors"
+            >
+              <ChevronUp size={14} />
+            </button>
+            <button
+              onClick={onNextMatch}
+              disabled={matchCount === 0}
+              title="Next Match (Enter)"
+              className="p-1 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700/50 rounded disabled:opacity-30 transition-colors"
+            >
+              <ChevronDown size={14} />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Replace input row */}
+      <div className="space-y-1">
+        <input
+          value={replaceText}
+          onChange={(e) => onReplaceTextChange(e.target.value)}
+          placeholder="Replace with..."
+          className="w-full bg-zinc-800/90 border border-zinc-700 focus:border-[#E8607A] focus:ring-1 focus:ring-[#E8607A] rounded-lg px-2.5 py-1.5 text-xs text-zinc-100 placeholder-zinc-500 outline-none transition-all"
+        />
+      </div>
+
+      {/* Replace Actions */}
+      <div className="grid grid-cols-2 gap-1.5 pt-0.5">
+        <button
+          onClick={onReplaceCurrent}
+          disabled={busy || matchCount === 0 || !findText.trim()}
+          className="flex items-center justify-center gap-1.5 py-1.5 px-2 bg-zinc-800 hover:bg-zinc-700/90 text-zinc-200 border border-zinc-700 hover:border-zinc-600 rounded-lg text-xs font-semibold disabled:opacity-40 transition-all"
+        >
+          {busy ? <Loader2 size={12} className="animate-spin" /> : <Replace size={12} />}
+          Replace
+        </button>
+        <button
+          onClick={onReplaceAll}
+          disabled={busy || matchCount === 0 || !findText.trim()}
+          className="flex items-center justify-center gap-1.5 py-1.5 px-2 bg-[#E8607A]/20 hover:bg-[#E8607A]/30 text-[#E8607A] border border-[#E8607A]/40 rounded-lg text-xs font-semibold disabled:opacity-40 transition-all"
+        >
+          {busy ? <Loader2 size={12} className="animate-spin" /> : <Replace size={12} />}
+          Replace All
+        </button>
+      </div>
     </div>
   );
 }

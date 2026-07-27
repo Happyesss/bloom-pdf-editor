@@ -482,7 +482,7 @@ export function ExportPanel({
                       onChange={(e) =>
                         setCustomFrom(Math.max(1, Math.min(totalPages, Number(e.target.value))))
                       }
-                      className="w-full px-3 py-2 text-sm bg-zinc-800 border border-zinc-700 rounded-lg text-zinc-200 focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500/50 outline-none transition-all"
+                      className="w-full px-3 py-2 text-sm bg-zinc-800 border border-zinc-700 rounded-lg text-zinc-200 focus:ring-2 focus:ring-[#E8607A]/40 focus:border-[#E8607A]/50 outline-none transition-all"
                     />
                   </div>
                   <span className="text-zinc-600 text-xs mt-4">to</span>
@@ -496,7 +496,7 @@ export function ExportPanel({
                       onChange={(e) =>
                         setCustomTo(Math.max(1, Math.min(totalPages, Number(e.target.value))))
                       }
-                      className="w-full px-3 py-2 text-sm bg-zinc-800 border border-zinc-700 rounded-lg text-zinc-200 focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500/50 outline-none transition-all"
+                      className="w-full px-3 py-2 text-sm bg-zinc-800 border border-zinc-700 rounded-lg text-zinc-200 focus:ring-2 focus:ring-[#E8607A]/40 focus:border-[#E8607A]/50 outline-none transition-all"
                     />
                   </div>
                 </div>
@@ -558,7 +558,7 @@ export function ExportPanel({
                       max={100}
                       value={jpegQuality}
                       onChange={(e) => setJpegQuality(Number(e.target.value))}
-                      className="w-full accent-blue-500"
+                      className="w-full accent-[#E8607A]"
                       style={{ height: '4px' }}
                     />
                     <div className="flex justify-between mt-1">
@@ -600,7 +600,7 @@ export function ExportPanel({
                 </div>
                 <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden">
                   <div
-                    className="h-full bg-gradient-to-r from-blue-500 to-blue-400 rounded-full transition-all duration-300 ease-out"
+                    className="h-full bg-gradient-to-r from-[#E8607A] to-[#FF9BB3] rounded-full transition-all duration-300 ease-out"
                     style={{ width: `${progressPct}%` }}
                   />
                 </div>
@@ -611,11 +611,11 @@ export function ExportPanel({
                 disabled={primaryDisabled}
                 className="
                   w-full flex items-center justify-center gap-2.5 px-4 py-3
-                  bg-gradient-to-b from-blue-500 to-blue-600
-                  hover:from-blue-400 hover:to-blue-500
+                  bg-gradient-to-b from-[#E8607A] to-[#D94D6A]
+                  hover:from-[#FF6B8E] hover:to-[#E8607A]
                   disabled:from-zinc-700 disabled:to-zinc-800 disabled:text-zinc-500
                   text-white font-medium text-sm rounded-xl
-                  shadow-lg shadow-blue-900/30
+                  shadow-lg shadow-[#E8607A]/30
                   transition-all duration-200 ease-out
                   active:scale-[0.98]
                 "
@@ -666,7 +666,7 @@ function ConvertFormatButton({
         transition-all duration-200 ease-out disabled:opacity-40 disabled:cursor-not-allowed
         ${
           selected
-            ? 'bg-gradient-to-br from-blue-500/15 to-blue-600/5 border-zinc-600/80 ring-2 ring-blue-500/35 shadow-lg'
+            ? 'bg-gradient-to-br from-[#E8607A]/15 to-[#D94D6A]/5 border-zinc-600/80 ring-2 ring-[#E8607A]/35 shadow-lg'
             : 'bg-zinc-800/40 border-zinc-800 hover:bg-zinc-800/80 hover:border-zinc-700'
         }
       `}
@@ -678,7 +678,7 @@ function ConvertFormatButton({
         <div className="text-[10px] text-zinc-500 truncate mt-0.5">{fmt.extension}</div>
       </div>
       {selected && (
-        <div className="flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-blue-400 bg-white/10">
+        <div className="flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-[#E8607A] bg-white/10">
           <Check size={12} strokeWidth={3} />
         </div>
       )}

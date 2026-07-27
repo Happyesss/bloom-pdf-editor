@@ -44,6 +44,18 @@ import { PasswordDialog } from './components/PasswordDialog';
 import { SecurityPanel } from './components/SecurityPanel';
 import { useTextStyleActions, type TextStyleUI } from './hooks/useTextStyleActions';
 
+export interface SearchMatch {
+  id: string;
+  pageIndex: number;
+  pdfX: number;
+  pdfY: number;
+  pdfWidth: number;
+  pdfHeight: number;
+  matchedText: string;
+  runText: string;
+}
+
+
 /** True if the run is underlined or a thin stroke path sits under it (certificate labels). */
 function runHasPathUnderline(run: TextRun, paths: PathItem[]): boolean {
   if (run.isUnderline) return true;
@@ -295,8 +307,8 @@ export default function EditorPage() {
   const [thumbnailKey, setThumbnailKey] = useState(0);
   const [isGeneratingThumbnails, setIsGeneratingThumbnails] = useState(false);
 
-  // ── Phase 4 state ──
   const [activeTool, setActiveTool] = useState<EditorTool>('text');
+  const [isPanelOpen, setIsPanelOpen] = useState(true);
   const [selectedLine, setSelectedLine] = useState<TextLine | null>(null);
   const [editingLineState, setEditingLineState] = useState<TextLine | null>(null);
   const editingLineRef = useRef<TextLine | null>(null);
@@ -471,6 +483,12 @@ export default function EditorPage() {
   const [saveMode, setSaveMode] = useState<'quick' | 'optimized'>('optimized');
   const [isDirty, setIsDirty] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [findText, setFindText] = useState('');
+  const [replaceText, setReplaceText] = useState('');
+  const [caseSensitive, setCaseSensitive] = useState(false);
+  const [searchResults, setSearchResults] = useState<SearchMatch[]>([]);
+  const [activeMatchIndex, setActiveMatchIndex] = useState<number>(0);
+  const [searchBusy, setSearchBusy] = useState(false);
   const [showExportPanel, setShowExportPanel] = useState(false);
 
   // Visual signatures (Phases 1–3) — overlay only, no PDF write
@@ -2150,17 +2168,156 @@ export default function EditorPage() {
     setIsDirty(true);
   }, [doc, selectedFormField]);
 
-  const handleFindReplace = useCallback(async (find: string, replace: string) => {
-    if (!doc || !engineRef.current) return 0;
+  // ── Document-wide search effect ──
+  useEffect(() => {
+    if (!doc || !engineRef.current || !findText.trim()) {
+      setSearchResults([]);
+      setActiveMatchIndex(0);
+      return;
+    }
+
+    let cancelled = false;
+    const query = findText.trim();
+    const lowerQuery = caseSensitive ? query : query.toLowerCase();
     const engine = engineRef.current;
-    const page = doc.pages[currentPage];
-    const bytes = engine.getPageContentBytes(page, doc.objects);
-    const result = engine.findAndReplace(bytes, page, doc.objects, find, replace);
-    await engine.updatePageContent(page.contentRefs, result.newContentBytes, doc.objects);
-    setIsDirty(true);
-    setRenderKey(k => k + 1);
-    return result.missingCharCodes ? 1 : 1; // at least signal work done
-  }, [doc, currentPage]);
+    const matches: SearchMatch[] = [];
+
+    for (let p = 0; p < doc.pages.length; p++) {
+      if (cancelled) return;
+      const page = doc.pages[p];
+      try {
+        const bytes = engine.getPageContentBytes(page, doc.objects);
+        const interpreted = engine.interpretPage(bytes, page, doc.objects);
+
+        for (const run of interpreted.textRuns) {
+          const text = run.text;
+          const textToSearch = caseSensitive ? text : text.toLowerCase();
+          let idx = 0;
+          while ((idx = textToSearch.indexOf(lowerQuery, idx)) !== -1) {
+            const endIdx = idx + query.length;
+            let pdfX = run.x;
+            let pdfWidth = run.width;
+
+            if (run.glyphs && run.glyphs.length === run.text.length) {
+              const startG = run.glyphs[idx];
+              const endG = run.glyphs[endIdx - 1];
+              if (startG && endG) {
+                pdfX = startG.x;
+                pdfWidth = (endG.x + endG.width) - startG.x;
+              }
+            } else if (run.text.length > 0) {
+              const charW = run.width / run.text.length;
+              pdfX = run.x + idx * charW;
+              pdfWidth = query.length * charW;
+            }
+
+            matches.push({
+              id: `m-${p}-${idx}-${matches.length}`,
+              pageIndex: p,
+              pdfX,
+              pdfY: run.y,
+              pdfWidth: Math.max(pdfWidth, 3),
+              pdfHeight: run.height || run.fontSize || 12,
+              matchedText: text.substring(idx, endIdx),
+              runText: text,
+            });
+
+            idx += Math.max(query.length, 1);
+          }
+        }
+      } catch (e) {
+        console.warn(`[Search] Error on page ${p}:`, e);
+      }
+    }
+
+    if (!cancelled) {
+      setSearchResults(matches);
+      if (matches.length > 0) {
+        setActiveMatchIndex(prev => {
+          const nextIdx = prev >= 0 && prev < matches.length ? prev : 0;
+          if (matches[nextIdx].pageIndex !== currentPage) {
+            setCurrentPage(matches[nextIdx].pageIndex);
+          }
+          return nextIdx;
+        });
+      } else {
+        setActiveMatchIndex(0);
+      }
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [findText, caseSensitive, doc, renderKey, currentPage]);
+
+  const handleNextMatch = useCallback(() => {
+    if (searchResults.length === 0) return;
+    const nextIdx = (activeMatchIndex + 1) % searchResults.length;
+    setActiveMatchIndex(nextIdx);
+    const targetPage = searchResults[nextIdx].pageIndex;
+    if (targetPage !== currentPage) {
+      setCurrentPage(targetPage);
+    }
+  }, [searchResults, activeMatchIndex, currentPage]);
+
+  const handlePrevMatch = useCallback(() => {
+    if (searchResults.length === 0) return;
+    const prevIdx = (activeMatchIndex - 1 + searchResults.length) % searchResults.length;
+    setActiveMatchIndex(prevIdx);
+    const targetPage = searchResults[prevIdx].pageIndex;
+    if (targetPage !== currentPage) {
+      setCurrentPage(targetPage);
+    }
+  }, [searchResults, activeMatchIndex, currentPage]);
+
+  const handleReplaceCurrent = useCallback(async () => {
+    if (!doc || !engineRef.current || searchResults.length === 0 || !findText.trim()) return;
+    const currentMatch = searchResults[activeMatchIndex];
+    if (!currentMatch) return;
+
+    setSearchBusy(true);
+    try {
+      const engine = engineRef.current;
+      const page = doc.pages[currentMatch.pageIndex];
+      const bytes = engine.getPageContentBytes(page, doc.objects);
+      const result = engine.findAndReplace(bytes, page, doc.objects, findText, replaceText, caseSensitive);
+      if (result.newContentBytes) {
+        await engine.updatePageContent(page.contentRefs, result.newContentBytes, doc.objects);
+        setIsDirty(true);
+        setRenderKey(k => k + 1);
+      }
+    } catch (err) {
+      console.error('[Search] Replace current error:', err);
+    } finally {
+      setSearchBusy(false);
+    }
+  }, [doc, searchResults, activeMatchIndex, findText, replaceText, caseSensitive]);
+
+  const handleReplaceAll = useCallback(async () => {
+    if (!doc || !engineRef.current || !findText.trim()) return;
+    setSearchBusy(true);
+    try {
+      const engine = engineRef.current;
+      let replacedCount = 0;
+      for (let p = 0; p < doc.pages.length; p++) {
+        const page = doc.pages[p];
+        const bytes = engine.getPageContentBytes(page, doc.objects);
+        const result = engine.findAndReplace(bytes, page, doc.objects, findText, replaceText, caseSensitive);
+        if (result.newContentBytes) {
+          await engine.updatePageContent(page.contentRefs, result.newContentBytes, doc.objects);
+          replacedCount++;
+        }
+      }
+      if (replacedCount > 0) {
+        setIsDirty(true);
+        setRenderKey(k => k + 1);
+      }
+    } catch (err) {
+      console.error('[Search] Replace all error:', err);
+    } finally {
+      setSearchBusy(false);
+    }
+  }, [doc, findText, replaceText, caseSensitive]);
 
   const handleRecognizeText = useCallback(async () => {
     if (!doc || !engineRef.current || !pdfCanvasRef.current) return;
@@ -4383,6 +4540,14 @@ export default function EditorPage() {
         handleSignatureDelete(selectedSignatureId);
       } else if (e.key === 'w' || e.key === 'W') {
         if (!e.metaKey && !e.ctrlKey) setActiveTool('watermark');
+      } else if (e.key === 'x' || e.key === 'X') {
+        if (!e.metaKey && !e.ctrlKey) {
+          setActiveTool('security');
+          setIsPanelOpen(true);
+        }
+      } else if ((e.key === 'f' || e.key === 'F') && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        setIsSearchOpen(v => !v);
       }
     }
     window.addEventListener('keydown', onKey);
@@ -4524,7 +4689,7 @@ export default function EditorPage() {
   if (isLoading) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-surface text-app-muted">
-        <div className="w-8 h-8 border-4 border-[var(--border)] border-t-blue-500 rounded-full animate-spin" />
+        <div className="w-8 h-8 border-4 border-[var(--border)] border-t-[#E8607A] rounded-full animate-spin" />
         <p className="mt-4 text-sm font-medium animate-pulse">Processing PDF...</p>
       </div>
     );
@@ -4564,7 +4729,7 @@ export default function EditorPage() {
 
   // ── Main editor UI ──
   return (
-    <div className="flex flex-col h-screen font-sans bg-surface text-app selection:bg-blue-500/30">
+    <div className="flex flex-col h-screen font-sans bg-surface text-app selection:bg-[#E8607A]/30">
 
       {/* ── Top toolbar ── */}
       <Toolbar
@@ -4604,31 +4769,36 @@ export default function EditorPage() {
         onCompressedDownload={handleCompressedDownload}
       />
 
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex relative">
 
         {/* ── Left sidebar (Tools only) ── */}
         <ToolsSidebar
           activeTool={activeTool}
           setActiveTool={setActiveTool}
           highlightColor={highlightColor}
+          isPanelOpen={isPanelOpen}
+          onTogglePanel={() => setIsPanelOpen(v => !v)}
         />
 
         {/* ── Left Sidebar (Properties / Security) ── */}
-        {activeTool === 'security' ? (
-          <SecurityPanel
-            doc={doc}
-            engine={engineModule}
-            onDocChange={(d) => {
-              setDoc(d);
-              setIsDirty(true);
-            }}
-            markDirty={() => setIsDirty(true)}
-          />
-        ) : (
-        <PropertiesSidebar
-          activeTool={activeTool}
-          setActiveTool={setActiveTool}
-          selectedRun={selectedLine?.runs[0] ?? null}
+        {isPanelOpen && (
+          activeTool === 'security' ? (
+            <SecurityPanel
+              doc={doc}
+              engine={engineModule}
+              onDocChange={(d) => {
+                setDoc(d);
+                setIsDirty(true);
+              }}
+              markDirty={() => setIsDirty(true)}
+              onClose={() => setIsPanelOpen(false)}
+            />
+          ) : (
+            <PropertiesSidebar
+              activeTool={activeTool}
+              setActiveTool={setActiveTool}
+              onClose={() => setIsPanelOpen(false)}
+              selectedRun={selectedLine?.runs[0] ?? null}
           textFontFamily={textFontFamily}
           setTextFontFamily={handleTextFontFamily}
           textFontSize={textFontSize}
@@ -4834,7 +5004,8 @@ export default function EditorPage() {
           managedSignatures={managedSignatures}
           revisionEntries={revisionEntries}
         />
-        )}
+      )
+    )}
 
         <input
           type="file"
@@ -4856,25 +5027,40 @@ export default function EditorPage() {
         >
           {/* Floating Search & OCR Panel (viewport-fixed) */}
           {isSearchOpen && (
-            <div className="absolute top-4 right-4 z-40 flex flex-col items-end gap-3 w-64 pointer-events-none animate-in fade-in slide-in-from-top-4 duration-200">
-              <div className="pointer-events-auto flex items-center justify-between gap-2 bg-zinc-900/95 backdrop-blur-md px-3 py-2 rounded-lg border border-zinc-700/80 shadow-lg w-full">
+            <div className="absolute top-4 right-4 z-40 flex flex-col items-end gap-3 pointer-events-none animate-in fade-in slide-in-from-top-4 duration-200">
+              <div className="pointer-events-auto flex items-center justify-between gap-2 bg-zinc-900/95 backdrop-blur-md px-3 py-2 rounded-xl border border-zinc-700/80 shadow-lg w-72">
                 <button
                   onClick={() => void handleRecognizeText()}
                   className="flex items-center gap-2 text-xs font-semibold text-zinc-300 hover:text-white transition-colors"
-                  title="OCR recognize (stub)"
+                  title="OCR recognize text"
                 >
-                  <Type size={14} /> Recognize text
+                  <Type size={14} /> Recognize text (OCR)
                 </button>
                 {isDirty && <span className="text-[10px] text-amber-400 font-medium border-l border-zinc-700/50 pl-2">Unsaved</span>}
               </div>
-              <div className="pointer-events-auto w-full bg-zinc-900/95 backdrop-blur-md rounded-xl border border-zinc-700/80 shadow-2xl overflow-hidden">
-                <FindReplacePanel onFindReplace={handleFindReplace} />
+              <div className="pointer-events-auto">
+                <FindReplacePanel
+                  findText={findText}
+                  onFindTextChange={setFindText}
+                  replaceText={replaceText}
+                  onReplaceTextChange={setReplaceText}
+                  matchCount={searchResults.length}
+                  currentMatchIndex={activeMatchIndex}
+                  onNextMatch={handleNextMatch}
+                  onPrevMatch={handlePrevMatch}
+                  onReplaceCurrent={handleReplaceCurrent}
+                  onReplaceAll={handleReplaceAll}
+                  caseSensitive={caseSensitive}
+                  onToggleCaseSensitive={() => setCaseSensitive(v => !v)}
+                  onClose={() => setIsSearchOpen(false)}
+                  busy={searchBusy}
+                />
               </div>
             </div>
           )}
           {isRendering && (
             <div className="absolute top-4 right-4 z-30 bg-zinc-900/90 backdrop-blur border border-zinc-800 shadow-lg rounded-full px-4 py-2 flex items-center gap-2 text-zinc-300 text-sm font-medium animate-in slide-in-from-top-4 fade-in">
-              <Loader2 size={16} className="animate-spin text-blue-500" />
+              <Loader2 size={16} className="animate-spin text-[#E8607A]" />
               Rendering...
             </div>
           )}
@@ -4889,7 +5075,7 @@ export default function EditorPage() {
           >
           <div
             ref={canvasContainerRef}
-            className="relative inline-block shrink-0 shadow-2xl"
+            className="relative inline-block shrink-0 shadow-[0_20px_50px_-12px_rgba(15,23,42,0.18),0_4px_16px_-2px_rgba(0,0,0,0.06),0_0_0_1px_rgba(15,23,42,0.06)] rounded-sm bg-white transition-shadow duration-300"
             style={{ cursor: cursorForTool }}
             onDragOver={(e) => {
               e.preventDefault();
@@ -4920,6 +5106,40 @@ export default function EditorPage() {
                 pointerEvents: ['draw', 'highlight', 'erase'].includes(activeTool) ? 'auto' : 'none',
               }}
             />
+
+            {/* Search matches highlights overlay */}
+            {isSearchOpen && searchResults.length > 0 && searchResults
+              .filter(m => m.pageIndex === currentPage)
+              .map((m) => {
+                const isCurrent = searchResults[activeMatchIndex]?.id === m.id;
+                const mediaBox = doc?.pages[currentPage]?.mediaBox;
+                const pageH = mediaBox?.height || 0;
+                const mbX = mediaBox?.x || 0;
+                const mbY = mediaBox?.y || 0;
+
+                const { cssX: x1, cssY: y1 } = pdfToCanvas(m.pdfX, m.pdfY + m.pdfHeight, scale, pageH, mbX, mbY);
+                const { cssX: x2, cssY: y2 } = pdfToCanvas(m.pdfX + m.pdfWidth, m.pdfY, scale, pageH, mbX, mbY);
+
+                const w = Math.max(Math.abs(x2 - x1), 4);
+                const h = Math.max(Math.abs(y2 - y1), 8);
+
+                return (
+                  <div
+                    key={m.id}
+                    className={`absolute rounded-sm pointer-events-none transition-all duration-150 ${
+                      isCurrent
+                        ? 'bg-amber-400/80 border-2 border-amber-600 ring-4 ring-amber-400/40 shadow-lg scale-[1.04] z-30'
+                        : 'bg-yellow-300/45 border border-yellow-500/80 shadow-sm z-20 hover:bg-yellow-300/70'
+                    }`}
+                    style={{
+                      left: Math.min(x1, x2),
+                      top: Math.min(y1, y2),
+                      width: w,
+                      height: h,
+                    }}
+                  />
+                );
+              })}
 
             {/* DOM overlays for FloatingText */}
             {activeTool === 'watermark' && watermarkLivePreview && (
@@ -5093,7 +5313,7 @@ export default function EditorPage() {
               return (
                 <div
                   key={ft.id}
-                  className={`absolute z-20 cursor-move border-2 ${isActive ? 'border-blue-500 border-dashed' : 'border-transparent hover:border-zinc-500 hover:border-dashed'} p-1 -m-1`}
+                  className={`absolute z-20 cursor-move border-2 ${isActive ? 'border-[#E8607A] border-dashed' : 'border-transparent hover:border-zinc-500 hover:border-dashed'} p-1 -m-1`}
                   style={{
                     left: cssX,
                     top: cssY - (ft.fontSize * scale),
@@ -5159,7 +5379,7 @@ export default function EditorPage() {
               return (
                 <div
                   key={fi.id}
-                  className={`absolute z-20 cursor-move border-2 ${isActive ? 'border-blue-500 border-dashed' : 'border-transparent hover:border-zinc-500 hover:border-dashed'} p-1 -m-1`}
+                  className={`absolute z-20 cursor-move border-2 ${isActive ? 'border-[#E8607A] border-dashed' : 'border-transparent hover:border-zinc-500 hover:border-dashed'} p-1 -m-1`}
                   style={{
                     left: cssX,
                     top: cssY,
@@ -5189,7 +5409,7 @@ export default function EditorPage() {
                         <X size={12} />
                       </button>
                       <button
-                        className="absolute -bottom-3 -right-3 bg-blue-500 text-white rounded-full p-1 shadow hover:bg-blue-600 transition-colors z-30"
+                        className="absolute -bottom-3 -right-3 bg-[#E8607A] text-white rounded-full p-1 shadow hover:bg-[#D94D6A] transition-colors z-30"
                         title="Replace Image"
                         onClick={(e) => {
                           e.stopPropagation();
@@ -5216,7 +5436,7 @@ export default function EditorPage() {
                               const newW = (parseFloat(e.target.value) * 72) / 2.54;
                               if (newW > 0) setFloatingImages(prev => prev.map(p => p.id === fi.id ? { ...p, pdfWidth: newW } : p));
                             }}
-                            className="w-10 bg-zinc-800 rounded px-1 py-0.5 text-right no-spinners outline-none focus:ring-1 focus:ring-blue-500"
+                            className="w-10 bg-zinc-800 rounded px-1 py-0.5 text-right no-spinners outline-none focus:ring-1 focus:ring-[#E8607A]"
                             step="0.1"
                           />
                           <span className="text-zinc-500 text-[10px]">cm</span>
@@ -5230,7 +5450,7 @@ export default function EditorPage() {
                               const newH = (parseFloat(e.target.value) * 72) / 2.54;
                               if (newH > 0) setFloatingImages(prev => prev.map(p => p.id === fi.id ? { ...p, pdfHeight: newH } : p));
                             }}
-                            className="w-10 bg-zinc-800 rounded px-1 py-0.5 text-right no-spinners outline-none focus:ring-1 focus:ring-blue-500"
+                            className="w-10 bg-zinc-800 rounded px-1 py-0.5 text-right no-spinners outline-none focus:ring-1 focus:ring-[#E8607A]"
                             step="0.1"
                           />
                           <span className="text-zinc-500 text-[10px]">cm</span>
@@ -5241,7 +5461,7 @@ export default function EditorPage() {
 
                   {/* CSS Resize Handle (only active when hovered to avoid drag conflict) */}
                   <div
-                    className="absolute bottom-0 right-0 w-3 h-3 cursor-se-resize bg-blue-500/50"
+                    className="absolute bottom-0 right-0 w-3 h-3 cursor-se-resize bg-[#E8607A]/50"
                     onPointerDown={e => {
                       e.stopPropagation(); // prevent dragging
                       const startX = e.clientX;
@@ -5603,7 +5823,7 @@ export default function EditorPage() {
             </p>
             <button
               onClick={() => setShowApplySuccessModal(false)}
-              className="w-full px-4 py-2.5 rounded font-medium text-sm bg-blue-600 hover:bg-blue-700 text-white transition-colors"
+              className="w-full px-4 py-2.5 rounded font-medium text-sm bg-[#E8607A] hover:bg-[#B83A57] text-white transition-colors"
             >
               Okay
             </button>

@@ -50,10 +50,10 @@ function IconTip({
         <Tooltip.Content
           side={side}
           sideOffset={6}
-          className="z-[200] max-w-[200px] rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-[10px] font-medium leading-snug text-zinc-200 shadow-xl animate-in fade-in zoom-in-95"
+          className="z-[200] max-w-[200px] rounded-md border border-app bg-panel px-2.5 py-1.5 text-[10px] font-medium leading-snug text-app shadow-xl animate-in fade-in zoom-in-95"
         >
           {label}
-          <Tooltip.Arrow className="fill-zinc-900" />
+          <Tooltip.Arrow className="fill-panel" />
         </Tooltip.Content>
       </Tooltip.Portal>
     </Tooltip.Root>
@@ -61,13 +61,13 @@ function IconTip({
 }
 
 const PAGE_CAPABILITIES = [
-  { id: 'split', icon: Scissors, label: 'Split pages', color: 'text-blue-400', steps: 'Remove unwanted pages using the trash icon, then click Download to save the new PDF.' },
-  { id: 'merge', icon: Combine, label: 'Merge PDFs', color: 'text-blue-400', steps: 'Hover between pages and click the "Insert from PDF" icon to append another file, then Download.' },
-  { id: 'blank', icon: FilePlus, label: 'Add blank page', color: 'text-zinc-400', steps: 'Hover between pages and click the "Add blank page" icon to insert an empty page.' },
-  { id: 'insert', icon: FileText, label: 'Insert from PDF', color: 'text-zinc-400', steps: 'Hover between pages and click the "Insert from PDF" icon to append pages.' },
-  { id: 'reorder', icon: GripVertical, label: 'Re-order pages', color: 'text-zinc-400', steps: 'Click and drag any page thumbnail to move it to a new position in the document.' },
-  { id: 'rotate', icon: RotateCw, label: 'Rotate page', color: 'text-zinc-400', steps: 'Hover over a page thumbnail and click the rotate icon to turn it 90 degrees.' },
-  { id: 'delete', icon: Trash2, label: 'Delete page', color: 'text-red-400', steps: 'Hover over a page thumbnail and click the red trash icon to remove it.' },
+  { id: 'split', icon: Scissors, label: 'Split pages', color: 'text-[#E8607A]', steps: 'Remove unwanted pages using the trash icon, then click Download to save the new PDF.' },
+  { id: 'merge', icon: Combine, label: 'Merge PDFs', color: 'text-[#E8607A]', steps: 'Hover between pages and click the "Insert from PDF" icon to append another file, then Download.' },
+  { id: 'blank', icon: FilePlus, label: 'Add blank page', color: 'text-app-muted', steps: 'Hover between pages and click the "Add blank page" icon to insert an empty page.' },
+  { id: 'insert', icon: FileText, label: 'Insert from PDF', color: 'text-app-muted', steps: 'Hover between pages and click the "Insert from PDF" icon to append pages.' },
+  { id: 'reorder', icon: GripVertical, label: 'Re-order pages', color: 'text-app-muted', steps: 'Click and drag any page thumbnail to move it to a new position in the document.' },
+  { id: 'rotate', icon: RotateCw, label: 'Rotate page', color: 'text-app-muted', steps: 'Hover over a page thumbnail and click the rotate icon to turn it 90 degrees.' },
+  { id: 'delete', icon: Trash2, label: 'Delete page', color: 'text-red-500', steps: 'Hover over a page thumbnail and click the red trash icon to remove it.' },
 ];
 
 export function ThumbnailsSidebar({
@@ -144,8 +144,6 @@ export function ThumbnailsSidebar({
         if (dragIndexRef.current == null) return;
         e.preventDefault();
         e.dataTransfer.dropEffect = 'move';
-        // Dropping on the gap before `insertAt` places the page at insertAt
-        // (adjusted after removal of the dragged page).
         setDropTarget(insertAt > (dragIndexRef.current ?? -1) ? insertAt - 1 : insertAt);
       }}
       onDrop={(e) => {
@@ -161,16 +159,16 @@ export function ThumbnailsSidebar({
       <div
         className={`rounded transition-colors ${
           dragIndex != null && dropTarget === (insertAt > dragIndex ? insertAt - 1 : insertAt)
-            ? (isExpanded ? 'bg-blue-400 w-1 h-full' : 'bg-blue-400 h-1 w-full')
-            : (isExpanded ? 'bg-blue-500/50 w-0.5 h-full' : 'bg-blue-500/50 h-0.5 w-full')
+            ? (isExpanded ? 'bg-[#E8607A] w-1 h-full' : 'bg-[#E8607A] h-1 w-full')
+            : (isExpanded ? 'bg-[#E8607A]/50 w-0.5 h-full' : 'bg-[#E8607A]/50 h-0.5 w-full')
         }`}
       />
-      <div className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-zinc-900 border border-zinc-700 rounded-md p-0.5 shadow-lg flex ${isExpanded ? 'flex-col gap-0.5' : 'gap-0.5'}`}>
+      <div className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-panel border border-app rounded-md p-0.5 shadow-md flex ${isExpanded ? 'flex-col gap-0.5' : 'gap-0.5'}`}>
         <IconTip label="Insert blank page here">
           <button
             type="button"
             aria-label="Insert blank page"
-            className="p-1 rounded text-zinc-400 hover:text-white hover:bg-zinc-700 transition-colors"
+            className="p-1 rounded text-app-muted hover:text-app hover:bg-panel-elevated transition-colors"
             onClick={() => onInsertBlankPage?.(insertAt)}
           >
             <FilePlus size={14} />
@@ -180,7 +178,7 @@ export function ThumbnailsSidebar({
           <button
             type="button"
             aria-label="Rotate page"
-            className="p-1 rounded text-zinc-400 hover:text-white hover:bg-zinc-700 transition-colors"
+            className="p-1 rounded text-app-muted hover:text-app hover:bg-panel-elevated transition-colors"
             onClick={() => onRotatePage?.(rotatePageIndex)}
           >
             <RotateCw size={14} />
@@ -190,7 +188,7 @@ export function ThumbnailsSidebar({
           <button
             type="button"
             aria-label="Insert PDF"
-            className="p-1 rounded text-zinc-400 hover:text-white hover:bg-zinc-700 transition-colors"
+            className="p-1 rounded text-app-muted hover:text-app hover:bg-panel-elevated transition-colors"
             onClick={() => openInsertPdf(insertAt)}
           >
             <FileText size={14} />
@@ -202,7 +200,7 @@ export function ThumbnailsSidebar({
 
   return (
     <Tooltip.Provider delayDuration={250} skipDelayDuration={100}>
-      <div className={`transition-all duration-300 bg-panel/95 backdrop-blur-md border-l border-app flex flex-col shrink-0 overflow-y-auto p-3 gap-3 shadow-[0_0_40px_rgba(0,0,0,0.12)] ${isExpanded ? 'absolute right-0 top-0 bottom-0 w-[80vw] z-30' : 'relative w-56 z-10'}`}>
+      <div className={`transition-all duration-300 bg-panel/95 backdrop-blur-md border-l border-app flex flex-col shrink-0 overflow-y-auto p-3 gap-3 shadow-[0_0_40px_rgba(0,0,0,0.06)] ${isExpanded ? 'absolute right-0 top-0 bottom-0 w-[80vw] z-30' : 'relative w-56 z-10'}`}>
         <input
           type="file"
           accept="application/pdf"
@@ -227,7 +225,7 @@ export function ThumbnailsSidebar({
                 <button
                   type="button"
                   aria-label="Page capabilities information"
-                  className="ml-0.5 p-1 rounded text-zinc-500 hover:text-white hover:bg-zinc-800 transition-colors cursor-help"
+                  className="ml-0.5 p-1 rounded text-app-faint hover:text-app hover:bg-panel-elevated transition-colors cursor-help"
                 >
                   <Info size={12} />
                 </button>
@@ -236,13 +234,13 @@ export function ThumbnailsSidebar({
                 <Tooltip.Content
                   side="bottom"
                   sideOffset={6}
-                  className="z-[200] w-48 rounded-md border border-zinc-700 bg-zinc-900 p-2 text-[10px] font-medium leading-snug text-zinc-300 shadow-xl flex flex-col gap-1.5 relative"
+                  className="z-[200] w-48 rounded-md border border-app bg-panel p-2 text-[10px] font-medium leading-snug text-app shadow-xl flex flex-col gap-1.5 relative"
                 >
-                  <div className="font-bold text-zinc-400 pb-1 border-b border-zinc-800 mb-1 uppercase tracking-wider text-[9px]">Page capabilities</div>
+                  <div className="font-bold text-app-faint pb-1 border-b border-app mb-1 uppercase tracking-wider text-[9px]">Page capabilities</div>
                   {PAGE_CAPABILITIES.map(cap => (
                     <div 
                       key={cap.id}
-                      className="flex items-center gap-2 cursor-help p-1 -mx-1 rounded hover:bg-zinc-800/50 transition-colors"
+                      className="flex items-center gap-2 cursor-help p-1 -mx-1 rounded hover:bg-panel-elevated transition-colors"
                       onMouseEnter={() => setHoveredGuide(cap.id)}
                       onMouseLeave={() => setHoveredGuide(null)}
                     >
@@ -252,26 +250,26 @@ export function ThumbnailsSidebar({
                   ))}
 
                   {hoveredGuide && (
-                    <div className="absolute right-full top-0 mr-2 w-48 bg-zinc-800 border border-zinc-700 rounded-lg p-3 shadow-2xl animate-in fade-in slide-in-from-right-2 pointer-events-none">
-                      <div className="font-bold text-white text-xs mb-1.5">
+                    <div className="absolute right-full top-0 mr-2 w-48 bg-panel-elevated border border-app rounded-lg p-3 shadow-2xl animate-in fade-in slide-in-from-right-2 pointer-events-none">
+                      <div className="font-bold text-app text-xs mb-1.5">
                         {PAGE_CAPABILITIES.find(c => c.id === hoveredGuide)?.label}
                       </div>
-                      <div className="text-[10px] text-zinc-400 leading-relaxed font-normal">
+                      <div className="text-[10px] text-app-muted leading-relaxed font-normal">
                         {PAGE_CAPABILITIES.find(c => c.id === hoveredGuide)?.steps}
                       </div>
                     </div>
                   )}
-                  <Tooltip.Arrow className="fill-zinc-900" />
+                  <Tooltip.Arrow className="fill-panel" />
                 </Tooltip.Content>
               </Tooltip.Portal>
             </Tooltip.Root>
-            <span className="ml-auto text-zinc-600">{totalPages}</span>
+            <span className="ml-auto text-app-faint">{totalPages}</span>
             <Tooltip.Root delayDuration={250}>
               <Tooltip.Trigger asChild>
                 <button
                   type="button"
                   aria-label={isExpanded ? "Collapse sidebar" : "Expand sidebar"}
-                  className="ml-1 p-1 rounded text-zinc-500 hover:text-white hover:bg-zinc-800 transition-colors"
+                  className="ml-1 p-1 rounded text-app-faint hover:text-app hover:bg-panel-elevated transition-colors"
                   onClick={() => setIsExpanded(!isExpanded)}
                 >
                   {isExpanded ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
@@ -281,10 +279,10 @@ export function ThumbnailsSidebar({
                 <Tooltip.Content
                   side="bottom"
                   sideOffset={6}
-                  className="z-[200] rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-[10px] font-medium text-zinc-200 shadow-xl"
+                  className="z-[200] rounded-md border border-app bg-panel px-2 py-1.5 text-[10px] font-medium text-app shadow-xl"
                 >
                   {isExpanded ? "Collapse" : "Expand to Grid"}
-                  <Tooltip.Arrow className="fill-zinc-900" />
+                  <Tooltip.Arrow className="fill-panel" />
                 </Tooltip.Content>
               </Tooltip.Portal>
             </Tooltip.Root>
@@ -295,7 +293,7 @@ export function ThumbnailsSidebar({
           )}
 
           {isGeneratingThumbnails && thumbnails.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-8 gap-3 text-zinc-500">
+            <div className="flex flex-col items-center justify-center py-8 gap-3 text-app-faint">
               <Loader2 size={20} className="animate-spin" />
               <span className="text-[10px] font-medium">Generating...</span>
             </div>
@@ -312,10 +310,10 @@ export function ThumbnailsSidebar({
                       isExpanded ? 'w-32 sm:w-40 md:w-48' : 'w-full'
                     } ${
                       currentPage === i
-                        ? 'border-blue-500 bg-blue-500/5 shadow-[0_0_12px_rgba(59,130,246,0.15)]'
+                        ? 'border-[#E8607A] bg-[#E8607A]/5 shadow-[0_0_12px_rgba(232,96,122,0.15)]'
                         : isDropTarget
-                          ? 'border-blue-400/80 bg-blue-500/10'
-                          : 'border-transparent hover:bg-zinc-800/80'
+                          ? 'border-[#E8607A]/80 bg-[#E8607A]/10'
+                          : 'border-transparent hover:bg-panel-elevated'
                     } ${isDragging ? 'opacity-40 scale-[0.98]' : ''} ${
                       onReorderPages && totalPages > 1 ? 'cursor-grab active:cursor-grabbing' : ''
                     }`}
@@ -330,7 +328,6 @@ export function ThumbnailsSidebar({
                       }
                       e.dataTransfer.effectAllowed = 'move';
                       e.dataTransfer.setData('text/plain', String(i));
-                      // Avoid native ghost looking broken for some browsers
                       try {
                         const img = e.currentTarget.querySelector('img');
                         if (img) e.dataTransfer.setDragImage(img, 40, 50);
@@ -361,7 +358,7 @@ export function ThumbnailsSidebar({
                     {onReorderPages && totalPages > 1 && (
                       <IconTip label="Drag to reorder pages" side="left">
                         <span
-                          className="absolute top-2 left-2 text-zinc-600 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none"
+                          className="absolute top-2 left-2 text-app-faint opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none"
                           aria-hidden
                         >
                           <GripVertical size={12} />
@@ -391,8 +388,8 @@ export function ThumbnailsSidebar({
                       <span
                         className={`text-[9px] font-bold transition-colors ${
                           currentPage === i
-                            ? 'text-blue-400'
-                            : 'text-zinc-600 group-hover:text-zinc-400'
+                            ? 'text-[#E8607A]'
+                            : 'text-app-faint group-hover:text-app-muted'
                         }`}
                       >
                         {i + 1}
@@ -401,7 +398,7 @@ export function ThumbnailsSidebar({
                         <button
                           type="button"
                           aria-label={`Rotate page ${i + 1}`}
-                          className="p-0.5 rounded text-zinc-600 opacity-0 group-hover:opacity-100 hover:text-white hover:bg-zinc-700 transition-all"
+                          className="p-0.5 rounded text-app-faint opacity-0 group-hover:opacity-100 hover:text-app hover:bg-panel-elevated transition-all"
                           onClick={(e) => {
                             e.stopPropagation();
                             onRotatePage?.(i);
@@ -412,7 +409,7 @@ export function ThumbnailsSidebar({
                       </IconTip>
                     </div>
 
-                    <div className="w-full relative shadow-sm bg-white rounded overflow-hidden transition-transform duration-300 group-hover:scale-[1.02] pointer-events-none">
+                    <div className="w-full relative shadow-sm bg-white border border-app/40 rounded overflow-hidden transition-transform duration-300 group-hover:scale-[1.02] pointer-events-none">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img src={thumbDataUrl} alt={`Page ${i + 1}`} className="w-full" draggable={false} />
                     </div>

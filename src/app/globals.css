@@ -29,6 +29,7 @@
   --checker-b: #E1E4E9;
   --ring-offset: #FFFFFF;
   --scrim: rgba(15, 23, 42, 0.45);
+  --contrast: #000000;
   color-scheme: light;
 }
 
@@ -49,6 +50,7 @@
   --checker-b: #0A0B0E;
   --ring-offset: #0A0B0E;
   --scrim: rgba(0, 0, 0, 0.85);
+  --contrast: #ffffff;
   color-scheme: dark;
 }
 
@@ -74,6 +76,7 @@
   --color-app-muted: var(--text-muted);
   --color-app-faint: var(--text-faint);
   --color-accent: var(--accent);
+  --color-contrast: var(--contrast);
 }
 
 @layer base {

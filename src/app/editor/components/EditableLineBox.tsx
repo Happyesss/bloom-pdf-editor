@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { GripHorizontal } from 'lucide-react';
 
 /** One styled fragment inside the line editor (mirrors PDF runs). */
 export interface OverlaySegmentStyle {
@@ -418,31 +419,33 @@ export function EditableLineBox(props: EditableLineBoxProps) {
         className="absolute inset-0 border border-dashed border-[#E8607A] rounded-sm pointer-events-none shadow-[0_0_0_1px_rgba(232,96,122,0.3)]"
       />
 
-      {/* Move hit targets */}
+      {/* Move hit targets (positioned outside text bounds so text click/caret positioning is unimpeded) */}
       <div
-        className="absolute -top-2 -left-2 -right-2 h-4 cursor-grab active:cursor-grabbing z-30"
+        className="absolute -top-2.5 left-0 right-0 h-2.5 cursor-grab active:cursor-grabbing z-30"
         onPointerDown={(e) => startDrag('move', e)}
-        title="Drag to move"
+        title="Drag to move text"
       />
       <div
-        className="absolute -bottom-2 -left-2 -right-2 h-4 cursor-grab active:cursor-grabbing z-30"
+        className="absolute -bottom-2.5 left-0 right-0 h-2.5 cursor-grab active:cursor-grabbing z-30"
         onPointerDown={(e) => {
           const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
           if (e.clientX > rect.right - 16) return;
           startDrag('move', e);
         }}
-        title="Drag to move"
+        title="Drag to move text"
       />
       <div
-        className="absolute -left-2 top-2 bottom-2 w-4 cursor-grab active:cursor-grabbing z-30"
+        className="absolute top-0 bottom-0 -left-2.5 w-2.5 cursor-grab active:cursor-grabbing z-30"
         onPointerDown={(e) => startDrag('move', e)}
-        title="Drag to move"
+        title="Drag to move text"
       />
       <div
-        className="absolute -top-3.5 left-1/2 -translate-x-1/2 px-2 py-0.5 bg-[#E8607A] text-white text-[9px] font-bold rounded shadow-md cursor-grab active:cursor-grabbing z-40 select-none whitespace-nowrap border border-white/30"
+        className="absolute -top-7 left-1/2 -translate-x-1/2 flex items-center gap-1 px-2 py-0.5 bg-[#E8607A] hover:bg-[#D94D6A] text-white text-[9px] font-semibold rounded shadow-md cursor-grab active:cursor-grabbing z-40 select-none whitespace-nowrap border border-white/30 transition-colors"
         onPointerDown={(e) => startDrag('move', e)}
+        title="Drag to move text"
       >
-        Drag
+        <GripHorizontal size={10} className="opacity-90" />
+        <span>Drag</span>
       </div>
 
       {/* Selection highlight */}

@@ -61,8 +61,8 @@ function IconTip({
 }
 
 const PAGE_CAPABILITIES = [
-  { id: 'split', icon: Scissors, label: 'Split pages', color: 'text-[#E8607A]', steps: 'Remove unwanted pages using the trash icon, then click Download to save the new PDF.' },
-  { id: 'merge', icon: Combine, label: 'Merge PDFs', color: 'text-[#E8607A]', steps: 'Hover between pages and click the "Insert from PDF" icon to append another file, then Download.' },
+  { id: 'split', icon: Scissors, label: 'Split pages', color: 'text-contrast', steps: 'Remove unwanted pages using the trash icon, then click Download to save the new PDF.' },
+  { id: 'merge', icon: Combine, label: 'Merge PDFs', color: 'text-contrast', steps: 'Hover between pages and click the "Insert from PDF" icon to append another file, then Download.' },
   { id: 'blank', icon: FilePlus, label: 'Add blank page', color: 'text-app-muted', steps: 'Hover between pages and click the "Add blank page" icon to insert an empty page.' },
   { id: 'insert', icon: FileText, label: 'Insert from PDF', color: 'text-app-muted', steps: 'Hover between pages and click the "Insert from PDF" icon to append pages.' },
   { id: 'reorder', icon: GripVertical, label: 'Re-order pages', color: 'text-app-muted', steps: 'Click and drag any page thumbnail to move it to a new position in the document.' },
@@ -159,8 +159,8 @@ export function ThumbnailsSidebar({
       <div
         className={`rounded transition-colors ${
           dragIndex != null && dropTarget === (insertAt > dragIndex ? insertAt - 1 : insertAt)
-            ? (isExpanded ? 'bg-[#E8607A] w-1 h-full' : 'bg-[#E8607A] h-1 w-full')
-            : (isExpanded ? 'bg-[#E8607A]/50 w-0.5 h-full' : 'bg-[#E8607A]/50 h-0.5 w-full')
+            ? (isExpanded ? 'bg-contrast w-1 h-full' : 'bg-contrast h-1 w-full')
+            : (isExpanded ? 'bg-contrast/50 w-0.5 h-full' : 'bg-contrast/50 h-0.5 w-full')
         }`}
       />
       <div className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-panel border border-app rounded-md p-0.5 shadow-md flex ${isExpanded ? 'flex-col gap-0.5' : 'gap-0.5'}`}>
@@ -310,9 +310,9 @@ export function ThumbnailsSidebar({
                       isExpanded ? 'w-32 sm:w-40 md:w-48' : 'w-full'
                     } ${
                       currentPage === i
-                        ? 'border-[#E8607A] bg-[#E8607A]/5 shadow-[0_0_12px_rgba(232,96,122,0.15)]'
+                        ? 'border-contrast bg-contrast/5 shadow-[0_0_12px_rgba(0,0,0,0.1)]'
                         : isDropTarget
-                          ? 'border-[#E8607A]/80 bg-[#E8607A]/10'
+                          ? 'border-contrast/80 bg-contrast/10'
                           : 'border-transparent hover:bg-panel-elevated'
                     } ${isDragging ? 'opacity-40 scale-[0.98]' : ''} ${
                       onReorderPages && totalPages > 1 ? 'cursor-grab active:cursor-grabbing' : ''
@@ -388,7 +388,7 @@ export function ThumbnailsSidebar({
                       <span
                         className={`text-[9px] font-bold transition-colors ${
                           currentPage === i
-                            ? 'text-[#E8607A]'
+                            ? 'text-contrast'
                             : 'text-app-faint group-hover:text-app-muted'
                         }`}
                       >

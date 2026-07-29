@@ -27,15 +27,28 @@ export class DocxExporter {
     const written = writeDocument(udm);
     const files: Record<string, string | Uint8Array> = {};
 
+    // Collect font names from typography for dynamic font table
+    const usedFonts: string[] = [];
+    if (udm.typography?.statistics?.primaryFonts) {
+      for (const f of udm.typography.statistics.primaryFonts) {
+        if (f.font) usedFonts.push(f.font);
+      }
+    }
+    if (udm.typography?.statistics?.secondaryFonts) {
+      for (const f of udm.typography.statistics.secondaryFonts) {
+        if (f.font) usedFonts.push(f.font);
+      }
+    }
+
     files['[Content_Types].xml'] = contentTypes(written);
     files['_rels/.rels'] = packageRels();
     files['docProps/core.xml'] = coreProps(udm);
     files['docProps/app.xml'] = appProps(udm);
     files['word/document.xml'] = written.documentXml;
-    files['word/styles.xml'] = buildStylesXml();
+    files['word/styles.xml'] = buildStylesXml(udm.typography);
     files['word/numbering.xml'] = buildNumberingXml();
     files['word/settings.xml'] = settingsXml();
-    files['word/fontTable.xml'] = fontTableXml();
+    files['word/fontTable.xml'] = fontTableXml(usedFonts);
     files['word/webSettings.xml'] = webSettingsXml();
 
     const docRels: string[] = [

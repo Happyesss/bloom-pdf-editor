@@ -8,6 +8,9 @@ export function runsFromNode(node: {
     bold?: boolean;
     italic?: boolean;
     underline?: boolean;
+    strike?: boolean;
+    superscript?: boolean;
+    subscript?: boolean;
     fontName?: string;
     fontSize?: number;
     color?: string;
@@ -20,10 +23,12 @@ export function runsFromNode(node: {
           bold: r.bold || node.type === 'heading' || node.type === 'title',
           italic: r.italic || node.type === 'quote',
           underline: r.underline,
+          strike: r.strike,
           fontName: r.fontName,
           fontSizePt: r.fontSize,
           // Faithful replay: never invent theme colors for near-black text
           color: r.color,
+          vertAlign: r.superscript ? 'superscript' : r.subscript ? 'subscript' : undefined,
         }),
       )
       .join('');

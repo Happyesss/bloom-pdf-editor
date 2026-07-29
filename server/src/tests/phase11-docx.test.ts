@@ -122,4 +122,163 @@ describe('Phase 11 — DOCX Export Engine', () => {
     });
     expect(container.exporter.supportedTargets()).toContain('docx');
   });
+
+  it('embeds images from imageStore with DrawingML markup', async () => {
+    const udm = await buildUdm([
+      ...wordChars('Document with image', 72, 700, 16),
+    ]);
+
+    // Inject a synthetic image into the imageStore
+    const pngHeader = new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, // PNG signature
+      ...new Array(92).fill(0), // minimal body
+    ]);
+
+    // Find an image node or create a synthetic one in reading order
+    const imageNodeId = 'test_img_1';
+    udm.semantic.nodes[imageNodeId] = {
+      id: imageNodeId,
+      type: 'image',
+      parentId: null,
+      childIds: [],
+      readingOrderIndex: 999,
+      confidence: 1,
+      pageIndex: 0,
+      sourceBlockIds: [],
+      width: 200,
+      height: 100,
+      resourceId: 'img_resource_1',
+    } as any;
+    udm.semantic.readingOrder.push(imageNodeId);
+
+    // Add image to store
+    udm.imageStore = new Map();
+    udm.imageStore.set('img_resource_1', {
+      data: pngHeader,
+      mimeType: 'image/png',
+      widthPx: 200,
+      heightPx: 100,
+    });
+
+    const result = await new DocxExporter().export(udm);
+    const doc = readZipEntry(result.bytes, 'word/document.xml');
+    const xml = new TextDecoder().decode(doc!);
+
+    // Should contain DrawingML elements, not placeholder text
+    expect(xml).toContain('wp:inline');
+    expect(xml).toContain('pic:pic');
+    expect(xml).toContain('a:blip');
+    expect(xml).not.toContain('[Image:');
+
+    // Should have image in media folder
+    const imageEntry = readZipEntry(result.bytes, 'word/media/image1.png');
+    expect(imageEntry).toBeTruthy();
+    expect(imageEntry!.byteLength).toBe(pngHeader.byteLength);
+
+    // Rels should reference the image
+    const relsEntry = readZipEntry(result.bytes, 'word/_rels/document.xml.rels');
+    const relsXml = new TextDecoder().decode(relsEntry!);
+    expect(relsXml).toContain('relationships/image');
+    expect(relsXml).toContain('media/image1.png');
+  });
+
+  it('uses PDF primary font in styles.xml when typography is available', async () => {
+    const udm = await buildUdm([
+      ...wordChars('Styled text', 72, 500, 14),
+    ]);
+
+    // Inject typography with a non-Calibri primary font
+    if (udm.typography) {
+      udm.typography.statistics.primaryFonts = [
+        { font: 'Times New Roman', count: 50, share: 0.8 },
+      ];
+      udm.typography.statistics.dominantFontSizes = [
+        { size: 12, count: 40 },
+      ];
+    }
+
+    const result = await new DocxExporter().export(udm);
+    const stylesEntry = readZipEntry(result.bytes, 'word/styles.xml');
+    const stylesXml = new TextDecoder().decode(stylesEntry!);
+
+    expect(stylesXml).toContain('Times New Roman');
+    // Default size should be 24 half-points (12pt * 2)
+    expect(stylesXml).toContain('w:val="24"');
+  });
+
+  it('includes DrawingML namespaces in document.xml', async () => {
+    const udm = await buildUdm([
+      ...wordChars('Namespace test', 72, 500, 12),
+    ]);
+    const result = await new DocxExporter().export(udm);
+    const doc = readZipEntry(result.bytes, 'word/document.xml');
+    const xml = new TextDecoder().decode(doc!);
+
+    // Must have DrawingML namespaces for image support
+    expect(xml).toContain('xmlns:wp=');
+    expect(xml).toContain('xmlns:a=');
+    expect(xml).toContain('xmlns:pic=');
+  });
+
+  it('includes extended image content types', async () => {
+    const udm = await buildUdm([
+      ...wordChars('Content types test', 72, 500, 12),
+    ]);
+    const result = await new DocxExporter().export(udm);
+    const ctEntry = readZipEntry(result.bytes, '[Content_Types].xml');
+    const ctXml = new TextDecoder().decode(ctEntry!);
+
+    expect(ctXml).toContain('Extension="png"');
+    expect(ctXml).toContain('Extension="jpeg"');
+    expect(ctXml).toContain('Extension="gif"');
+    expect(ctXml).toContain('Extension="tiff"');
+  });
+
+  it('registers PDF fonts in fontTable.xml', async () => {
+    const udm = await buildUdm([
+      ...wordChars('Font test', 72, 500, 12),
+    ]);
+
+    if (udm.typography) {
+      udm.typography.statistics.primaryFonts = [
+        { font: 'Arial', count: 30, share: 0.6 },
+      ];
+      udm.typography.statistics.secondaryFonts = [
+        { font: 'Georgia', count: 10, share: 0.2 },
+      ];
+    }
+
+    const result = await new DocxExporter().export(udm);
+    const ftEntry = readZipEntry(result.bytes, 'word/fontTable.xml');
+    const ftXml = new TextDecoder().decode(ftEntry!);
+
+    // Should contain both the PDF fonts plus defaults
+    expect(ftXml).toContain('Arial');
+    expect(ftXml).toContain('Georgia');
+    expect(ftXml).toContain('Calibri');
+    expect(ftXml).toContain('Consolas');
+  });
+
+  it('emits page breaks between multi-page content', async () => {
+    // Create a UDM with nodes on different pages
+    const udm = await buildUdm([
+      ...wordChars('Page 1 content', 72, 700, 14),
+      ...wordChars('Page 2 content', 72, 500, 12),
+    ]);
+
+    // Simulate multi-page: move the second node to page 1
+    const nodes = Object.values(udm.semantic.nodes);
+    const textNodes = nodes.filter((n) => 'text' in n && n.type !== 'document');
+    if (textNodes.length >= 2) {
+      (textNodes[1] as any).pageIndex = 1;
+    }
+
+    const result = await new DocxExporter().export(udm);
+    const doc = readZipEntry(result.bytes, 'word/document.xml');
+    const xml = new TextDecoder().decode(doc!);
+
+    // Should contain a page break element
+    expect(xml).toContain('pageBreakBefore');
+  });
 });
+

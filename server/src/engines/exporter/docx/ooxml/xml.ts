@@ -75,6 +75,10 @@ export function paragraph(
     rightTabPos?: number;
     /** Bottom border (section rules under headings), OOXML eighths-of-a-point. */
     bottomBorder?: { color: string; sz?: number; style?: string; space?: number };
+    /** Paragraph indentation in twips. */
+    indent?: { left?: number; firstLine?: number; hanging?: number };
+    /** Paragraph background shading (hex color without #). */
+    shading?: string;
   } = {},
 ): string {
   const pPr: string[] = [];
@@ -90,6 +94,17 @@ export function paragraph(
   if (opts.spacingAfter != null) spacing.push(`w:after="${opts.spacingAfter}"`);
   if (opts.line != null) spacing.push(`w:line="${opts.line}" w:lineRule="auto"`);
   if (spacing.length) pPr.push(`<w:spacing ${spacing.join(' ')}/>`);
+  if (opts.indent) {
+    const parts: string[] = [];
+    if (opts.indent.left != null) parts.push(`w:left="${opts.indent.left}"`);
+    if (opts.indent.firstLine != null) parts.push(`w:firstLine="${opts.indent.firstLine}"`);
+    if (opts.indent.hanging != null) parts.push(`w:hanging="${opts.indent.hanging}"`);
+    if (parts.length) pPr.push(`<w:ind ${parts.join(' ')}/>`);
+  }
+  if (opts.shading) {
+    const color = opts.shading.replace('#', '');
+    pPr.push(`<w:shd w:val="clear" w:color="auto" w:fill="${esc(color)}"/>`);
+  }
   if (opts.bottomBorder) {
     const color = opts.bottomBorder.color.replace('#', '');
     const sz = opts.bottomBorder.sz ?? 12;
@@ -102,3 +117,4 @@ export function paragraph(
   const pPrXml = pPr.length ? `<w:pPr>${pPr.join('')}</w:pPr>` : '';
   return `<w:p>${pPrXml}${runsXml}</w:p>`;
 }
+

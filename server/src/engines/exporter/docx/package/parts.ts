@@ -34,6 +34,10 @@ export function contentTypes(written: DocumentWriteResult): string {
   <Default Extension="png" ContentType="image/png"/>
   <Default Extension="jpeg" ContentType="image/jpeg"/>
   <Default Extension="jpg" ContentType="image/jpeg"/>
+  <Default Extension="gif" ContentType="image/gif"/>
+  <Default Extension="tiff" ContentType="image/tiff"/>
+  <Default Extension="bmp" ContentType="image/bmp"/>
+  <Default Extension="webp" ContentType="image/webp"/>
   ${overrides.join('\n  ')}
 </Types>`;
 }
@@ -83,11 +87,19 @@ export function settingsXml(): string {
 </w:settings>`;
 }
 
-export function fontTableXml(): string {
+export function fontTableXml(extraFonts?: string[]): string {
+  const fontEntries = new Set(['Calibri', 'Consolas']);
+  for (const f of extraFonts ?? []) {
+    if (f) fontEntries.add(f);
+  }
+  const entries = [...fontEntries].map((name) => {
+    const family = /consola|courier|mono/i.test(name) ? 'modern' : 'swiss';
+    const safe = name.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+    return `  <w:font w:name="${safe}"><w:family w:val="${family}"/></w:font>`;
+  }).join('\n');
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:fonts xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-  <w:font w:name="Calibri"><w:family w:val="swiss"/></w:font>
-  <w:font w:name="Consolas"><w:family w:val="modern"/></w:font>
+${entries}
 </w:fonts>`;
 }
 

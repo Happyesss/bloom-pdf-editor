@@ -155,6 +155,32 @@ export function createConversionHandler(deps: ConversionWorkerDeps) {
         new TextEncoder().encode(JSON.stringify(summarizeStructure(structureResult.structure))),
       );
 
+      // Collect extracted image bytes for DOCX/PPTX embedding
+      const imageStore = new Map<string, { data: Uint8Array; mimeType: string; widthPx: number; heightPx: number }>();
+      for (const page of afterOcr.pages) {
+        for (const img of page.images) {
+          if (img.data && img.data.byteLength > 0) {
+            const key = img.id;
+            const mimeType = guessMimeFromImageType(img.imageType, img.compression);
+            imageStore.set(key, {
+              data: img.data,
+              mimeType,
+              widthPx: img.widthPx,
+              heightPx: img.heightPx,
+            });
+            // Also index by resourceName for alternative lookup
+            if (img.resourceName) {
+              imageStore.set(img.resourceName, {
+                data: img.data,
+                mimeType,
+                widthPx: img.widthPx,
+                heightPx: img.heightPx,
+              });
+            }
+          }
+        }
+      }
+
       const udm = assembleUnifiedDocument({
         idm,
         semantic: enrichedSemantic,
@@ -163,6 +189,7 @@ export function createConversionHandler(deps: ConversionWorkerDeps) {
         structure: structureResult.structure,
         recognition,
         typography,
+        imageStore: imageStore.size > 0 ? imageStore : undefined,
       });
       await deps.storage.put(
         `udm/${jobId}.json`,
@@ -465,3 +492,16 @@ function summarizeUdm(udm: {
     recognitionPageCount: udm.recognition?.pages.length ?? 0,
   };
 }
+
+function guessMimeFromImageType(imageType: string, compression: string | null): string {
+  const t = imageType.toLowerCase();
+  if (t === 'jpeg' || t === 'jpg' || compression === 'DCTDecode') return 'image/jpeg';
+  if (t === 'png') return 'image/png';
+  if (t === 'gif') return 'image/gif';
+  if (t === 'tiff' || t === 'tif') return 'image/tiff';
+  if (t === 'bmp') return 'image/bmp';
+  if (t === 'webp') return 'image/webp';
+  // Default to PNG for raw/decoded image data from PDF
+  return 'image/png';
+}
+

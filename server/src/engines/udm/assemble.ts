@@ -16,6 +16,8 @@ export interface AssembleUdmInput {
   structure?: DocumentStructureModel | null;
   recognition?: RecognitionDocument | null;
   typography?: TypographyAnalysis | null;
+  /** Extracted image bytes keyed by resource ID. */
+  imageStore?: Map<string, { data: Uint8Array; mimeType: string; widthPx: number; heightPx: number }>;
 }
 
 /** Assemble format-independent UDM for exporters (no PDF objects). */
@@ -43,5 +45,7 @@ export function assembleUnifiedDocument(input: AssembleUdmInput): UnifiedDocumen
     structure: input.structure ?? null,
     recognition: input.recognition ?? null,
     typography: input.typography ?? null,
+    imageStore: input.imageStore,
   };
 }
+

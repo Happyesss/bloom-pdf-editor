@@ -24,6 +24,12 @@ import {
   horizontalRule,
 } from './sections.js';
 import { writeEducationTable, writeTable } from './tables.js';
+import {
+  constrainToPageWidth,
+  emuFromPx,
+  extensionFromMime,
+  writeInlineImage,
+} from './image-writer.js';
 
 export interface DocumentWriteResult {
   documentXml: string;
@@ -34,6 +40,94 @@ export interface DocumentWriteResult {
   media: Array<{ name: string; data: Uint8Array; contentType: string }>;
 }
 
+/**
+ * Resolve typography profile for a semantic node's source block to get
+ * indentation / line height / etc. from the original PDF.
+ */
+function resolveBlockIndent(
+  udm: UnifiedDocumentModel,
+  node: { sourceBlockIds?: string[] },
+): { left?: number; firstLine?: number } | undefined {
+  if (!udm.typography?.typographyMap?.blockToProfile) return undefined;
+  const blockId = (node.sourceBlockIds ?? [])[0];
+  if (!blockId) return undefined;
+  const profileId = udm.typography.typographyMap.blockToProfile[blockId];
+  if (!profileId) return undefined;
+  const profile = udm.typography.profiles.find((p) => p.id === profileId);
+  if (!profile) return undefined;
+  const feats = profile.features;
+  const leftTwips = feats.leftIndent > 2 ? Math.round(feats.leftIndent * 20) : undefined;
+  const firstLineTwips =
+    feats.firstLineIndent > 2 ? Math.round(feats.firstLineIndent * 20) : undefined;
+  if (!leftTwips && !firstLineTwips) return undefined;
+  return { left: leftTwips, firstLine: firstLineTwips };
+}
+
+/** Resolve image from UDM imageStore via semantic node resourceId or IDM block originalResourceId. */
+function resolveImageData(
+  udm: UnifiedDocumentModel,
+  node: { resourceId?: string; sourceBlockIds?: string[] },
+): { data: Uint8Array; mimeType: string; widthPx: number; heightPx: number } | null {
+  const store = udm.imageStore;
+  if (!store || store.size === 0) return null;
+
+  // Try direct resourceId lookup
+  if (node.resourceId && store.has(node.resourceId)) {
+    return store.get(node.resourceId)!;
+  }
+
+  // Try IDM block originalResourceId lookup
+  for (const blockId of node.sourceBlockIds ?? []) {
+    // Walk IDM pages to find image block
+    for (const section of udm.idm.sections) {
+      for (const page of section.pages) {
+        for (const block of page.blocks) {
+          if (block.id === blockId && block.type === 'image') {
+            const imgBlock = block as { originalResourceId?: string; resourceName?: string };
+            if (imgBlock.originalResourceId && store.has(imgBlock.originalResourceId)) {
+              return store.get(imgBlock.originalResourceId)!;
+            }
+            if (imgBlock.resourceName && store.has(imgBlock.resourceName)) {
+              return store.get(imgBlock.resourceName)!;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Last resort: try first entry if only one image in store
+  if (store.size === 1) {
+    return store.values().next().value ?? null;
+  }
+
+  return null;
+}
+
+/**
+ * Build page break tracking: set of first semantic node IDs per page
+ * (except the very first page).
+ */
+function buildPageBreakSet(udm: UnifiedDocumentModel): Set<string> {
+  const breaks = new Set<string>();
+  const readingOrder = udm.semantic.readingOrder;
+  if (readingOrder.length === 0) return breaks;
+
+  // Collect page-index boundaries from semantic nodes
+  let prevPage = -1;
+  for (const nodeId of readingOrder) {
+    const node = udm.semantic.nodes[nodeId];
+    if (!node) continue;
+    const page = node.pageIndex;
+    if (page > prevPage && prevPage >= 0) {
+      // First node on a new page → page break before
+      breaks.add(nodeId);
+    }
+    prevPage = page;
+  }
+  return breaks;
+}
+
 /** Map UDM → word/document.xml body (no PDF access). */
 export function writeDocument(udm: UnifiedDocumentModel): DocumentWriteResult {
   const body: string[] = [];
@@ -41,6 +135,8 @@ export function writeDocument(udm: UnifiedDocumentModel): DocumentWriteResult {
   const media: DocumentWriteResult['media'] = [];
   let relSeq = 10;
   const nextRid = () => `rId${relSeq++}`;
+  let docPrSeq = 1;
+  const nextDocPrId = () => docPrSeq++;
 
   const tableById = new Map(udm.tables.map((t) => [t.id, t]));
   const emittedTables = new Set<string>();
@@ -63,16 +159,28 @@ export function writeDocument(udm: UnifiedDocumentModel): DocumentWriteResult {
   const headingAfter = Math.max(40, Math.round(bodyAfter * 0.75));
   const jobBefore = Math.max(80, Math.round(headingBefore * 0.55));
 
+  // Page break tracking
+  const pageBreaks = buildPageBreakSet(udm);
+  // Max content width for image constraining (page width - 2 * margin, in EMU)
+  const pageWidthTwips = contentRightTwips;
+  const maxImageWidthEmu = Math.round(pageWidthTwips * (914400 / 1440));
+
   const order = udm.semantic.readingOrder;
   for (let oi = 0; oi < order.length; oi++) {
     const nodeId = order[oi]!;
     const node = udm.semantic.nodes[nodeId];
     if (!node) continue;
 
+    // Page break before this node (except first page)
+    const needsPageBreak = pageBreaks.has(nodeId);
+
     if (node.type === 'table') {
       const logicalId = 'logicalTableId' in node ? String(node.logicalTableId) : '';
       const table = tableById.get(logicalId);
       if (table && !emittedTables.has(table.id)) {
+        if (needsPageBreak) {
+          body.push(paragraph('', { pageBreakBefore: true, spacingBefore: 0, spacingAfter: 0 }));
+        }
         body.push(writeTable(table));
         emittedTables.add(table.id);
       }
@@ -80,9 +188,41 @@ export function writeDocument(udm: UnifiedDocumentModel): DocumentWriteResult {
     }
 
     if (node.type === 'image') {
-      // Images without bytes become placeholder paragraphs (no PDF fetch)
-      const alt = 'alt' in node ? String(node.alt ?? 'Image') : 'Image';
-      body.push(paragraph(runText(`[Image: ${alt}]`, { italic: true }), { style: 'Caption' }));
+      // Try to embed actual image from imageStore
+      const imgData = resolveImageData(udm, node as { resourceId?: string; sourceBlockIds?: string[] });
+      if (imgData) {
+        const rid = nextRid();
+        const ext = extensionFromMime(imgData.mimeType);
+        const filename = `image${media.length + 1}.${ext}`;
+
+        media.push({ name: filename, data: imgData.data, contentType: imgData.mimeType });
+        rels.push({
+          id: rid,
+          type: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image',
+          target: `media/${filename}`,
+        });
+
+        // Compute size in EMU, constrained to page width
+        const rawCx = emuFromPx(imgData.widthPx, 96);
+        const rawCy = emuFromPx(imgData.heightPx, 96);
+        const { cx, cy } = constrainToPageWidth(rawCx, rawCy, maxImageWidthEmu);
+
+        const alt = 'alt' in node ? String((node as { alt?: string }).alt ?? 'Image') : 'Image';
+        body.push(writeInlineImage({
+          cx,
+          cy,
+          rId: rid,
+          docPrId: nextDocPrId(),
+          name: alt,
+        }));
+      } else {
+        // Fallback: placeholder text when no image bytes available
+        const alt = 'alt' in node ? String((node as { alt?: string }).alt ?? 'Image') : 'Image';
+        body.push(paragraph(runText(`[Image: ${alt}]`, { italic: true }), {
+          style: 'Caption',
+          pageBreakBefore: needsPageBreak,
+        }));
+      }
       continue;
     }
 
@@ -101,6 +241,7 @@ export function writeDocument(udm: UnifiedDocumentModel): DocumentWriteResult {
           : numbered
             ? 2
             : 1;
+      let isFirst = true;
       for (const item of items) {
         if (!item || !('text' in item)) continue;
         const text = String(item.text ?? '');
@@ -108,7 +249,12 @@ export function writeDocument(udm: UnifiedDocumentModel): DocumentWriteResult {
         const itemRuns = 'runs' in item && (item as any).runs?.length
           ? runsFromNode(item as any)
           : runText(text);
+        if (isFirst && needsPageBreak) {
+          // Emit a page-break paragraph before the first list item
+          body.push(paragraph('', { pageBreakBefore: true, spacingBefore: 0, spacingAfter: 0 }));
+        }
         body.push(listParagraph(itemRuns, numId));
+        isFirst = false;
       }
       continue;
     }
@@ -119,6 +265,9 @@ export function writeDocument(udm: UnifiedDocumentModel): DocumentWriteResult {
     const text = String(node.text);
     // Drop empty placeholder paragraphs
     if (!text.trim()) continue;
+
+    // Resolve indentation from typography profile
+    const indent = resolveBlockIndent(udm, node);
 
     // Flattened education header + rows → real Word table
     if (node.type === 'paragraph' && isEducationHeaderRow(text)) {
@@ -140,6 +289,9 @@ export function writeDocument(udm: UnifiedDocumentModel): DocumentWriteResult {
         look++;
       }
       if (rowTexts.length >= 2) {
+        if (needsPageBreak) {
+          body.push(paragraph('', { pageBreakBefore: true, spacingBefore: 0, spacingAfter: 0 }));
+        }
         body.push(writeEducationTable(rowTexts, accent));
         oi = look - 1;
         continue;
@@ -172,6 +324,8 @@ export function writeDocument(udm: UnifiedDocumentModel): DocumentWriteResult {
             spacingBefore: bodyAfter,
             spacingAfter: headingAfter,
             line: 240,
+            indent,
+            pageBreakBefore: needsPageBreak,
           }),
         );
       } else {
@@ -182,6 +336,8 @@ export function writeDocument(udm: UnifiedDocumentModel): DocumentWriteResult {
             spacingBefore: bodyAfter,
             spacingAfter: headingAfter,
             line: 240,
+            indent,
+            pageBreakBefore: needsPageBreak,
           }),
         );
         for (let ii = 1; ii < extra.items.length; ii++) {
@@ -190,6 +346,7 @@ export function writeDocument(udm: UnifiedDocumentModel): DocumentWriteResult {
               spacingBefore: 0,
               spacingAfter: bodyAfter,
               line: 240,
+              indent,
             }),
           );
         }
@@ -216,7 +373,7 @@ export function writeDocument(udm: UnifiedDocumentModel): DocumentWriteResult {
       body.push(
         paragraph(
           `<w:hyperlink r:id="${rid}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">${runs}</w:hyperlink>`,
-          { style, align },
+          { style, align, indent, pageBreakBefore: needsPageBreak },
         ),
       );
       continue;
@@ -233,6 +390,8 @@ export function writeDocument(udm: UnifiedDocumentModel): DocumentWriteResult {
           spacingAfter: headingAfter,
           line: 240,
           bottomBorder: { color: sectionRuleColor, sz: SECTION_RULE_SZ, space: 1 },
+          indent,
+          pageBreakBefore: needsPageBreak,
         }),
       );
       continue;
@@ -257,6 +416,8 @@ export function writeDocument(udm: UnifiedDocumentModel): DocumentWriteResult {
               bottomBorder: node.type === 'heading'
                 ? { color: sectionRuleColor, sz: SECTION_RULE_SZ, space: 1 }
                 : undefined,
+              indent,
+              pageBreakBefore: needsPageBreak,
             },
           ),
         );
@@ -280,6 +441,8 @@ export function writeDocument(udm: UnifiedDocumentModel): DocumentWriteResult {
           spacingBefore: jobBefore,
           spacingAfter: bodyAfter,
           line: 240,
+          indent,
+          pageBreakBefore: needsPageBreak,
         }),
       );
       continue;
@@ -298,6 +461,8 @@ export function writeDocument(udm: UnifiedDocumentModel): DocumentWriteResult {
           spacingBefore: 0,
           spacingAfter: bodyAfter,
           line: 240,
+          indent,
+          pageBreakBefore: needsPageBreak,
         }),
       );
       continue;
@@ -322,6 +487,8 @@ export function writeDocument(udm: UnifiedDocumentModel): DocumentWriteResult {
         bottomBorder: node.type === 'heading'
           ? { color: sectionRuleColor, sz: SECTION_RULE_SZ, space: 1 }
           : undefined,
+        indent,
+        pageBreakBefore: needsPageBreak,
       }),
     );
     if (isContact) {
@@ -354,13 +521,15 @@ export function writeDocument(udm: UnifiedDocumentModel): DocumentWriteResult {
 
   const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+  xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+  xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+  xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
   <w:body>
     ${body.join('\n')}
     ${sectPr}
   </w:body>
 </w:document>`;
 
-  void media;
   return { documentXml, headerXml, footerXml, footnotesXml, rels, media };
 }

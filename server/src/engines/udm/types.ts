@@ -30,4 +30,10 @@ export interface UnifiedDocumentModel {
   structure: DocumentStructureModel | null;
   recognition: RecognitionDocument | null;
   typography: TypographyAnalysis | null;
+  /**
+   * Extracted image bytes keyed by resource ID (originalResourceId / resourceKey).
+   * Populated during conversion pipeline; exporters use this to embed real images.
+   * Omitted when not available (client-side, tests without images).
+   */
+  imageStore?: Map<string, { data: Uint8Array; mimeType: string; widthPx: number; heightPx: number }>;
 }

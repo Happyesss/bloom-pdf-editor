@@ -111,8 +111,9 @@ export function applyTextEdits(
     // Encode with the run's font; subset/CID fonts often can't encode typed ASCII (`.` → missing/`?`)
     let encoded = encodeTextForFont(edit.newText, fontData);
     let useFallbackFont: string | null = null;
+    const lossy = isEncodingLossy(edit.newText, encoded, fontData);
 
-    if (isEncodingLossy(edit.newText, encoded, fontData)) {
+    if (lossy) {
       // Keep bold/italic of the source run — HelvAug (regular) was stripping
       // weight from mid-line edits on subset/CID bold faces (F2, etc.).
       const flags = resolveRunStyleFlags(edit.targetRun.fontName, fontData);
@@ -200,9 +201,11 @@ export function applyTextEdits(
       !!useFallbackFont,
     );
 
-    // Switch to Helvetica when the original subset font can't encode the typed text
+    // Switch to Helvetica when the original subset font can't encode the typed text.
+    // Restore the prior font afterward so later Type3 letters in the same BT
+    // are not mis-drawn as WinAnsi (Type3 byte 0x48 under Helvetica → "H").
     if (useFallbackFont) {
-      const inserted = insertFontSwitchBefore(
+      const inserted = insertFallbackFontAround(
         instructions,
         matched.index,
         useFallbackFont,
@@ -395,17 +398,42 @@ export function applyRunPositionShifts(
     if ((pos.kind === 'Tm' || pos.kind === 'cm') && inst.operands.length >= 6) {
       inst.operands[4] = new PDFNumber(numVal(inst.operands[4]) + remainDx);
       inst.operands[5] = new PDFNumber(numVal(inst.operands[5]) + remainDy);
+      appliedToOp.set(pos.index, {
+        dx: already.dx + remainDx,
+        dy: already.dy + remainDy,
+      });
+    } else if (pos.kind === 'Td' || inst.operator === 'Td' || inst.operator === 'TD') {
+      // Relative Td/TD: applying the full absolute dx to every glyph's Td
+      // stacks shifts (Type3 per-letter score cards explode to the right).
+      // Only apply the delta beyond what earlier local Td already contributed.
+      const bt = findBtIndex(item.textIndex);
+      const prevLocal = bt >= 0 ? (localTdByBt.get(bt) ?? { dx: 0, dy: 0 }) : { dx: 0, dy: 0 };
+      const needDx = item.dx - prevLocal.dx;
+      const needDy = item.dy - prevLocal.dy;
+      if (Math.abs(needDx) < 0.01 && Math.abs(needDy) < 0.01) {
+        continue;
+      }
+      if (inst.operands.length >= 2) {
+        inst.operands[0] = new PDFNumber(numVal(inst.operands[0]) + needDx);
+        inst.operands[1] = new PDFNumber(numVal(inst.operands[1]) + needDy);
+      }
+      if (bt >= 0) {
+        localTdByBt.set(bt, { dx: prevLocal.dx + needDx, dy: prevLocal.dy + needDy });
+      }
+      appliedToOp.set(pos.index, {
+        dx: already.dx + needDx,
+        dy: already.dy + needDy,
+      });
     } else if (inst.operands.length >= 2) {
       inst.operands[0] = new PDFNumber(numVal(inst.operands[0]) + remainDx);
       inst.operands[1] = new PDFNumber(numVal(inst.operands[1]) + remainDy);
+      appliedToOp.set(pos.index, {
+        dx: already.dx + remainDx,
+        dy: already.dy + remainDy,
+      });
     } else {
       continue;
     }
-
-    appliedToOp.set(pos.index, {
-      dx: already.dx + remainDx,
-      dy: already.dy + remainDy,
-    });
   }
 
   return compileInstructions(instructions);
@@ -984,6 +1012,21 @@ function isEncodingLossy(
       if (text[i] !== '?' && out[i] === '?') return true;
     }
     if (out.length !== text.length) return true;
+
+    // Type3 fonts use custom CharProcs. ASCII identity fallback in
+    // buildReverseUnicodeMap can "succeed" while mapping to .notdef (g0),
+    // which renders as a solid bar and must force Helvetica fallback.
+    const isType3 = !!(fontData.charProcs && fontData.charProcs.size > 0);
+    if (isType3) {
+      let g0Hits = 0;
+      for (let i = 0; i < out.length; i++) {
+        const code = out.charCodeAt(i) & 0xff;
+        const name = fontData.differences.get(code);
+        if (name === 'g0' || (name != null && !fontData.charProcs!.has(name))) g0Hits++;
+        else if (name == null && fontData.toUnicode.size > 0 && !fontData.toUnicode.has(code)) g0Hits++;
+      }
+      if (g0Hits > 0) return true;
+    }
   }
 
   return false;
@@ -1020,6 +1063,52 @@ function insertFontSwitchBefore(
   return 1;
 }
 
+/**
+ * Switch to a fallback font for one text-showing op, then restore the previous
+ * font so later glyphs in the same BT block (common with Type3 per-letter fonts)
+ * are not drawn with WinAnsi codes under Helvetica (e.g. Type3 E @ 0x48 → "H").
+ * Returns number of ops inserted.
+ */
+function insertFallbackFontAround(
+  instructions: CSInstruction[],
+  textIndex: number,
+  fallbackFont: string,
+  visualSize: number,
+): number {
+  if (textIndex < 0 || textIndex >= instructions.length) return 0;
+
+  let size = Number.isFinite(visualSize) && visualSize > 0 ? visualSize : 12;
+  let prevFont: string | null = null;
+  for (let i = textIndex - 1; i >= 0; i--) {
+    if (instructions[i].operator === 'BT') break;
+    if (instructions[i].operator === 'Tf' && instructions[i].operands.length >= 2) {
+      const nameOp = instructions[i].operands[0];
+      const sizeOp = instructions[i].operands[1];
+      if (nameOp instanceof PDFName) prevFont = nameOp.name;
+      if (sizeOp instanceof PDFNumber && sizeOp.value > 0) size = sizeOp.value;
+      break;
+    }
+  }
+
+  instructions.splice(textIndex, 0, {
+    operator: 'Tf',
+    operands: [new PDFName(fallbackFont), new PDFNumber(size)],
+    offset: 0,
+  });
+  let inserted = 1;
+
+  // text showing op is now at textIndex + 1; restore after it
+  if (prevFont && prevFont !== fallbackFont) {
+    instructions.splice(textIndex + 2, 0, {
+      operator: 'Tf',
+      operands: [new PDFName(prevFont), new PDFNumber(size)],
+      offset: 0,
+    });
+    inserted += 1;
+  }
+  return inserted;
+}
+
 function buildReverseUnicodeMap(fontData: FontData): Map<string, number> {
   const reverse = new Map<string, number>();
 
@@ -1040,8 +1129,11 @@ function buildReverseUnicodeMap(fontData: FontData): Map<string, number> {
     }
   }
 
-  // For simple fonts, add standard ASCII mapping
-  if (!fontData.isComposite) {
+  // For simple fonts, add standard ASCII mapping — but NOT for Type3.
+  // Type3 Differences often map ASCII codes to .notdef (g0); inventing
+  // identity mappings makes encode look successful while drawing solid bars.
+  const isType3 = !!(fontData.charProcs && fontData.charProcs.size > 0);
+  if (!fontData.isComposite && !isType3) {
     for (let i = 0x20; i <= 0x7e; i++) {
       const char = String.fromCharCode(i);
       if (!reverse.has(char)) {
@@ -1163,7 +1255,7 @@ function applyGroupedTextEdit(
   }
 
   if (fallbackFont) {
-    return insertFontSwitchBefore(
+    return insertFallbackFontAround(
       instructions,
       primaryIdx,
       fallbackFont,

@@ -90,6 +90,17 @@ function resolveFreshSegmentRuns(
  * After estimate-based shifts + text rewrite, re-measure real glyph widths and
  * nudge trailing runs so rivers/overlaps from width-estimate error disappear.
  */
+function isKernedPerGlyphLine(line: TextLine): boolean {
+  if (line.segments.length < 4) return false;
+  let negGaps = 0;
+  for (let i = 0; i < line.segments.length - 1; i++) {
+    const a = getRunBounds(line.segments[i].run);
+    const b = getRunBounds(line.segments[i + 1].run);
+    if (b.left < a.right - 0.5) negGaps++;
+  }
+  return negGaps >= Math.ceil((line.segments.length - 1) * 0.5);
+}
+
 function correctResidualRunGaps(
   contentBytes: Uint8Array,
   page: PDFPageInfo,
@@ -104,6 +115,14 @@ function correctResidualRunGaps(
   gapSourceLine?: TextLine,
 ): { bytes: Uint8Array; corrections: RunPositionShift[] } {
   if (segmentEdits.length < 2) {
+    return { bytes: contentBytes, corrections: [] };
+  }
+
+  // Type3 score-card lines: one glyph per run with heavy negative kerning.
+  // After a Helvetica mid-line fallback, fresh-run matching + residual packing
+  // yanks trailers to the wrong X. Skip for both in-engine and page.tsx callers.
+  const gapProbe = gapSourceLine ?? line;
+  if (isKernedPerGlyphLine(gapProbe) || isKernedPerGlyphLine(line)) {
     return { bytes: contentBytes, corrections: [] };
   }
 
@@ -134,11 +153,9 @@ function correctResidualRunGaps(
     if (i < gapLine.segments.length - 1) {
       const ob = getRunBounds(gapLine.segments[i].run);
       const nb = getRunBounds(gapLine.segments[i + 1].run);
+      // Preserve negative gaps (kerning / overlapping Type3 per-glyph runs).
       gap = nb.left - ob.right;
-      if (gap < 0) gap = fs * 0.12;
     }
-    // Subset fonts often measure space advance ≈ 0; floor with estimate so
-    // residual packing cannot erase space inserts.
     const estW = estimateTextWidth(segmentEdits[i]?.newText ?? fresh[i].text, fresh[i]);
     const w = Math.max(bounds.width, estW);
     cursor += w + gap;

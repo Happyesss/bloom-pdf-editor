@@ -18,17 +18,15 @@ export function isPageBackgroundPath(
   const pathArea = Math.max(0, path.width) * Math.max(0, path.height);
   if (pathArea / pageArea < 0.9) return false;
 
-  // Near-full coverage of the media box
+  // Near-full coverage of the media box (allows slight inset margins)
   const coversW = path.width >= pageBounds.width * 0.95;
   const coversH = path.height >= pageBounds.height * 0.95;
   if (!coversW || !coversH) return false;
 
-  // Aligned to page origin (typical `0 0 W H re f`)
-  const nearOrigin =
-    Math.abs(path.x - pageBounds.x) < 2 &&
-    Math.abs(path.y - pageBounds.y) < 2;
-
-  return nearOrigin || pathArea / pageArea >= 0.98;
+  // Once both axes cover ≥95% and area ≥90%, treat as page background.
+  // Do not require exact origin alignment — inset page fills (e.g. ~6pt
+  // margins on score cards) otherwise steal every empty-area click.
+  return true;
 }
 
 /** Paths/images worth putting in the selection index. */

@@ -3,8 +3,34 @@
  */
 
 import type { FontData } from '../fonts/font-parser';
-import { parseContentStream } from '../content/operator-lexer';
-import { PDFNumber } from '../types';
+import { parseContentStream, type CSInstruction } from '../content/operator-lexer';
+import { PDFNumber, type PDFStream } from '../types';
+
+/**
+ * Parsed CharProcs are cached per stream object (not per draw call). The same
+ * few glyph shapes are typically reused hundreds of times across a page
+ * (e.g. common letters), and the underlying PDFStream instances stay stable
+ * across re-renders (zoom, scroll) since the parsed document is reused —
+ * re-parsing on every glyph occurrence was a significant, avoidable cost.
+ */
+const charProcInstructionCache = new WeakMap<PDFStream, CSInstruction[] | null>();
+
+function getCharProcInstructions(stream: PDFStream): CSInstruction[] | null {
+  const cached = charProcInstructionCache.get(stream);
+  if (cached !== undefined) return cached;
+
+  const bytes = stream.getBytes();
+  let instructions: CSInstruction[] | null = null;
+  if (bytes && bytes.length > 0) {
+    try {
+      instructions = parseContentStream(bytes);
+    } catch {
+      instructions = null;
+    }
+  }
+  charProcInstructionCache.set(stream, instructions);
+  return instructions;
+}
 
 /**
  * Draw a Type3 glyph into the current canvas context.
@@ -21,15 +47,8 @@ export function drawType3Glyph(
   const stream = fontData.charProcs?.get(charName);
   if (!stream) return false;
 
-  const bytes = stream.getBytes();
-  if (!bytes || bytes.length === 0) return false;
-
-  let instructions;
-  try {
-    instructions = parseContentStream(bytes);
-  } catch {
-    return false;
-  }
+  const instructions = getCharProcInstructions(stream);
+  if (!instructions) return false;
 
   const matrix = fontData.fontMatrix ?? [0.001, 0, 0, 0.001, 0, 0];
   ctx.save();
@@ -112,10 +131,26 @@ export function drawType3Glyph(
 /** Resolve a character code to a Type3 CharProcs name. */
 export function type3CharName(fontData: FontData, charCode: number): string | null {
   if (!fontData.charProcs || fontData.charProcs.size === 0) return null;
-  const candidates = [`g${charCode}`, `C${charCode}`, String(charCode)];
+
+  // The font's /Encoding Differences array is the authoritative source for
+  // charCode → glyph name (Type3 fonts have no standard/built-in encoding).
+  // Generators are free to name procs arbitrarily (decimal, hex, custom),
+  // so trust this mapping before guessing a naming convention.
+  const diffName = fontData.differences.get(charCode);
+  if (diffName) {
+    return fontData.charProcs.has(diffName) ? diffName : null;
+  }
+
+  const candidates = [
+    `g${charCode}`,
+    `g${charCode.toString(16).toUpperCase()}`,
+    `C${charCode}`,
+    String(charCode),
+  ];
   for (const c of candidates) {
     if (fontData.charProcs.has(c)) return c;
   }
-  const first = fontData.charProcs.keys().next();
-  return first.done ? null : first.value;
+  // No reliable mapping — return null so callers fall back to drawing the
+  // resolved Unicode glyph instead of an arbitrary (likely wrong) proc.
+  return null;
 }

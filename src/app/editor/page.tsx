@@ -43,6 +43,7 @@ import { ExportPanel } from './components/ExportPanel';
 import { PasswordDialog } from './components/PasswordDialog';
 import { SecurityPanel } from './components/SecurityPanel';
 import { useTextStyleActions, type TextStyleUI } from './hooks/useTextStyleActions';
+import { useIsMobile } from './hooks/useIsMobile';
 
 export interface SearchMatch {
   id: string;
@@ -309,6 +310,8 @@ export default function EditorPage() {
 
   const [activeTool, setActiveTool] = useState<EditorTool>('text');
   const [isPanelOpen, setIsPanelOpen] = useState(true);
+  const isMobile = useIsMobile();
+  const [showMobileThumbnails, setShowMobileThumbnails] = useState(false);
   const [selectedLine, setSelectedLine] = useState<TextLine | null>(null);
   const [editingLineState, setEditingLineState] = useState<TextLine | null>(null);
   const editingLineRef = useRef<TextLine | null>(null);
@@ -514,6 +517,11 @@ export default function EditorPage() {
   const refreshSignatureLibrary = useCallback(() => {
     setSignatureLibraryEntries(orderLibraryByRecent(getSignatureLibrary().list()));
   }, []);
+
+  // Auto-close properties panel on mobile
+  useEffect(() => {
+    if (isMobile) setIsPanelOpen(false);
+  }, [isMobile]);
 
   useEffect(() => {
     refreshSignatureLibrary();
@@ -4780,13 +4788,14 @@ export default function EditorPage() {
 
       <div className="flex-1 flex relative">
 
-        {/* ── Left sidebar (Tools only) ── */}
+        {/* ── Left sidebar (Tools only) — on mobile renders as fixed bottom strip ── */}
         <ToolsSidebar
           activeTool={activeTool}
           setActiveTool={setActiveTool}
           highlightColor={highlightColor}
           isPanelOpen={isPanelOpen}
           onTogglePanel={() => setIsPanelOpen(v => !v)}
+          isMobile={isMobile}
         />
 
         {/* ── Left Sidebar (Properties / Security) ── */}
@@ -4801,6 +4810,7 @@ export default function EditorPage() {
               }}
               markDirty={() => setIsDirty(true)}
               onClose={() => setIsPanelOpen(false)}
+              isMobile={isMobile}
             />
           ) : (
             <PropertiesSidebar
@@ -5012,6 +5022,7 @@ export default function EditorPage() {
           ltvStatus={ltvStatus}
           managedSignatures={managedSignatures}
           revisionEntries={revisionEntries}
+          isMobile={isMobile}
         />
       )
     )}
@@ -5028,7 +5039,7 @@ export default function EditorPage() {
         <div
           ref={scrollViewportRef}
           className="flex-1 overflow-auto relative checkerboard"
-          style={{ cursor: cursorForTool, touchAction: scale > 1 || spacePanHeld ? 'none' : undefined }}
+          style={{ cursor: cursorForTool, touchAction: isMobile ? 'manipulation' : (scale > 1 || spacePanHeld ? 'none' : undefined), paddingBottom: isMobile ? '56px' : undefined }}
           onPointerDown={handleViewportPointerDown}
           onPointerMove={handleViewportPointerMove}
           onPointerUp={handleViewportPointerUp}
@@ -5036,8 +5047,8 @@ export default function EditorPage() {
         >
           {/* Floating Search & OCR Panel (viewport-fixed) */}
           {isSearchOpen && (
-            <div className="absolute top-4 right-4 z-40 flex flex-col items-end gap-3 pointer-events-none animate-in fade-in slide-in-from-top-4 duration-200">
-              <div className="pointer-events-auto flex items-center justify-between gap-2 bg-zinc-900/95 backdrop-blur-md px-3 py-2 rounded-xl border border-zinc-700/80 shadow-lg w-72">
+            <div className="absolute top-4 left-4 right-4 md:left-auto z-40 flex flex-col items-end gap-3 pointer-events-none animate-in fade-in slide-in-from-top-4 duration-200">
+              <div className="pointer-events-auto flex items-center justify-between gap-2 bg-zinc-900/95 backdrop-blur-md px-3 py-2 rounded-xl border border-zinc-700/80 shadow-lg w-full md:w-72">
                 <button
                   onClick={() => void handleRecognizeText()}
                   className="flex items-center gap-2 text-xs font-semibold text-zinc-300 hover:text-white transition-colors"
@@ -5755,28 +5766,70 @@ export default function EditorPage() {
           </div>
         </div>
 
-        {/* ── Right Sidebar: Page Thumbnails ── */}
-        <ThumbnailsSidebar
-          totalPages={totalPages}
-          currentPage={currentPage}
-          thumbnails={thumbnails}
-          isGeneratingThumbnails={isGeneratingThumbnails}
-          onPageSelect={(i) => {
-            commitDrawingsToPdf();
-            closeLinkPopover();
-            setLinkCreatePending(false);
-            setCurrentPage(i);
-          }}
-          onDeletePage={handleDeletePage}
-          onInsertBlankPage={handleInsertBlankPage}
-          onInsertPdf={handleInsertPdf}
-          onRotatePage={handleRotatePage}
-          onReorderPages={handleReorderPages}
-          onMergePdf={handleMergePdf}
-          onSplitCurrentPage={handleSplitCurrentPage}
-          onSplitAllPages={handleSplitAllPages}
-          onRemoveCurrentPage={handleRemoveCurrentPage}
-        />
+        {/* ── Right Sidebar: Page Thumbnails (hidden on mobile, shown via floating button) ── */}
+        {!isMobile && (
+          <ThumbnailsSidebar
+            totalPages={totalPages}
+            currentPage={currentPage}
+            thumbnails={thumbnails}
+            isGeneratingThumbnails={isGeneratingThumbnails}
+            onPageSelect={(i) => {
+              commitDrawingsToPdf();
+              closeLinkPopover();
+              setLinkCreatePending(false);
+              setCurrentPage(i);
+            }}
+            onDeletePage={handleDeletePage}
+            onInsertBlankPage={handleInsertBlankPage}
+            onInsertPdf={handleInsertPdf}
+            onRotatePage={handleRotatePage}
+            onReorderPages={handleReorderPages}
+            onMergePdf={handleMergePdf}
+            onSplitCurrentPage={handleSplitCurrentPage}
+            onSplitAllPages={handleSplitAllPages}
+            onRemoveCurrentPage={handleRemoveCurrentPage}
+          />
+        )}
+
+        {/* ── Mobile: Floating "Pages" button ── */}
+        {isMobile && !showMobileThumbnails && (
+          <button
+            onClick={() => setShowMobileThumbnails(true)}
+            className="fixed bottom-16 right-3 z-30 flex items-center gap-1.5 px-3 py-2 bg-panel/95 backdrop-blur-md border border-app rounded-xl shadow-lg text-app-muted text-xs font-medium hover:text-app transition-colors"
+            title="Show page thumbnails"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="18" rx="2"/><line x1="8" y1="3" x2="8" y2="21"/></svg>
+            {totalPages}p
+          </button>
+        )}
+
+        {/* ── Mobile: Thumbnails drawer ── */}
+        {isMobile && showMobileThumbnails && (
+          <ThumbnailsSidebar
+            totalPages={totalPages}
+            currentPage={currentPage}
+            thumbnails={thumbnails}
+            isGeneratingThumbnails={isGeneratingThumbnails}
+            onPageSelect={(i) => {
+              commitDrawingsToPdf();
+              closeLinkPopover();
+              setLinkCreatePending(false);
+              setCurrentPage(i);
+              setShowMobileThumbnails(false);
+            }}
+            onDeletePage={handleDeletePage}
+            onInsertBlankPage={handleInsertBlankPage}
+            onInsertPdf={handleInsertPdf}
+            onRotatePage={handleRotatePage}
+            onReorderPages={handleReorderPages}
+            onMergePdf={handleMergePdf}
+            onSplitCurrentPage={handleSplitCurrentPage}
+            onSplitAllPages={handleSplitAllPages}
+            onRemoveCurrentPage={handleRemoveCurrentPage}
+            isMobile={true}
+            onClose={() => setShowMobileThumbnails(false)}
+          />
+        )}
       </div>
 
       {/* ── Bottom status bar ── */}

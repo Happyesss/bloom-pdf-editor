@@ -124,10 +124,10 @@ export function DownloadDropdown({
           onClick={onDownload}
           disabled={isSaving}
           title="Download original / edited PDF (no recompression)"
-          className="flex items-center gap-2 text-xs font-semibold pl-4 pr-3 py-2 bg-gradient-to-b from-[#E8607A] to-[#D94D6A] hover:from-[#FF6B8E] hover:to-[#E8607A] disabled:from-zinc-700 disabled:to-zinc-800 disabled:text-zinc-500 text-white rounded-l-xl transition-all duration-200 ease-out active:scale-[0.98]"
+          className="flex items-center gap-2 text-xs font-semibold pl-3 md:pl-4 pr-2 md:pr-3 py-2 bg-gradient-to-b from-[#E8607A] to-[#D94D6A] hover:from-[#FF6B8E] hover:to-[#E8607A] disabled:from-zinc-700 disabled:to-zinc-800 disabled:text-zinc-500 text-white rounded-l-xl transition-all duration-200 ease-out active:scale-[0.98]"
         >
           {isSaving ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
-          Download
+          <span className="hidden sm:inline">Download</span>
         </button>
 
         <button
@@ -145,7 +145,7 @@ export function DownloadDropdown({
 
       {isOpen && (
         <div
-          className="absolute right-0 top-full mt-2 w-[380px] bg-panel/98 backdrop-blur-2xl border border-app rounded-2xl shadow-2xl shadow-black/50 overflow-hidden z-50 text-app"
+          className="fixed inset-x-0 bottom-0 md:absolute md:inset-auto md:right-0 md:top-full md:mt-2 w-full md:w-[380px] bg-panel/98 backdrop-blur-2xl border border-app md:rounded-2xl rounded-t-2xl shadow-2xl shadow-black/50 overflow-hidden z-50 text-app max-h-[80vh] md:max-h-none overflow-y-auto"
           style={{ animation: 'dropdownIn 0.25s cubic-bezier(0.16, 1, 0.3, 1)' }}
         >
           <div className="px-5 pt-4 pb-3 border-b border-app">

@@ -19,7 +19,7 @@ export function StatusBar({
   totalPages
 }: StatusBarProps) {
   return (
-    <footer className="flex items-center justify-between px-4 h-7 bg-panel border-t border-app shrink-0 select-none">
+    <footer className="hidden md:flex items-center justify-between px-4 h-7 bg-panel border-t border-app shrink-0 select-none">
       <span className="text-[10px] font-medium tracking-wider text-app-faint">
         {renderResult
           ? `${renderResult.pageWidth.toFixed(0)} × ${renderResult.pageHeight.toFixed(0)} PT`

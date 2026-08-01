@@ -22,11 +22,12 @@ interface SecurityPanelProps {
   onDocChange: (doc: PDFDocumentData) => void;
   markDirty?: () => void;
   onClose?: () => void;
+  isMobile?: boolean;
 }
 
 type Tab = 'inspect' | 'protect' | 'sanitize' | 'policies';
 
-export function SecurityPanel({ doc, engine, onDocChange, markDirty, onClose }: SecurityPanelProps) {
+export function SecurityPanel({ doc, engine, onDocChange, markDirty, onClose, isMobile = false }: SecurityPanelProps) {
   const [tab, setTab] = useState<Tab>('inspect');
   const [report, setReport] = useState<FullSecurityReport | null>(null);
   const [busy, setBusy] = useState(false);
@@ -84,7 +85,14 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty, onClose }: 
   }
 
   return (
-    <div className="w-72 bg-panel/95 backdrop-blur-md border-r border-app flex flex-col shrink-0 z-10 overflow-hidden shadow-[4px_0_24px_rgba(0,0,0,0.08)]">
+    <>
+      {isMobile && (
+        <div className="fixed inset-0 z-40 mobile-backdrop" onClick={onClose} />
+      )}
+      <div className={isMobile
+        ? 'fixed bottom-0 left-0 right-0 z-50 bg-panel/98 backdrop-blur-xl border-t border-app flex flex-col overflow-hidden mobile-sheet-up shadow-[0_-8px_40px_rgba(0,0,0,0.15)]'
+        : 'w-72 bg-panel/95 backdrop-blur-md border-r border-app flex flex-col shrink-0 z-10 overflow-hidden shadow-[4px_0_24px_rgba(0,0,0,0.08)]'
+      } style={isMobile ? { maxHeight: '65vh' } : undefined}>
       <div className="p-4 pb-2 border-b border-app">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-emerald-500 uppercase">
@@ -356,6 +364,7 @@ export function SecurityPanel({ doc, engine, onDocChange, markDirty, onClose }: 
         )}
       </div>
     </div>
+    </>
   );
 }
 

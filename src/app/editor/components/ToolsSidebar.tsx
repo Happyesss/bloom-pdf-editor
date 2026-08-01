@@ -12,6 +12,7 @@ interface ToolsSidebarProps {
   onToggleCollapse?: () => void;
   isPanelOpen?: boolean;
   onTogglePanel?: () => void;
+  isMobile?: boolean;
 }
 
 const TOOL_COLORS: Record<string, string> = {
@@ -50,6 +51,7 @@ export function ToolsSidebar({
   onToggleCollapse,
   isPanelOpen = true,
   onTogglePanel,
+  isMobile = false,
 }: ToolsSidebarProps) {
   const [internalCollapsed, setInternalCollapsed] = useState(false);
   const isCollapsed = propIsCollapsed ?? internalCollapsed;
@@ -62,6 +64,74 @@ export function ToolsSidebar({
     }
   };
 
+  /* ── Mobile: horizontal bottom strip ── */
+  if (isMobile) {
+    return (
+      <aside className="fixed bottom-0 left-0 right-0 z-30 bg-panel/95 backdrop-blur-md border-t border-app shadow-[0_-4px_24px_rgba(0,0,0,0.12)]">
+        <div className="flex items-center gap-1 px-2 py-1.5 overflow-x-auto scrollbar-hide">
+          {TOOLS.map((tool) => {
+            const isActive = activeTool === tool.id;
+            const isHighlight = tool.id === 'highlight';
+            const rawAccentColor = isHighlight ? (highlightColor || '#F59E0B') : (TOOL_COLORS[tool.id] ?? '#E8607A');
+            const labelColor = getAccessibleTextColor(rawAccentColor);
+
+            return (
+              <button
+                key={tool.id}
+                onClick={() => {
+                  setActiveTool(tool.id);
+                  if (!isPanelOpen && onTogglePanel) {
+                    onTogglePanel();
+                  }
+                }}
+                className={`
+                  flex flex-col items-center justify-center gap-0.5 rounded-xl px-2.5 py-1.5 min-w-[44px]
+                  transition-all duration-200 relative border shrink-0
+                  ${isActive 
+                    ? 'border-app-strong shadow-sm' 
+                    : 'border-transparent'
+                  }
+                `}
+                style={{
+                  backgroundColor: isActive ? `${rawAccentColor}1C` : undefined,
+                  color: isActive ? labelColor : undefined,
+                }}
+                title={tool.label}
+              >
+                <tool.icon size={18} />
+                <span className="text-[8px] font-medium leading-none">{tool.label}</span>
+                {isActive && (
+                  <div 
+                    className="absolute bottom-0 left-1/4 right-1/4 h-0.5 rounded-t-full"
+                    style={{ backgroundColor: rawAccentColor }}
+                  />
+                )}
+              </button>
+            );
+          })}
+
+          {/* Panel toggle on mobile strip */}
+          {onTogglePanel && (
+            <button
+              onClick={onTogglePanel}
+              title={isPanelOpen ? 'Hide options' : 'Show options'}
+              className={`
+                flex items-center justify-center rounded-xl p-2 min-w-[44px] border transition-all duration-200 shrink-0
+                ${isPanelOpen 
+                  ? 'bg-panel-elevated/80 border-app text-app-muted'
+                  : 'bg-bloom-500/15 border-bloom-500/40 text-bloom-500'
+                }
+              `}
+            >
+              {isPanelOpen ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}
+            </button>
+          )}
+        </div>
+      </aside>
+    );
+  }
+
+  /* ── Desktop: vertical left sidebar (original) ── */
   return (
     <aside 
       className={`
@@ -179,3 +249,4 @@ export function ToolsSidebar({
     </aside>
   );
 }
+

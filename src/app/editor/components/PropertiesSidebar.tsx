@@ -160,6 +160,7 @@ interface PropertiesSidebarProps {
   ltvStatus?: LtvStatus | null;
   managedSignatures?: ManagedSignature[];
   revisionEntries?: RevisionViewEntry[];
+  isMobile?: boolean;
 }
 
 export function PropertiesSidebar(props: PropertiesSidebarProps) {
@@ -264,15 +265,31 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
     'Inter',
   ];
 
+  const isMobile = props.isMobile ?? false;
+
   return (
-    <div
-      className="w-64 bg-panel/95 backdrop-blur-md border-r border-app flex flex-col shrink-0 z-10 overflow-y-auto shadow-[4px_0_24px_rgba(0,0,0,0.08)]"
-      data-keep-text-edit
-    >
-      {/* Top Bar with Hide Panel Button */}
-      {onClose && (
-        <div className="flex items-center justify-between px-4 pt-3 pb-2 border-b border-app/40 text-xs text-app-muted">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-app-muted">Options Panel</span>
+    <>
+      {/* Mobile backdrop */}
+      {isMobile && (
+        <div
+          className="fixed inset-0 z-40 mobile-backdrop"
+          onClick={onClose}
+        />
+      )}
+      <div
+        className={isMobile
+          ? 'fixed bottom-0 left-0 right-0 z-50 bg-panel/98 backdrop-blur-xl border-t border-app flex flex-col overflow-y-auto mobile-sheet-up shadow-[0_-8px_40px_rgba(0,0,0,0.15)]'
+          : 'w-64 bg-panel/95 backdrop-blur-md border-r border-app flex flex-col shrink-0 z-10 overflow-y-auto shadow-[4px_0_24px_rgba(0,0,0,0.08)]'
+        }
+        style={isMobile ? { maxHeight: '65vh' } : undefined}
+        data-keep-text-edit
+      >
+        {/* Mobile drag handle */}
+        {isMobile && <div className="sheet-handle" />}
+        {/* Top Bar with Hide Panel Button */}
+        {onClose && (
+          <div className="flex items-center justify-between px-4 pt-3 pb-2 border-b border-app/40 text-xs text-app-muted">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-app-muted">Options Panel</span>
           <button
             onClick={onClose}
             title="Hide panel"
@@ -1668,5 +1685,6 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
         </div>
       )}
     </div>
+    </>
   );
 }

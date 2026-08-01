@@ -148,4 +148,56 @@
     background-image: linear-gradient(to bottom, #FF6B8E, #E8607A);
     box-shadow: 0 6px 20px 0 rgba(232, 96, 122, 0.45);
   }
+
+  /* ── Mobile Responsive Utilities ────────────────────────── */
+
+  /* Slide-up bottom sheet animation */
+  .mobile-sheet-up {
+    animation: sheetSlideUp 0.3s cubic-bezier(0.32, 0.72, 0, 1) forwards;
+  }
+  @keyframes sheetSlideUp {
+    from { transform: translateY(100%); }
+    to   { transform: translateY(0); }
+  }
+
+  /* Slide-in from right drawer animation */
+  .mobile-drawer-right {
+    animation: drawerSlideRight 0.3s cubic-bezier(0.32, 0.72, 0, 1) forwards;
+  }
+  @keyframes drawerSlideRight {
+    from { transform: translateX(100%); }
+    to   { transform: translateX(0); }
+  }
+
+  /* Semi-transparent backdrop for drawers/sheets */
+  .mobile-backdrop {
+    background-color: rgba(0, 0, 0, 0.5);
+    animation: backdropFadeIn 0.2s ease forwards;
+  }
+  [data-theme="dark"] .mobile-backdrop,
+  :root:not([data-theme="light"]) .mobile-backdrop {
+    background-color: rgba(0, 0, 0, 0.7);
+  }
+  @keyframes backdropFadeIn {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+
+  /* Hide scrollbar but keep scrolling (mobile tool strip) */
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Drag handle pill for bottom sheets */
+  .sheet-handle {
+    width: 36px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--border-strong);
+    margin: 8px auto 4px;
+  }
 }

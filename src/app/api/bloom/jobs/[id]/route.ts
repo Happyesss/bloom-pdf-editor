@@ -1,7 +1,6 @@
 import { bloomErrorResponse, cancelJob, getJob } from '@/lib/bloom-server';
 
 export const dynamic = 'force-dynamic';
-export const runtime = 'nodejs';
 
 export async function GET(
   _request: Request,

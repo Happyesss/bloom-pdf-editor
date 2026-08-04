@@ -48,3 +48,7 @@ tmp*
 /server/node_modules
 /server/dist
 .bloom-storage
+
+# Cloudflare Workers
+.open-next/
+.wrangler/

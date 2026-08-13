@@ -211,12 +211,12 @@ export function ThumbnailsSidebar({
           onClick={onClose}
         />
       )}
-      <div className={`transition-all duration-300 bg-panel/95 backdrop-blur-md border-l border-app flex flex-col shrink-0 overflow-y-auto p-3 gap-3 shadow-[0_0_40px_rgba(0,0,0,0.06)] ${
+      <div className={`transition-all duration-300 bg-panel/95 backdrop-blur-md border-l border-app flex flex-col shrink-0 min-h-0 h-full shadow-[0_0_40px_rgba(0,0,0,0.06)] ${
         isMobile
-          ? 'fixed right-0 top-0 bottom-0 w-[75vw] max-w-[320px] z-50 mobile-drawer-right'
+          ? 'fixed right-0 top-0 bottom-0 w-[75vw] max-w-[320px] z-50 mobile-drawer-right overflow-y-auto'
           : isExpanded
-            ? 'absolute right-0 top-0 bottom-0 w-[80vw] z-30'
-            : 'relative w-56 z-10'
+            ? 'absolute right-0 top-0 bottom-0 w-[80vw] z-30 overflow-hidden'
+            : 'relative w-56 z-10 overflow-hidden'
       }`}>
         <input
           type="file"
@@ -233,7 +233,7 @@ export function ThumbnailsSidebar({
           onChange={handleMergeChange}
         />
 
-        <div className={`flex-1 overflow-y-auto p-3 flex ${isExpanded ? 'flex-row flex-wrap gap-x-2 gap-y-6 items-stretch content-start' : 'flex-col gap-3'}`}>
+        <div className={`flex-1 min-h-0 overflow-y-auto p-3 flex ${isExpanded ? 'flex-row flex-wrap gap-x-2 gap-y-6 items-stretch content-start' : 'flex-col gap-3'}`}>
           <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-app-muted uppercase px-1 pt-1 pb-1 sticky top-0 bg-panel/95 backdrop-blur-sm z-30 w-full">
             <Layers size={12} />
             Pages

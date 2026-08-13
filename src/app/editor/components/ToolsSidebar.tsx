@@ -137,11 +137,11 @@ export function ToolsSidebar({
       className={`
         ${isCollapsed ? 'w-12' : 'w-16'} 
         bg-panel/95 backdrop-blur-md border-r border-app flex flex-col items-center pt-3 pb-3 gap-2 
-        shrink-0 z-30 relative overflow-visible transition-all duration-300
-        shadow-[4px_0_24px_rgba(0,0,0,0.08)]
+        shrink-0 z-30 relative transition-all duration-300
+        shadow-[4px_0_24px_rgba(0,0,0,0.08)] min-h-0 h-full overflow-hidden
       `}
     >
-      <div className="flex-1 flex flex-col gap-2 w-full px-1.5 overflow-visible">
+      <div className="flex-1 flex flex-col gap-2 w-full px-1.5 overflow-y-auto overflow-x-hidden min-h-0 py-1">
         {TOOLS.map((tool) => {
           const isActive = activeTool === tool.id;
           const isHighlight = tool.id === 'highlight';

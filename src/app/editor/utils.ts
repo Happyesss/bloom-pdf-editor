@@ -55,9 +55,9 @@ export function getDisplayFontFamily(fontName: string, fontData?: FontData): str
   if (!raw || /^f\d+$/i.test(raw)) return 'Helvetica';
   if (lower.includes('arial black')) return 'Arial Black';
   if (lower.includes('arial')) return 'Arial';
-  if (lower.includes('helv')) return 'Helvetica';
-  if (lower.includes('times') || lower.includes('roman') || lower.includes('cmr')) return 'Times New Roman';
-  if (lower.includes('courier') || lower.includes('mono')) return 'Courier New';
+  if (lower.includes('helv') || lower.includes('albany')) return 'Helvetica';
+  if (lower.includes('times') || lower.includes('roman') || lower.includes('cmr') || lower.includes('thorndale')) return 'Times New Roman';
+  if (lower.includes('courier') || lower.includes('mono') || lower.includes('cumberland')) return 'Courier New';
   if (lower.includes('georgia')) return 'Georgia';
   if (lower.includes('verdana')) return 'Verdana';
   if (lower.includes('trebuchet')) return 'Trebuchet MS';
@@ -96,11 +96,11 @@ export function getOverlayFontFamily(fontName: string, fontData?: FontData): str
     return fontData.standardMetrics.cssFamily;
   }
   const lower = (fontData?.baseFont || fontName).toLowerCase();
-  if (lower.includes('courier') || lower.includes('mono')) return '"Courier New", monospace';
-  if (lower.includes('times') || lower.includes('roman') || lower.includes('cmr')) {
+  if (lower.includes('courier') || lower.includes('mono') || lower.includes('cumberland')) return '"Courier New", monospace';
+  if (lower.includes('times') || lower.includes('roman') || lower.includes('cmr') || lower.includes('thorndale')) {
     return '"Times New Roman", Times, serif';
   }
-  if (lower.includes('helv') || lower.includes('arial')) return 'Helvetica, Arial, sans-serif';
+  if (lower.includes('helv') || lower.includes('arial') || lower.includes('albany')) return 'Helvetica, Arial, sans-serif';
   return '"Times New Roman", Times, serif';
 }
 

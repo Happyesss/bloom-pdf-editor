@@ -24,6 +24,7 @@ import { resolveRef } from '../parser/parser';
 import { getStandardFont, type StandardFontMetrics } from './standard14';
 import { parseCMap, type CMapData } from './cmap-parser';
 import { parseTTF, isTrueTypeFontData, charCodeToGlyphId, getGlyphWidth, fontUnitsToTextSpace, type TTFFont } from './truetype-parser';
+import { isCFFData, wrapCFFInOTF } from './cff-wrapper';
 import {
   isSuspiciousDingbatToUnicode,
   isSymbolFont,
@@ -56,30 +57,30 @@ export interface FontData {
   /** Default width for unmapped characters */
   defaultWidth: number;
   /** FirstChar (for simple fonts) */
-  firstChar: number;
+  firstChar?: number;
   /** LastChar (for simple fonts) */
-  lastChar: number;
+  lastChar?: number;
   /** Standard 14 font metrics (if applicable) */
-  standardMetrics: StandardFontMetrics | null;
+  standardMetrics?: StandardFontMetrics | null;
   /** Parsed TrueType font data (if embedded) */
-  ttfFont: TTFFont | null;
+  ttfFont?: TTFFont | null;
   /** Raw font file bytes (for CSS FontFace registration) */
-  fontBytes: Uint8Array | null;
+  fontBytes?: Uint8Array | null;
   /** Font descriptor metrics */
-  ascent: number;
-  descent: number;
+  ascent?: number;
+  descent?: number;
   /** Italic angle */
-  italicAngle: number;
+  italicAngle?: number;
   /** Font flags (bit field) */
-  flags: number;
+  flags?: number;
   /** FontWeight from FontDescriptor (100–900), if present */
-  fontWeight: number | null;
+  fontWeight?: number | null;
   /** CSS font string for canvas rendering */
-  cssFontString: string;
+  cssFontString?: string;
   /** Type 3 Font Matrix */
-  fontMatrix: number[] | null;
+  fontMatrix?: number[] | null;
   /** Type 3 Character Procedures: charName → PDFStream */
-  charProcs: Map<string, PDFStream> | null;
+  charProcs?: Map<string, PDFStream> | null;
 }
 
 // ─── Main font loading function ─────────────────────────────────────────────
@@ -406,20 +407,41 @@ function loadFontDescriptor(
   if (fontFile) {
     const fontStream = resolveRef(fontFile, objects);
     if (fontStream instanceof PDFStream) {
-      const fontBytes = fontStream.getBytes();
-      fontData.fontBytes = fontBytes;
-      try {
-        // Detect if this is TrueType/OpenType
-        if (isTrueTypeFontData(fontBytes)) {
+      let fontBytes = fontStream.getBytes();
+
+      // If raw CFF stream (Type1C / CIDFontType0C / FontFile3), wrap in OpenType (OTTO) container
+      if (!isTrueTypeFontData(fontBytes) && isCFFData(fontBytes)) {
+        try {
+          const wrapped = wrapCFFInOTF(fontBytes, {
+            familyName: fontData.baseFont,
+            ascent: fontData.ascent,
+            descent: fontData.descent,
+            weight: fontData.fontWeight,
+            italicAngle: fontData.italicAngle,
+            widths: fontData.widths,
+          });
+          if (wrapped && isTrueTypeFontData(wrapped)) {
+            fontBytes = wrapped;
+          }
+        } catch (e) {
+          console.warn(`[Font Parser] Failed to wrap CFF font for ${fontData.baseFont}:`, e);
+        }
+      }
+
+      if (isTrueTypeFontData(fontBytes)) {
+        fontData.fontBytes = fontBytes;
+        try {
           fontData.ttfFont = parseTTF(fontBytes);
- 
+
           // Populate widths from embedded font if not already set
           if (fontData.widths.size === 0 && fontData.ttfFont) {
             populateWidthsFromTTF(fontData);
           }
+        } catch (e) {
+          console.warn(`[Font Parser] Failed to parse embedded font for ${fontData.baseFont}:`, e);
         }
-      } catch (e) {
-        console.warn(`[Font Parser] Failed to parse embedded font for ${fontData.baseFont}:`, e);
+      } else {
+        fontData.fontBytes = null;
       }
     }
   }

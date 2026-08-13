@@ -4746,7 +4746,7 @@ export default function EditorPage() {
 
   // ── Main editor UI ──
   return (
-    <div className="flex flex-col h-screen font-sans bg-surface text-app selection:bg-[#E8607A]/30">
+    <div className="flex flex-col h-screen font-sans bg-surface text-app selection:bg-[#E8607A]/30 overflow-hidden">
 
       {/* ── Top toolbar ── */}
       <Toolbar
@@ -4786,7 +4786,7 @@ export default function EditorPage() {
         onCompressedDownload={handleCompressedDownload}
       />
 
-      <div className="flex-1 flex relative">
+      <div className="flex-1 flex relative min-h-0 overflow-hidden">
 
         {/* ── Left sidebar (Tools only) — on mobile renders as fixed bottom strip ── */}
         <ToolsSidebar

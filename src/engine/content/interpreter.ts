@@ -36,6 +36,7 @@ import {
   ZAPF_DINGBATS_GLYPH_TO_UNICODE,
 } from '../fonts/dingbat-encodings';
 import { parseTTF, isTrueTypeFontData } from '../fonts/truetype-parser';
+import { isCFFData, wrapCFFInOTF } from '../fonts/cff-wrapper';
 
 // ─── Graphics State ─────────────────────────────────────────────────────────
 
@@ -1696,7 +1697,13 @@ function buildCidToUnicodeFromEmbeddedFont(
   const fontStream = resolveRef(fontFile, objects);
   if (!(fontStream instanceof PDFStream)) return null;
 
-  const fontBytes = fontStream.getBytes();
+  let fontBytes = fontStream.getBytes();
+  if (!isTrueTypeFontData(fontBytes) && isCFFData(fontBytes)) {
+    try {
+      const wrapped = wrapCFFInOTF(fontBytes, { familyName: baseFont });
+      if (wrapped && isTrueTypeFontData(wrapped)) fontBytes = wrapped;
+    } catch {}
+  }
   if (!isTrueTypeFontData(fontBytes)) return null;
 
   let ttf;

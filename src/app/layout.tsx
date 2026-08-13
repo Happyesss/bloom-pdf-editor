@@ -7,8 +7,14 @@ export const metadata: Metadata = {
   description:
     "A robust PDF editor built from scratch in pure TypeScript. Zero external dependencies. Professional-grade PDF capabilities.",
   icons: {
-    icon: "/logo.png",
-    apple: "/logo.png",
+    icon: [
+      { url: "/favicon.ico", sizes: "any" },
+      { url: "/icon-192.png", type: "image/png", sizes: "192x192" },
+      { url: "/icon-32.png", type: "image/png", sizes: "32x32" },
+      { url: "/logo.png", type: "image/png" },
+    ],
+    shortcut: "/favicon.ico",
+    apple: "/apple-icon.png",
   },
 };
 

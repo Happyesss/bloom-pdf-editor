@@ -23,6 +23,7 @@ import { interpretPage, type DisplayItem, type TextRun, type PathItem, type Imag
 import { buildDocumentFlow, buildFlowDrawIndex, type DocumentFlow, type TextLine } from '../flow';
 import type { FlowGlyphDraw } from '../flow/flow-draw';
 import { loadPageFonts, type FontData } from '../fonts/font-parser';
+import { isTrueTypeFontData } from '../fonts/truetype-parser';
 import { getCSSFontFamily, getStandardFont } from '../fonts/standard14';
 import { decodeImage } from './image-decoder';
 import { rgbToCSSColor } from './color-space';
@@ -1100,7 +1101,7 @@ function fontLooksBold(fontData: FontData | undefined, fontName: string): boolea
   if (fontData.standardMetrics?.isBold) return true;
   if ((fontData.fontWeight ?? 0) >= 600) return true;
   // PDF FontDescriptor Flags bit 18 = ForceBold
-  if (fontData.flags & (1 << 18)) return true;
+  if ((fontData.flags ?? 0) & (1 << 18)) return true;
   const base = stripFontSubsetPrefix(fontData.baseFont) || fontData.baseFont || fontName;
   return /bold|black|heavy|demi/i.test(base);
 }
@@ -1110,9 +1111,9 @@ function fontLooksItalic(fontData: FontData | undefined, fontName: string): bool
     return /italic|oblique/i.test(fontName);
   }
   if (fontData.standardMetrics?.isItalic) return true;
-  if (Math.abs(fontData.italicAngle) > 1) return true;
+  if (Math.abs(fontData.italicAngle ?? 0) > 1) return true;
   // Flags bit 6 = Italic
-  if (fontData.flags & (1 << 6)) return true;
+  if ((fontData.flags ?? 0) & (1 << 6)) return true;
   const base = stripFontSubsetPrefix(fontData.baseFont) || fontData.baseFont || fontName;
   return /italic|oblique/i.test(base);
 }
@@ -1142,13 +1143,13 @@ function getCanvasFontProperties(
       // (classic Acrobat vs canvas mismatch). Only use CSS weight when the
       // FontFace failed to load and we fall back to a system family.
       let fallback = 'serif';
-      if (lower.includes('courier') || lower.includes('mono')) {
+      if (lower.includes('courier') || lower.includes('mono') || lower.includes('cumberland')) {
         fallback = '"Courier New", Courier, monospace';
-      } else if (lower.includes('helv') || lower.includes('arial') || lower.includes('sans')) {
+      } else if (lower.includes('helv') || lower.includes('arial') || lower.includes('sans') || lower.includes('albany')) {
         fallback = 'Helvetica, Arial, sans-serif';
       } else if (
         lower.includes('times') || lower.includes('roman') ||
-        lower.includes('serif') || lower.includes('cmr') || lower.includes('ptm')
+        lower.includes('serif') || lower.includes('cmr') || lower.includes('ptm') || lower.includes('thorndale')
       ) {
         fallback = '"Times New Roman", Times, serif';
       }
@@ -1173,14 +1174,14 @@ function getCanvasFontProperties(
       }
     } else if (isDingbatOrSymbolFamily(fontData.baseFont)) {
       family = '"Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols", sans-serif';
-    } else if (lower.includes('courier') || lower.includes('mono') || lower.includes('cmtt') || lower.includes('lmtt')) {
+    } else if (lower.includes('courier') || lower.includes('mono') || lower.includes('cmtt') || lower.includes('lmtt') || lower.includes('cumberland')) {
       family = '"Courier New", Courier, monospace';
     } else if (
       lower.includes('times') || lower.includes('roman') ||
-      lower.includes('cmr') || lower.includes('lmr') || lower.includes('ptm')
+      lower.includes('cmr') || lower.includes('lmr') || lower.includes('ptm') || lower.includes('thorndale')
     ) {
       family = '"Times New Roman", Times, serif';
-    } else if (lower.includes('helv') || lower.includes('arial') || lower.includes('cms') || lower.includes('lmss')) {
+    } else if (lower.includes('helv') || lower.includes('arial') || lower.includes('cms') || lower.includes('lmss') || lower.includes('albany')) {
       family = 'Helvetica, Arial, sans-serif';
     } else if (stripped) {
       family = `"${stripped}", serif`;
@@ -1291,6 +1292,8 @@ export async function renderAllPages(
 
 /** Successfully registered embedded FontFace family names. */
 const loadedFontFaces = new Set<string>();
+/** Family names that failed to load (avoid retrying on every frame). */
+const failedFontFaces = new Set<string>();
 
 async function registerEmbeddedFonts(fonts: Map<string, FontData>): Promise<void> {
   const promises: Promise<void>[] = [];
@@ -1298,6 +1301,7 @@ async function registerEmbeddedFonts(fonts: Map<string, FontData>): Promise<void
 
   for (const [, fontData] of fonts.entries()) {
     if (!fontData.fontBytes || !fontData.baseFont) continue;
+    if (!isTrueTypeFontData(fontData.fontBytes)) continue;
     // Symbol/ZapfDingbats: canvas uses system symbol fonts + remapped Unicode
     if (isDingbatOrSymbolFamily(fontData.baseFont)) continue;
 
@@ -1309,24 +1313,37 @@ async function registerEmbeddedFonts(fonts: Map<string, FontData>): Promise<void
     if (cssName) names.add(cssName);
 
     for (const familyName of names) {
-      if (registered.has(familyName) || loadedFontFaces.has(familyName)) continue;
+      if (
+        registered.has(familyName) ||
+        loadedFontFaces.has(familyName) ||
+        failedFontFaces.has(familyName)
+      ) {
+        continue;
+      }
+
+      registered.add(familyName);
 
       // Always register embedded bytes. document.fonts.check() is a false
       // positive for names like "Times New Roman" / "Calibri" and would skip
       // loading the PDF's bold subset, then mark the face "ready" at weight
       // normal — certificate labels render regular.
-      const fontFace = new FontFace(familyName, fontData.fontBytes.buffer.slice(
-        fontData.fontBytes.byteOffset,
-        fontData.fontBytes.byteOffset + fontData.fontBytes.byteLength,
-      ) as ArrayBuffer);
-      const p = fontFace.load().then((loadedFace) => {
-        document.fonts.add(loadedFace);
-        registered.add(familyName);
-        loadedFontFaces.add(familyName);
-      }).catch((e) => {
-        console.warn(`[Renderer] Failed to load font face for "${familyName}":`, e);
-      });
-      promises.push(p);
+      try {
+        const fontFace = new FontFace(familyName, fontData.fontBytes.buffer.slice(
+          fontData.fontBytes.byteOffset,
+          fontData.fontBytes.byteOffset + fontData.fontBytes.byteLength,
+        ) as ArrayBuffer);
+        const p = fontFace.load().then((loadedFace) => {
+          document.fonts.add(loadedFace);
+          loadedFontFaces.add(familyName);
+        }).catch((e) => {
+          failedFontFaces.add(familyName);
+          console.debug?.(`[Renderer] Embedded font face not loaded for "${familyName}", using system fallback:`, e);
+        });
+        promises.push(p);
+      } catch (e) {
+        failedFontFaces.add(familyName);
+        console.debug?.(`[Renderer] Failed to construct font face for "${familyName}":`, e);
+      }
     }
   }
 

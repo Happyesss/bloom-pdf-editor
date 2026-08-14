@@ -37,6 +37,13 @@ import {
 } from '../fonts/dingbat-encodings';
 import { parseTTF, isTrueTypeFontData } from '../fonts/truetype-parser';
 import { isCFFData, wrapCFFInOTF } from '../fonts/cff-wrapper';
+import {
+  normalizeIndicText,
+  reorderIndicGlyphs,
+  repairIndicRuns,
+  isLegacyIndicFont,
+  convertKrutiDevToUnicode,
+} from '../fonts/indic-normalizer';
 
 // ─── Graphics State ─────────────────────────────────────────────────────────
 
@@ -952,6 +959,9 @@ export function interpretPage(
   // Apostrophe often arrives as its own Tj ("FATHER" + "§" + "S NAME")
   repairApostrophesAcrossRuns(rawTextRuns);
 
+  // Normalize Devanagari / Indic text runs and syllable order
+  repairIndicRuns(rawTextRuns);
+
   // Merge adjacent text runs on the same baseline to eliminate gaps
   // caused by font-substitution width mismatches between runs.
   mergeAdjacentTextRuns(displayList, rawTextRuns);
@@ -1131,7 +1141,7 @@ function showTextString(
 
   if (rawBytes.length === 0) return null;
 
-  const glyphs: GlyphPosition[] = [];
+  let glyphs: GlyphPosition[] = [];
   let text = '';
   let totalWidth = 0;
   const fontSize = gs.textFontSize;
@@ -1300,7 +1310,16 @@ function showTextString(
   if (glyphs.length === 0) return null;
 
   repairObscureApostropheGlyphs(glyphs);
-  text = glyphs.map(g => g.unicode).join('');
+
+  const isLegacy = font && isLegacyIndicFont(font.baseFont) && !isComposite;
+  if (isLegacy) {
+    const rawText = glyphs.map(g => g.unicode).join('');
+    const convertedText = convertKrutiDevToUnicode(rawText);
+    text = convertedText;
+  } else {
+    glyphs = reorderIndicGlyphs(glyphs);
+    text = normalizeIndicText(glyphs.map(g => g.unicode).join(''));
+  }
 
   // Compute bounding box
   const effectiveMatrix = multiplyMatrices(textMatrix, gs.ctm);

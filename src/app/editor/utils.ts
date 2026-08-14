@@ -320,3 +320,39 @@ export function hexToRGB(hex: string): [number, number, number] {
     parseInt(clean.substring(4,6), 16) / 255,
   ];
 }
+
+/**
+ * Extract image pixel data from an embedded PDF ImageItem and convert to a JPEG Data URL.
+ */
+export async function extractImageItemDataUrl(
+  item: ImageItem,
+  page: import('@/engine').PDFPageInfo,
+  objects: Map<string, import('@/engine').PDFObject>,
+): Promise<string | null> {
+  try {
+    const { getResource, decodeImage, PDFStream } = await import('@/engine');
+    const xobj = getResource(page.resources, 'XObject', item.name, objects);
+    if (!(xobj instanceof PDFStream)) return null;
+
+    const decoded = await decodeImage(xobj, objects);
+    if (!decoded || decoded.width <= 0 || decoded.height <= 0) return null;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = decoded.width;
+    canvas.height = decoded.height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+
+    // Fill white background for JPEG rendering
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    const imgData = new ImageData(new Uint8ClampedArray(decoded.data), decoded.width, decoded.height);
+    ctx.putImageData(imgData, 0, 0);
+
+    return canvas.toDataURL('image/jpeg', 0.95);
+  } catch (err) {
+    console.warn('[extractImageItemDataUrl] Failed to extract image:', err);
+    return null;
+  }
+}

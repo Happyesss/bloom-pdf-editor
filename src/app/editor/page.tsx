@@ -8,19 +8,23 @@ import {
   loadEditorSession,
   saveEditorSession,
   clearEditorSession,
+  saveRemovedImages,
+  loadRemovedImages,
+  clearRemovedImages,
 } from '@/lib/pdfStorage';
-import { X, Loader2, ChevronLeft, Image, Type } from 'lucide-react';
+import { X, Loader2, ChevronLeft, Image, Type, Copy } from 'lucide-react';
 
 // We import types only — the engine modules are loaded dynamically
 // because they require browser APIs (canvas, DecompressionStream)
 import type { PDFDocumentData, RenderResult, TextRun, TextLine, ImageItem, PathItem, DisplayItem, TextWatermark, ImageWatermark, Watermark, DetectedWatermark, AcroFormWidget, BloomPage, DetectedTable, VisualSignature, SignatureLibraryEntry, SignatureField, ManagedIdentity, ValidationReport, LtvStatus, ManagedSignature, RevisionViewEntry } from '@/engine';
 
-import type { EditorTool, ToolDef, PathType, DrawnPath, FloatingText, FloatingImage, DrawMode } from './types';
+import type { EditorTool, ToolDef, PathType, DrawnPath, FloatingText, FloatingImage, DrawMode, RemovedImageRecord } from './types';
 import { TOOLS } from './types';
 import {
   canvasToPdf, pdfToCanvas, hexToRGB,
   hitTestTextLine, findNearestTextLine, caretIndexFromLineX,
   getLineBounds, getOverlayFontFamily, getOverlayFontStyle, getDisplayFontFamily,
+  extractImageItemDataUrl,
 } from './utils';
 import { buildDisplayListIndex, hitTestDisplayList, isSelectableDisplayItem, EditorHistory, captureHistoryEntry, restoreAnnotSnapshot, parseOverlaySnapshot, deleteObject, visualFontSize, resolveRunStyleFlags, transformObject, applyObjectTransform, distributeTextChangeToSegments, segmentAtIndex, createVisualSignature, hitTestSignature, moveSignature, resizeSignature, rotateSignature, setSignatureOpacity, setSignatureLocked, deleteSignature, updateSignature, getSignatureLibrary, DEFAULT_SIGNATURE_SIZE, detectSignatureFieldsOnPage, hitTestSignatureField, createSignatureFieldAtPoint, applySignatureFieldAppearanceAsync, getCertificateManager, signDocumentCryptographic, validateDocumentSignatures, enableLongTermValidation, getLtvStatus, listManagedSignatures, buildRevisionViewer, lockSignaturesAfterSigning, pushRecentSignatureId, orderLibraryByRecent, SIGNATURE_SHORTCUTS } from '@/engine';
 import type { QuadTree, SelectableItem, EditableObject } from '@/engine';
@@ -394,6 +398,11 @@ export default function EditorPage() {
   const replacingImageIdRef = useRef<string | null>(null);
   /** When set, next file pick replaces this embedded PDF image in-place. */
   const replacingEmbeddedImageRef = useRef<ImageItem | null>(null);
+
+  /** Removed / deleted images bin for instant restoration */
+  const [removedImages, setRemovedImages] = useState<RemovedImageRecord[]>([]);
+  const removedImagesRef = useRef<RemovedImageRecord[]>([]);
+  removedImagesRef.current = removedImages;
 
   const dragInfo = useRef<{ id: string; type: 'text' | 'image'; startX: number; startY: number; startPdfX: number; startPdfY: number } | null>(null);
 
@@ -810,16 +819,18 @@ export default function EditorPage() {
               floatingTextsJson: JSON.stringify(floatingTextsRef.current),
               floatingImagesJson: JSON.stringify(floatingImagesRef.current),
               signaturesJson: JSON.stringify(signaturesRef.current),
+              removedImagesJson: JSON.stringify(removedImagesRef.current),
               currentPage,
             },
           });
+          await saveRemovedImages(removedImagesRef.current);
         } catch (e) {
           console.warn('[Editor] Session autosave failed:', e);
         }
       })();
     }, 2500);
     return () => clearTimeout(timer);
-  }, [isDirty, doc, fileName, currentPage, isLoading, drawnPaths, floatingTexts, floatingImages, signatures, renderKey]);
+  }, [isDirty, doc, fileName, currentPage, isLoading, drawnPaths, floatingTexts, floatingImages, signatures, removedImages, renderKey]);
 
   // Caret blinking
   const caretVisibleRef = useRef(true);
@@ -888,11 +899,20 @@ export default function EditorPage() {
         engineRef.current = engine;
         setEngineModule(engine);
 
-        // Prefer dirty session recovery when available
+        // Prefer dirty session recovery ONLY when it matches the current document file name
         const session = await loadEditorSession();
-        if (session && session.bytes?.byteLength) {
+        if (session && session.bytes?.byteLength && session.fileName === stored.fileName) {
           try {
             setFileName(session.fileName || stored.fileName);
+            if (session.overlays?.removedImagesJson) {
+              try {
+                const sessionRemoved = parseOverlaySnapshot<RemovedImageRecord[]>(session.overlays.removedImagesJson);
+                if (sessionRemoved && Array.isArray(sessionRemoved) && sessionRemoved.length > 0) {
+                  setRemovedImages(sessionRemoved);
+                  removedImagesRef.current = sessionRemoved;
+                }
+              } catch {}
+            }
             const parsed = await engine.parsePDF(new Uint8Array(session.bytes));
             if (cancelled) return;
             if (!engine.securityEngine.isEncrypted(parsed)) {
@@ -912,6 +932,20 @@ export default function EditorPage() {
             console.warn('[Editor] Session restore failed, falling back to upload:', sessErr);
           }
         }
+
+        // Fresh PDF load — clear previous session, removed images, and overlays
+        await clearEditorSession();
+        await clearRemovedImages();
+        setRemovedImages([]);
+        removedImagesRef.current = [];
+        setDrawnPaths([]);
+        drawnPathsRef.current = [];
+        setFloatingTexts([]);
+        floatingTextsRef.current = [];
+        setFloatingImages([]);
+        floatingImagesRef.current = [];
+        setSignatures([]);
+        signaturesRef.current = [];
 
         setFileName(stored.fileName);
         const pdfBytes = new Uint8Array(stored.bytes);
@@ -3648,6 +3682,45 @@ export default function EditorPage() {
     fileInputRef.current?.click();
   }, [selectedDisplayItem]);
 
+  const handleCopyEmbeddedImage = useCallback(async () => {
+    if (!doc || !selectedDisplayItem || selectedDisplayItem.type !== 'image') return;
+    const item = selectedDisplayItem as ImageItem;
+    const page = doc.pages[currentPage];
+    try {
+      const dataUrl = await extractImageItemDataUrl(item, page, doc.objects);
+      if (!dataUrl) return;
+
+      // 1. Copy image to system clipboard if supported
+      try {
+        const res = await fetch(dataUrl);
+        const blob = await res.blob();
+        if (typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write) {
+          await navigator.clipboard.write([
+            new ClipboardItem({ [blob.type || 'image/png']: blob }),
+          ]);
+        }
+      } catch (clipErr) {
+        console.warn('[Editor] System clipboard copy failed:', clipErr);
+      }
+
+      // 2. Duplicate as a floating image overlay on the page
+      const newImg: FloatingImage = {
+        id: `copy-img-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+        pdfX: item.x + 20,
+        pdfY: (item.y + item.height) - 20,
+        pdfWidth: item.width,
+        pdfHeight: item.height,
+        dataUrl,
+      };
+
+      setFloatingImages(prev => [...prev, newImg]);
+      setActiveFloatingImageId(newImg.id);
+      setIsDirty(true);
+    } catch (e) {
+      console.error('[Editor] Copy image failed:', e);
+    }
+  }, [doc, currentPage, selectedDisplayItem]);
+
   // ── Hidden / line input — preview only; PDF commits on submit ──
   const handleHiddenInput = useCallback((e: React.FormEvent<HTMLTextAreaElement | HTMLInputElement>) => {
     if (!editingLine) return;
@@ -4454,6 +4527,37 @@ export default function EditorPage() {
           );
           if (!ok) return;
         }
+
+        // Extract image data to store in removed images bin
+        try {
+          const dataUrl = await extractImageItemDataUrl(item, page, doc.objects);
+          if (dataUrl) {
+            const record: RemovedImageRecord = {
+              id: `removed-img-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+              dataUrl,
+              name: item.name,
+              fileName,
+              sourceType: 'embedded',
+              originalPage: currentPage,
+              originalBounds: {
+                x: item.x,
+                y: item.y,
+                width: item.width,
+                height: item.height,
+              },
+              deletedAt: Date.now(),
+            };
+            setRemovedImages(prev => {
+              const isDuplicate = prev.some(r => r.dataUrl === dataUrl);
+              if (isDuplicate) return prev;
+              const updated = [record, ...prev.filter(r => !(r.originalPage === currentPage && r.name === item.name))];
+              saveRemovedImages(updated);
+              return updated;
+            });
+          }
+        } catch (extractErr) {
+          console.warn('[Editor] Failed to extract image for removed bin:', extractErr);
+        }
       }
 
       const editable: EditableObject = {
@@ -4477,7 +4581,74 @@ export default function EditorPage() {
       console.error('[Editor] Delete object failed:', e);
       setError(`Delete failed: ${e instanceof Error ? e.message : String(e)}`);
     }
-  }, [doc, currentPage, selectedDisplayItem, pushEditorHistory]);
+  }, [doc, currentPage, selectedDisplayItem, fileName, pushEditorHistory]);
+
+  const handleRestoreRemovedImage = useCallback((record: RemovedImageRecord) => {
+    if (!doc) return;
+    const targetPage = (record.originalPage >= 0 && record.originalPage < doc.pages.length)
+      ? record.originalPage
+      : currentPage;
+
+    if (targetPage !== currentPage) {
+      setCurrentPage(targetPage);
+    }
+
+    const pdfY = record.sourceType === 'floating'
+      ? record.originalBounds.y
+      : record.originalBounds.y + record.originalBounds.height;
+
+    const newFloatingImage: FloatingImage = {
+      id: `restored-img-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+      pdfX: record.originalBounds.x,
+      pdfY: pdfY,
+      pdfWidth: record.originalBounds.width,
+      pdfHeight: record.originalBounds.height,
+      dataUrl: record.dataUrl,
+    };
+
+    setFloatingImages(prev => [...prev, newFloatingImage]);
+    setActiveFloatingImageId(newFloatingImage.id);
+    setIsDirty(true);
+  }, [doc, currentPage]);
+
+  const handleInsertRemovedImage = useCallback((record: RemovedImageRecord) => {
+    if (!doc) return;
+    const page = doc.pages[currentPage];
+    const pageW = page?.mediaBox.width || 612;
+    const pageH = page?.mediaBox.height || 792;
+
+    const fitW = Math.min(record.originalBounds.width || 200, pageW * 0.7);
+    const fitH = (fitW / (record.originalBounds.width || 1)) * (record.originalBounds.height || fitW);
+
+    const pdfX = Math.max(20, (pageW - fitW) / 2);
+    const pdfY = Math.max(20, (pageH + fitH) / 2);
+
+    const newFloatingImage: FloatingImage = {
+      id: `inserted-img-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+      pdfX,
+      pdfY,
+      pdfWidth: fitW,
+      pdfHeight: fitH,
+      dataUrl: record.dataUrl,
+    };
+
+    setFloatingImages(prev => [...prev, newFloatingImage]);
+    setActiveFloatingImageId(newFloatingImage.id);
+    setIsDirty(true);
+  }, [doc, currentPage]);
+
+  const handleDeleteRemovedImage = useCallback((id: string) => {
+    setRemovedImages(prev => {
+      const updated = prev.filter(r => r.id !== id);
+      saveRemovedImages(updated);
+      return updated;
+    });
+  }, []);
+
+  const handleClearRemovedImages = useCallback(() => {
+    setRemovedImages([]);
+    clearRemovedImages();
+  }, []);
 
   const handleInsertBlankPage = useCallback((index: number) => {
     if (!doc || !engineRef.current) return;
@@ -4517,21 +4688,32 @@ export default function EditorPage() {
         e.preventDefault(); goToPrev();
       } else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
         e.preventDefault(); goToNext();
-      } else if ((e.key === '+' || e.key === '=') && (e.metaKey || e.ctrlKey)) {
-        e.preventDefault(); zoomIn();
-      } else if (e.key === '-' && (e.metaKey || e.ctrlKey)) {
-        e.preventDefault(); zoomOut();
+      } else if (e.key === '+' || e.key === '=') {
+        if (e.metaKey || e.ctrlKey) { e.preventDefault(); zoomIn(); }
+      } else if (e.key === '-') {
+        if (e.metaKey || e.ctrlKey) { e.preventDefault(); zoomOut(); }
+      } else if (e.key === 'z' || e.key === 'Z') {
+        if ((e.metaKey || e.ctrlKey) && !e.shiftKey) {
+          e.preventDefault();
+          handleUndo();
+        } else if ((e.metaKey || e.ctrlKey) && e.shiftKey) {
+          e.preventDefault();
+          handleRedo();
+        }
+      } else if (e.key === 'y' || e.key === 'Y') {
+        if (e.metaKey || e.ctrlKey) {
+          e.preventDefault();
+          handleRedo();
+        }
       } else if (e.key === 'v' || e.key === 'V') {
         setActiveTool('select');
       } else if (e.key === 't' || e.key === 'T') {
-        setActiveTool('text');
-      } else if (e.key === 'a' || e.key === 'A') {
-        setActiveTool('addtext');
+        if (!e.metaKey && !e.ctrlKey) setActiveTool('text');
+      } else if (e.key === 'd' || e.key === 'D') {
+        if (!e.metaKey && !e.ctrlKey) setActiveTool('draw');
       } else if (e.key === 'h' || e.key === 'H') {
         if (!e.metaKey && !e.ctrlKey) setActiveTool('highlight');
-      } else if (e.key === 'l' || e.key === 'L') {
-        if (!e.metaKey && !e.ctrlKey) setActiveTool('text');
-      } else if (e.key === 'd') {
+      } else if (e.key === 'p' || e.key === 'P') {
         setActiveTool('draw');
       } else if (e.key === 'e' || e.key === 'E') {
         if (!e.metaKey && !e.ctrlKey) setActiveTool('erase');
@@ -4546,6 +4728,38 @@ export default function EditorPage() {
       } else if ((e.key === 'Delete' || e.key === 'Backspace') && selectedSignatureId) {
         e.preventDefault();
         handleSignatureDelete(selectedSignatureId);
+      } else if ((e.key === 'Delete' || e.key === 'Backspace') && selectedDisplayItem) {
+        e.preventDefault();
+        void handleDeleteSelectedDisplayItem();
+      } else if ((e.key === 'Delete' || e.key === 'Backspace') && activeFloatingImageId) {
+        e.preventDefault();
+        const fi = floatingImages.find(f => f.id === activeFloatingImageId);
+        if (fi && fi.dataUrl) {
+          const record: RemovedImageRecord = {
+            id: `removed-fi-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+            dataUrl: fi.dataUrl,
+            name: `Image ${fi.id}`,
+            fileName,
+            sourceType: 'floating',
+            originalPage: currentPage,
+            originalBounds: {
+              x: fi.pdfX,
+              y: fi.pdfY,
+              width: fi.pdfWidth,
+              height: fi.pdfHeight,
+            },
+            deletedAt: Date.now(),
+          };
+          setRemovedImages(prev => {
+            const isDuplicate = prev.some(r => r.dataUrl === fi.dataUrl);
+            if (isDuplicate) return prev;
+            const updated = [record, ...prev];
+            saveRemovedImages(updated);
+            return updated;
+          });
+        }
+        setFloatingImages(prev => prev.filter(p => p.id !== activeFloatingImageId));
+        setActiveFloatingImageId(null);
       } else if (e.key === 'w' || e.key === 'W') {
         if (!e.metaKey && !e.ctrlKey) setActiveTool('watermark');
       } else if (e.key === 'x' || e.key === 'X') {
@@ -4560,7 +4774,7 @@ export default function EditorPage() {
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [goToPrev, goToNext, zoomIn, zoomOut, editingLine, selectedSignatureId, handleSignatureDelete, activeTool, handleValidateSignatures]);
+  }, [goToPrev, goToNext, zoomIn, zoomOut, editingLine, selectedSignatureId, handleSignatureDelete, selectedDisplayItem, handleDeleteSelectedDisplayItem, activeFloatingImageId, floatingImages, fileName, currentPage, activeTool, handleValidateSignatures]);
 
   // Clean, Minimalist 3D Tilted Pink Square Rubber Block Eraser Cursor
   const eraser3dSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><defs><filter id="er-pinksq-shadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="1" dy="1.4" stdDeviation="1.2" flood-color="#000000" flood-opacity="0.45"/></filter><linearGradient id="er-pink-top" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#FFA8E0"/><stop offset="60%" stop-color="#FF65C8"/><stop offset="100%" stop-color="#E840A8"/></linearGradient><linearGradient id="er-pink-left" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#FF52B7"/><stop offset="100%" stop-color="#D6208A"/></linearGradient><linearGradient id="er-pink-right" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#BF157A"/><stop offset="100%" stop-color="#80094F"/></linearGradient></defs><g filter="url(#er-pinksq-shadow)"><path d="M 4 16 L 16 4 L 28 16 L 28 19 L 16 31 L 4 19 Z" fill="none" stroke="#FFFFFF" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/><path d="M 4 16 L 16 4 L 28 16 L 16 28 Z" fill="url(#er-pink-top)" stroke="#80094F" stroke-width="0.6"/><path d="M 4 16 L 16 28 L 16 31 L 4 19 Z" fill="url(#er-pink-left)" stroke="#80094F" stroke-width="0.6"/><path d="M 16 28 L 28 16 L 28 19 L 16 31 Z" fill="url(#er-pink-right)" stroke="#80094F" stroke-width="0.6"/><path d="M 4 16 L 16 4 L 22 10 L 10 22 Z" fill="#FFFFFF" fill-opacity="0.45"/><circle cx="4" cy="28" r="0.8" fill="#FFFFFF" stroke="#80094F" stroke-width="0.4"/></g></svg>`;
@@ -4927,8 +5141,14 @@ export default function EditorPage() {
           setSelectedDisplayItem={setSelectedDisplayItem}
           onDeleteSelectedDisplayItem={handleDeleteSelectedDisplayItem}
           onReplaceSelectedImage={handleReplaceEmbeddedImage}
+          onCopySelectedImage={handleCopyEmbeddedImage}
           onClearImageReplaceMode={() => { replacingEmbeddedImageRef.current = null; }}
           displayItems={displayItems}
+          removedImages={removedImages}
+          onRestoreRemovedImage={handleRestoreRemovedImage}
+          onInsertRemovedImage={handleInsertRemovedImage}
+          onDeleteRemovedImage={handleDeleteRemovedImage}
+          onClearRemovedImages={handleClearRemovedImages}
           formFields={formFields}
           selectedFormField={selectedFormField}
           formFieldDraft={formFieldDraft}
@@ -5244,6 +5464,8 @@ export default function EditorPage() {
                   onCommitMove={handleEmbeddedImageMove}
                   onCommitResize={handleEmbeddedImageResize}
                   onReplace={handleReplaceEmbeddedImage}
+                  onCopy={handleCopyEmbeddedImage}
+                  onDelete={handleDeleteSelectedDisplayItem}
                   onDeselect={() => setSelectedDisplayItem(null)}
                 />
               );
@@ -5423,11 +5645,66 @@ export default function EditorPage() {
                         title="Delete Image"
                         onClick={(e) => {
                           e.stopPropagation();
+                          if (fi.dataUrl) {
+                            const record: RemovedImageRecord = {
+                              id: `removed-fi-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+                              dataUrl: fi.dataUrl,
+                              name: `Image ${fi.id}`,
+                              fileName,
+                              sourceType: 'floating',
+                              originalPage: currentPage,
+                              originalBounds: {
+                                x: fi.pdfX,
+                                y: fi.pdfY,
+                                width: fi.pdfWidth,
+                                height: fi.pdfHeight,
+                              },
+                              deletedAt: Date.now(),
+                            };
+                            setRemovedImages(prev => {
+                              const isDuplicate = prev.some(r => r.dataUrl === fi.dataUrl);
+                              if (isDuplicate) return prev;
+                              const updated = [record, ...prev];
+                              saveRemovedImages(updated);
+                              return updated;
+                            });
+                          }
                           setFloatingImages(prev => prev.filter(p => p.id !== fi.id));
                           if (activeFloatingImageId === fi.id) setActiveFloatingImageId(null);
                         }}
                       >
                         <X size={12} />
+                      </button>
+                      <button
+                        className="absolute -top-3 -left-3 bg-zinc-800 text-zinc-200 border border-zinc-600 rounded-full p-1 shadow hover:bg-zinc-700 transition-colors z-30"
+                        title="Copy Image (Duplicate & clipboard)"
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          if (fi.dataUrl) {
+                            try {
+                              const res = await fetch(fi.dataUrl);
+                              const blob = await res.blob();
+                              if (typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write) {
+                                await navigator.clipboard.write([
+                                  new ClipboardItem({ [blob.type || 'image/png']: blob }),
+                                ]);
+                              }
+                            } catch {}
+                            const dup: FloatingImage = {
+                              id: `dup-fi-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+                              dataUrl: fi.dataUrl,
+                              pdfX: fi.pdfX + 20,
+                              pdfY: fi.pdfY - 20,
+                              pdfWidth: fi.pdfWidth,
+                              pdfHeight: fi.pdfHeight,
+                            };
+                            setFloatingImages(prev => [...prev, dup]);
+                            setActiveFloatingImageId(dup.id);
+                            setIsDirty(true);
+                          }
+                        }}
+                      >
+                        <Copy size={12} />
                       </button>
                       <button
                         className="absolute -bottom-3 -right-3 bg-[#E8607A] text-white rounded-full p-1 shadow hover:bg-[#D94D6A] transition-colors z-30"

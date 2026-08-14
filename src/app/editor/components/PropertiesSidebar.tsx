@@ -1,11 +1,11 @@
-import React, { MutableRefObject } from 'react';
+import React, { MutableRefObject, useState } from 'react';
 import {
   Type, TextCursorInput, Image, PenTool, Highlighter, Eraser, MousePointer2,
   X, Trash2, Bold, Italic, Underline, AlignLeft, AlignCenter, AlignRight, Minus, Plus, Stamp, Link2,
   PenLine, Star, Copy, Lock, Unlock, RotateCw, KeyRound, ShieldCheck,
-  ArrowRight, Square, Circle, PanelLeftClose,
+  ArrowRight, Square, Circle, PanelLeftClose, RotateCcw, Download, History, ChevronDown, ChevronRight, Archive, Sparkles,
 } from 'lucide-react';
-import type { DrawMode, EditorTool } from '../types';
+import type { DrawMode, EditorTool, RemovedImageRecord } from '../types';
 import type { TextRun, ImageItem, PathItem, AcroFormWidget, VisualSignature, SignatureLibraryEntry, SignatureField, ManagedIdentity, ValidationReport, LtvStatus, ManagedSignature, RevisionViewEntry } from '@/engine';
 
 interface PropertiesSidebarProps {
@@ -66,8 +66,14 @@ interface PropertiesSidebarProps {
   setSelectedDisplayItem: (item: ImageItem | PathItem | null) => void;
   onDeleteSelectedDisplayItem?: () => void;
   onReplaceSelectedImage?: () => void;
+  onCopySelectedImage?: () => void;
   onClearImageReplaceMode?: () => void;
   displayItems: (ImageItem | PathItem)[];
+  removedImages?: RemovedImageRecord[];
+  onRestoreRemovedImage?: (img: RemovedImageRecord) => void;
+  onInsertRemovedImage?: (img: RemovedImageRecord) => void;
+  onDeleteRemovedImage?: (id: string) => void;
+  onClearRemovedImages?: () => void;
 
   formFields?: AcroFormWidget[];
   selectedFormField?: AcroFormWidget | null;
@@ -178,7 +184,8 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
     onAddLink, onScanLinks, linksHighlighted = false, pageLinkCount = 0,
     selectedLinkUrl = '', onSelectedLinkUrlChange, onSaveSelectedLink, onRemoveSelectedLink,
     hasSelectedLink = false, linkCreatePending = false,
-    selectedDisplayItem, setSelectedDisplayItem, onDeleteSelectedDisplayItem, onReplaceSelectedImage, onClearImageReplaceMode, displayItems,
+    selectedDisplayItem, setSelectedDisplayItem, onDeleteSelectedDisplayItem, onReplaceSelectedImage, onCopySelectedImage, onClearImageReplaceMode, displayItems,
+    removedImages = [], onRestoreRemovedImage, onInsertRemovedImage, onDeleteRemovedImage, onClearRemovedImages,
     formFields = [], selectedFormField, formFieldDraft = '',
     onFormFieldSelect, onFormFieldChange, onFlattenForms,
     onDuplicateLineBelow,
@@ -266,6 +273,27 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
   ];
 
   const isMobile = props.isMobile ?? false;
+
+  const [previewImage, setPreviewImage] = useState<RemovedImageRecord | null>(null);
+  const [isRemovedImagesOpen, setIsRemovedImagesOpen] = useState(true);
+
+  const formatRelativeTime = (timestamp: number): string => {
+    const diff = Date.now() - timestamp;
+    if (diff < 60_000) return 'Just now';
+    const mins = Math.floor(diff / 60_000);
+    if (mins < 60) return `${mins}m ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    return `${days}d ago`;
+  };
+
+  const handleDownloadImage = (img: RemovedImageRecord) => {
+    const a = document.createElement('a');
+    a.href = img.dataUrl;
+    a.download = `${(img.fileName || 'document').replace(/\.pdf$/i, '')}-page-${img.originalPage + 1}-img.jpg`;
+    a.click();
+  };
 
   return (
     <>
@@ -828,12 +856,22 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
           </div>
           <div className="space-y-2 pt-2">
             {selectedDisplayItem.type === 'image' && (
-              <button
-                onClick={() => onReplaceSelectedImage?.()}
-                className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-medium bg-[#E8607A]/10 text-[#E8607A] border border-[#E8607A]/30 hover:bg-[#D94D6A]/20 transition-colors"
-              >
-                <Image size={12} /> Replace Image
-              </button>
+              <>
+                <button
+                  onClick={() => onReplaceSelectedImage?.()}
+                  className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-medium bg-[#E8607A]/10 text-[#E8607A] border border-[#E8607A]/30 hover:bg-[#D94D6A]/20 transition-colors"
+                >
+                  <Image size={12} /> Replace Image
+                </button>
+                {onCopySelectedImage && (
+                  <button
+                    onClick={() => onCopySelectedImage()}
+                    className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-medium bg-zinc-800 text-zinc-200 border border-zinc-700 hover:bg-zinc-700 transition-colors"
+                  >
+                    <Copy size={12} /> Copy Image
+                  </button>
+                )}
+              </>
             )}
             <button
               onClick={() => setSelectedDisplayItem(null)}
@@ -845,15 +883,74 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
               onClick={() => onDeleteSelectedDisplayItem?.()}
               className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-medium bg-red-500/10 text-red-400 border border-red-500/30 hover:bg-red-500/20 transition-colors"
             >
-              <Trash2 size={12} /> Delete
+              <Trash2 size={12} /> Delete (Save to Bin)
             </button>
           </div>
+
+          {/* Collapsible Removed Images Drawer */}
+          {removedImages.length > 0 && (
+            <div className="pt-3 border-t border-app">
+              <button
+                type="button"
+                onClick={() => setIsRemovedImagesOpen(!isRemovedImagesOpen)}
+                className="w-full flex items-center justify-between text-[10px] font-bold tracking-widest text-app-muted uppercase hover:text-app transition-colors"
+              >
+                <div className="flex items-center gap-1.5">
+                  <History size={13} className="text-[#38BDF8]" />
+                  <span>Removed Images ({removedImages.length})</span>
+                </div>
+                {isRemovedImagesOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+              </button>
+
+              {isRemovedImagesOpen && (
+                <div className="mt-3 space-y-2 max-h-56 overflow-y-auto pr-0.5">
+                  {removedImages.map((img) => (
+                    <div
+                      key={img.id}
+                      className="bg-panel-elevated/80 border border-app rounded-lg p-2 flex items-center justify-between gap-2 hover:border-app-strong transition-all"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <img
+                          src={img.dataUrl}
+                          alt="Thumbnail"
+                          className="w-8 h-8 object-contain rounded bg-black/40 border border-app shrink-0 cursor-pointer"
+                          onClick={() => setPreviewImage(img)}
+                        />
+                        <div className="min-w-0">
+                          <div className="text-[10px] font-medium text-app truncate">Page {img.originalPage + 1}</div>
+                          <div className="text-[9px] text-app-faint">{Math.round(img.originalBounds.width)}×{Math.round(img.originalBounds.height)} pt</div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => onRestoreRemovedImage?.(img)}
+                          className="p-1 rounded bg-[#38BDF8]/15 text-[#38BDF8] hover:bg-[#38BDF8]/30 transition-colors"
+                          title={`Restore to Page ${img.originalPage + 1}`}
+                        >
+                          <RotateCcw size={11} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadImage(img)}
+                          className="p-1 rounded bg-panel-elevated text-app-muted hover:text-app transition-colors"
+                          title="Download"
+                        >
+                          <Download size={11} />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
       {/* SELECT TOOL — NO SELECTION */}
       {activeTool === 'select' && !selectedDisplayItem && (
-        <div className="p-4 space-y-3 animate-in fade-in slide-in-from-left-4 duration-300">
+        <div className="p-4 space-y-4 animate-in fade-in slide-in-from-left-4 duration-300">
           <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-app-muted uppercase">
             <MousePointer2 size={14} />
             Select Tool
@@ -874,6 +971,122 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
               </div>
             </div>
           )}
+
+          {/* REMOVED IMAGES SECTION */}
+          <div className="pt-2 border-t border-app space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5 text-[10px] font-bold tracking-widest text-app-muted uppercase">
+                <History size={14} className="text-[#38BDF8]" />
+                <span>Removed Images</span>
+                {removedImages.length > 0 && (
+                  <span className="px-1.5 py-0.2 rounded-full bg-[#38BDF8]/20 text-[#38BDF8] text-[9px] font-bold">
+                    {removedImages.length}
+                  </span>
+                )}
+              </div>
+              {removedImages.length > 0 && onClearRemovedImages && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (window.confirm('Clear all removed images history?')) {
+                      onClearRemovedImages();
+                    }
+                  }}
+                  className="text-[10px] font-medium text-app-faint hover:text-red-400 transition-colors"
+                >
+                  Clear All
+                </button>
+              )}
+            </div>
+
+            {removedImages.length === 0 ? (
+              <div className="rounded-xl bg-panel-elevated/50 border border-dashed border-app/80 p-3.5 text-center space-y-1.5">
+                <div className="w-8 h-8 rounded-full bg-panel-elevated mx-auto flex items-center justify-center text-app-faint">
+                  <Archive size={16} />
+                </div>
+                <div className="text-[11px] font-medium text-app-muted">No removed images</div>
+                <div className="text-[10px] text-app-faint leading-relaxed">
+                  When you delete images from the PDF, they will be kept here so you can restore them anytime, even after refreshing the page.
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-2.5 max-h-[420px] overflow-y-auto pr-0.5">
+                {removedImages.map((img) => (
+                  <div
+                    key={img.id}
+                    className="bg-panel-elevated/90 border border-app hover:border-app-strong rounded-xl p-2.5 space-y-2 transition-all shadow-xs"
+                  >
+                    <div className="flex gap-2.5 items-start">
+                      <div
+                        className="w-13 h-13 rounded-lg bg-black/40 border border-app overflow-hidden shrink-0 flex items-center justify-center cursor-pointer group relative"
+                        onClick={() => setPreviewImage(img)}
+                        title="Click to zoom preview"
+                      >
+                        <img src={img.dataUrl} alt="Removed thumbnail" className="w-full h-full object-contain" />
+                        <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity text-white text-[9px] font-medium">
+                          Zoom
+                        </div>
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-[11px] font-semibold text-app truncate">
+                            Page {img.originalPage + 1}
+                          </span>
+                          <span className="text-[9px] text-app-faint shrink-0">
+                            {formatRelativeTime(img.deletedAt)}
+                          </span>
+                        </div>
+                        <div className="text-[10px] text-app-faint mt-0.5">
+                          {Math.round(img.originalBounds.width)} × {Math.round(img.originalBounds.height)} pt
+                        </div>
+                        <div className="text-[9px] text-[#38BDF8] font-medium mt-0.5">
+                          {img.sourceType === 'embedded' ? 'PDF Embedded' : 'Overlay Image'}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-1.5 pt-1 border-t border-app/60">
+                      <button
+                        type="button"
+                        onClick={() => onRestoreRemovedImage?.(img)}
+                        className="flex items-center justify-center gap-1 py-1.5 px-2 rounded-lg text-[10px] font-semibold bg-[#38BDF8]/15 text-[#38BDF8] hover:bg-[#38BDF8]/25 border border-[#38BDF8]/30 transition-colors shadow-xs"
+                        title={`Restore to Page ${img.originalPage + 1} at original position`}
+                      >
+                        <RotateCcw size={11} /> Restore
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onInsertRemovedImage?.(img)}
+                        className="flex items-center justify-center gap-1 py-1.5 px-2 rounded-lg text-[10px] font-medium bg-panel-elevated hover:bg-panel-elevated/80 text-app border border-app transition-colors shadow-xs"
+                        title="Insert as movable image on current page"
+                      >
+                        <Plus size={11} /> Insert Here
+                      </button>
+                    </div>
+
+                    <div className="flex items-center justify-between pt-0.5 px-0.5 text-[10px]">
+                      <button
+                        type="button"
+                        onClick={() => handleDownloadImage(img)}
+                        className="flex items-center gap-1 text-app-muted hover:text-app transition-colors"
+                        title="Download image"
+                      >
+                        <Download size={10} /> Download
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onDeleteRemovedImage?.(img.id)}
+                        className="flex items-center gap-1 text-app-faint hover:text-red-400 transition-colors"
+                        title="Delete permanently from bin"
+                      >
+                        <Trash2 size={10} /> Delete
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -1685,6 +1898,72 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
         </div>
       )}
     </div>
+
+    {/* Lightbox Preview Modal for Removed Image */}
+    {previewImage && (
+      <div
+        className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-200"
+        onClick={() => setPreviewImage(null)}
+      >
+        <div
+          className="bg-panel border border-app rounded-2xl p-4 max-w-sm w-full space-y-3 shadow-2xl animate-in zoom-in-95 duration-200"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-app flex items-center gap-1.5">
+              <History size={14} className="text-[#38BDF8]" />
+              Removed Image Preview
+            </span>
+            <button
+              onClick={() => setPreviewImage(null)}
+              className="text-app-faint hover:text-app p-1 rounded-lg hover:bg-panel-elevated transition-colors"
+            >
+              <X size={14} />
+            </button>
+          </div>
+          <div className="max-h-64 overflow-hidden rounded-xl bg-black/50 border border-app flex items-center justify-center p-2">
+            <img
+              src={previewImage.dataUrl}
+              alt="Removed image preview"
+              className="max-h-56 max-w-full object-contain rounded"
+            />
+          </div>
+          <div className="text-[11px] text-app-faint space-y-1 bg-panel-elevated/70 p-2.5 rounded-lg border border-app">
+            <div className="flex justify-between">
+              <span>Original Page:</span>
+              <span className="text-app font-medium">Page {previewImage.originalPage + 1}</span>
+            </div>
+            <div className="flex justify-between">
+              <span>Dimensions:</span>
+              <span className="text-app font-medium">{Math.round(previewImage.originalBounds.width)} × {Math.round(previewImage.originalBounds.height)} pt</span>
+            </div>
+            <div className="flex justify-between">
+              <span>Deleted:</span>
+              <span className="text-app font-medium">{formatRelativeTime(previewImage.deletedAt)}</span>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-2 pt-1">
+            <button
+              onClick={() => {
+                onRestoreRemovedImage?.(previewImage);
+                setPreviewImage(null);
+              }}
+              className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg text-xs font-semibold bg-[#38BDF8] text-white hover:bg-[#0ea5e9] transition-colors shadow-xs"
+            >
+              <RotateCcw size={13} /> Restore
+            </button>
+            <button
+              onClick={() => {
+                handleDownloadImage(previewImage);
+              }}
+              className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg text-xs font-medium bg-panel-elevated text-app hover:bg-panel-elevated/80 border border-app transition-colors shadow-xs"
+            >
+              <Download size={13} /> Download
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
     </>
   );
 }

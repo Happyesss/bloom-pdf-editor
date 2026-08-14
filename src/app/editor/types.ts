@@ -69,3 +69,21 @@ export interface FloatingImage {
   pdfHeight: number;
   dataUrl: string;
 }
+
+export interface RemovedImageRecord {
+  id: string;
+  dataUrl: string;
+  name?: string;
+  fileName?: string;
+  sourceType: 'embedded' | 'floating';
+  originalPage: number; // 0-indexed page number
+  originalBounds: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+  pixelWidth?: number;
+  pixelHeight?: number;
+  deletedAt: number; // unix timestamp
+}

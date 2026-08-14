@@ -1283,24 +1283,13 @@ export default function EditorPage() {
         baseline,
         scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
       );
-      // Cover the active line plus same-baseline peers that the growing text
-      // would collide with (split title|tags cells). Keep the char-width estimate
-      // conservative — inflated factors painted huge white bands over the page.
-      const growWPdf = Math.max(
-        bounds.width,
-        editText.length > 0 ? editText.length * maxFs * 0.55 : 0,
-      );
-      let coverWPdf = growWPdf;
-      const peerLines = renderResult.textLines ?? [];
-      for (let pi = 0; pi < peerLines.length; pi++) {
-        const pl = peerLines[pi];
-        if (pl.id === anchor.id) continue;
-        if (Math.abs(pl.baseline - baseline) > Math.max(2, maxFs * 0.35)) continue;
-        const peerRight = pl.x + pl.width;
-        if (pl.x < bounds.x + growWPdf + maxFs && peerRight > bounds.x) {
-          coverWPdf = Math.max(coverWPdf, peerRight - bounds.x);
-        }
-      }
+      // Cover the original line being edited on canvas so it doesn't show behind
+      // the HTML edit box. Never expand across other lines, emblems, or columns.
+      const origWPdf = bounds.width;
+      const textLen = (editText || '').length;
+      const origLen = Math.max(1, (anchor.text || '').length);
+      const growRatio = textLen > origLen ? textLen / origLen : 1;
+      const coverWPdf = Math.max(origWPdf, Math.min(origWPdf * 2.5, origWPdf * growRatio));
       const growW = coverWPdf * scale;
       const rx = leftPt.cssX + editOffsetCss.x;
       const ry = leftPt.cssY - ascent + editOffsetCss.y;
@@ -1308,7 +1297,7 @@ export default function EditorPage() {
       const rh = editManualSize.h ?? (ascent + descent);
 
       ctx.fillStyle = '#ffffff';
-      ctx.fillRect(rx - 1, ry - 1, rw + 2, rh + 2);
+      ctx.fillRect(rx - 0.5, ry - 0.5, rw + 1, rh + 1);
 
       // Path underlines only cover original glyph spans — extend a stroke under
       // underlined runs as the line grows so mid-line inserts stay underlined.
@@ -5910,8 +5899,6 @@ export default function EditorPage() {
                 let italic = fd?.fontBytes
                   ? faceStyle.fontStyle === 'italic' || flags.italic
                   : flags.italic;
-                // When embedded bold face is used, CSS weight stays normal
-                const useEmbeddedFace = !!(fd?.fontBytes && fd.baseFont);
                 let underline = !!run.isUnderline || runHasPathUnderline(run, pathItems);
                 let color = run.fillColor
                   ? `rgb(${Math.round(run.fillColor[0] * 255)}, ${Math.round(run.fillColor[1] * 255)}, ${Math.round(run.fillColor[2] * 255)})`
@@ -5932,23 +5919,15 @@ export default function EditorPage() {
                   }
                 }
 
-                const hasBoldOv = editStyleOverrides.some(
-                  o => piece.start >= o.start && piece.end <= o.end && o.bold != null,
-                );
-                const hasItalicOv = editStyleOverrides.some(
-                  o => piece.start >= o.start && piece.end <= o.end && o.italic != null,
-                );
-
-                const fontWeight = useEmbeddedFace && !hasBoldOv ? 'normal' : (bold ? 'bold' : 'normal');
+                const fontWeight = bold ? 'bold' : 'normal';
+                const fontStyle = italic ? 'italic' : 'normal';
 
                 return {
                   text: piece.text,
                   fontFamily: segFontFamily,
                   fontSizeCss: segFontSize,
-                  // Embedded faces already include weight — synthesizing CSS bold
-                  // on top makes mid-line inserts look heavier/wrong vs neighbors.
                   fontWeight,
-                  fontStyle: useEmbeddedFace && !hasItalicOv ? 'normal' : (italic ? 'italic' : 'normal'),
+                  fontStyle,
                   underline,
                   color,
                 };

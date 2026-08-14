@@ -88,7 +88,8 @@ export function getDisplayFontFamily(fontName: string, fontData?: FontData): str
 export function getOverlayFontFamily(fontName: string, fontData?: FontData): string {
   if (fontData?.fontBytes && fontData.baseFont) {
     const stripped = stripPdfFontPrefix(fontData.baseFont);
-    return `"${stripped}", "${fontData.baseFont}", serif`;
+    const display = getDisplayFontFamily(fontName, fontData);
+    return `"${stripped}", "${fontData.baseFont}", "${display}", serif`;
   }
   // Match canvas renderer — Standard14 faces must use the same cssFamily or
   // mid-line inserts look like a different (often lighter) face than neighbors.

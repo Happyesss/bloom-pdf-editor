@@ -9,7 +9,7 @@
  *   5. Detect justification from inter-run gap distribution.
  */
 
-import type { TextRun } from '../content/interpreter';
+import type { TextRun, GlyphPosition } from '../content/interpreter';
 import type { StyledSegment, TextLine } from './types';
 import { computeBaseline, getRunBounds } from './metrics';
 import { detectTabSplitIndex, detectJustifiedBodyText, detectColumnSplitIndices } from './justification-detect';
@@ -96,6 +96,53 @@ function finalizeLine(runs: TextRun[]): TextLine {
   };
 }
 
+function splitRunByInternalGaps(run: TextRun): TextRun[] {
+  if (run.glyphs.length <= 1) return [run];
+  const sortedGlyphs = [...run.glyphs].sort((a, b) => a.tRm.e - b.tRm.e);
+  const fs = run.fontSize || sortedGlyphs[0]?.fontSize || 12;
+  const gapThreshold = Math.max(fs * 1.25, 10);
+
+  const chunks: GlyphPosition[][] = [];
+  let currentChunk: GlyphPosition[] = [sortedGlyphs[0]];
+
+  for (let i = 0; i < sortedGlyphs.length - 1; i++) {
+    const curr = sortedGlyphs[i];
+    const next = sortedGlyphs[i + 1];
+    const gap = next.tRm.e - (curr.tRm.e + curr.width);
+    if (gap >= gapThreshold) {
+      chunks.push(currentChunk);
+      currentChunk = [next];
+    } else {
+      currentChunk.push(next);
+    }
+  }
+  chunks.push(currentChunk);
+
+  if (chunks.length <= 1) return [run];
+
+  return chunks.map(chunk => {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    let text = '';
+    for (let k = 0; k < chunk.length; k++) {
+      const g = chunk[k];
+      if (g.x < minX) minX = g.x;
+      if (g.y < minY) minY = g.y;
+      if (g.x + g.width > maxX) maxX = g.x + g.width;
+      if (g.y + g.fontSize > maxY) maxY = g.y + g.fontSize;
+      text += g.unicode || '';
+    }
+    return {
+      ...run,
+      text,
+      glyphs: chunk,
+      x: minX,
+      y: minY,
+      width: maxX - minX,
+      height: maxY - minY,
+    };
+  });
+}
+
 function processCluster(runs: TextRun[]): TextLine[] {
   if (runs.length === 0) return [];
   const sorted = [...runs].sort((a, b) => getRunBounds(a).left - getRunBounds(b).left);
@@ -140,7 +187,9 @@ function processCluster(runs: TextRun[]): TextLine[] {
 export function reconstructLines(runs: TextRun[]): TextLine[] {
   if (runs.length === 0) return [];
 
-  const enriched = runs.map(run => ({
+  const splitRuns = runs.flatMap(splitRunByInternalGaps);
+
+  const enriched = splitRuns.map(run => ({
     run,
     baseline: computeBaseline(run),
     left: getRunBounds(run).left,

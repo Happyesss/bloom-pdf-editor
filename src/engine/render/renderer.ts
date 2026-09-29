@@ -25,6 +25,7 @@ import type { FlowGlyphDraw } from '../flow/flow-draw';
 import { loadPageFonts, type FontData } from '../fonts/font-parser';
 import { isTrueTypeFontData } from '../fonts/truetype-parser';
 import { getCSSFontFamily, getStandardFont } from '../fonts/standard14';
+import { isIndicCombiningChar, normalizeIndicText, INDIC_FONT_FALLBACKS, hasIndicText } from '../fonts/indic-normalizer';
 import { decodeImage } from './image-decoder';
 import { rgbToCSSColor } from './color-space';
 import { applyClipPaths } from './clipping';
@@ -700,7 +701,18 @@ function drawTextRunAtPositions(
           const cur = positions[ci];
           const gap = cur.x - (prev.x + prev.glyph.width);
           const fs = cur.glyph.fontSize || run.fontSize || 12;
-          if (gap > fs * gapFrac || gap < -fs * 0.02) break;
+          const isIndic =
+            hasIndicText(cur.glyph.unicode) ||
+            hasIndicText(prev.glyph.unicode) ||
+            isIndicCombiningChar(cur.glyph.unicode) ||
+            isIndicCombiningChar(prev.glyph.unicode);
+
+          if (isIndic) {
+            // Never split inside an Indic word across intra-word kerning/vowel gaps
+            if (gap > fs * 1.5) break;
+          } else {
+            if (gap > fs * gapFrac || gap < -fs * 0.02) break;
+          }
           text += cur.glyph.unicode;
           ci++;
         }
@@ -723,7 +735,17 @@ function drawTextRunAtPositions(
         const effFontSize = Math.sqrt(tRm.c * tRm.c + tRm.d * tRm.d);
         if (effFontSize < 0.1) continue;
 
-        const pdfSpan = chunkPdfSpan(
+        let originX = firstPos.x;
+        const isIndic = hasIndicText(chunk.text);
+        if (isIndic) {
+          let minX = Infinity;
+          for (let i = chunk.start; i < chunk.end; i++) {
+            if (positions[i].x < minX) minX = positions[i].x;
+          }
+          if (minX < Infinity) originX = minX;
+        }
+
+        let pdfSpan = chunkPdfSpan(
           i => positions[i].x,
           i => positions[i].glyph.width,
           i => positions[i].glyph.fontSize || run.fontSize || 12,
@@ -733,11 +755,15 @@ function drawTextRunAtPositions(
           nextDrawable,
         );
 
+        if (isIndic && originX < firstPos.x) {
+          pdfSpan += (firstPos.x - originX);
+        }
+
         ctx.save();
         ctx.transform(
           tRm.a / effFontSize, tRm.b / effFontSize,
           tRm.c / effFontSize, tRm.d / effFontSize,
-          firstPos.x, firstPos.f,
+          originX, firstPos.f,
         );
         ctx.scale(1, -1);
 
@@ -749,8 +775,9 @@ function drawTextRunAtPositions(
 
         ctx.font = `${style} ${weight} ${effFontSize}px ${family}`;
 
-        if (pdfSpan > 0.5 && chunk.text.length > 0) {
-          const browserWidth = ctx.measureText(chunk.text).width;
+        const drawText = normalizeIndicText(chunk.text);
+        if (pdfSpan > 0.5 && drawText.length > 0) {
+          const browserWidth = ctx.measureText(drawText).width;
           if (browserWidth > 0.1) {
             const hScale = Math.abs(tRm.a) / effFontSize;
             const expectedWidth = pdfSpan / (hScale || 1);
@@ -763,7 +790,7 @@ function drawTextRunAtPositions(
           }
         }
 
-        ctx.fillText(chunk.text, 0, 0);
+        ctx.fillText(drawText, 0, 0);
 
         if (run.isUnderline) {
           const underlineY = effFontSize * 0.15;
@@ -948,8 +975,18 @@ function drawWordGrouped(
       const cur = glyphs[ci];
       const gap = cur.tRm.e - (prev.tRm.e + prev.width);
       const fs = cur.fontSize || run.fontSize || 12;
-      // Split on large gaps OR overlaps (negative gaps from width errors)
-      if (gap > fs * CHUNK_GAP_FRAC || gap < -fs * 0.02) break;
+      const isIndic =
+        hasIndicText(cur.unicode) ||
+        hasIndicText(prev.unicode) ||
+        isIndicCombiningChar(cur.unicode) ||
+        isIndicCombiningChar(prev.unicode);
+
+      if (isIndic) {
+        // Never split inside an Indic word across intra-word kerning/vowel gaps
+        if (gap > fs * 1.5) break;
+      } else {
+        if (gap > fs * CHUNK_GAP_FRAC || gap < -fs * 0.02) break;
+      }
       text += cur.unicode;
       ci++;
     }
@@ -971,6 +1008,16 @@ function drawWordGrouped(
     const effFontSize = Math.sqrt(tRm.c * tRm.c + tRm.d * tRm.d);
     if (effFontSize < 0.1) continue;
 
+    let originX = firstGlyph.tRm.e;
+    const isIndic = hasIndicText(chunk.text);
+    if (isIndic) {
+      let minX = Infinity;
+      for (let i = chunk.start; i < chunk.end; i++) {
+        if (glyphs[i].tRm.e < minX) minX = glyphs[i].tRm.e;
+      }
+      if (minX < Infinity) originX = minX;
+    }
+
     let pdfSpan = chunkPdfSpan(
       i => glyphs[i].tRm.e,
       i => glyphs[i].width,
@@ -981,11 +1028,15 @@ function drawWordGrouped(
       nextDrawable,
     );
 
+    if (isIndic && originX < firstGlyph.tRm.e) {
+      pdfSpan += (firstGlyph.tRm.e - originX);
+    }
+
     ctx.save();
     ctx.transform(
       tRm.a / effFontSize, tRm.b / effFontSize,
       tRm.c / effFontSize, tRm.d / effFontSize,
-      firstGlyph.tRm.e, firstGlyph.tRm.f,
+      originX, firstGlyph.tRm.f,
     );
     ctx.scale(1, -1);
 
@@ -998,8 +1049,9 @@ function drawWordGrouped(
 
     ctx.font = `${style} ${weight} ${effFontSize}px ${family}`;
 
-    if (pdfSpan > 0.5 && chunk.text.length > 0) {
-      const browserWidth = ctx.measureText(chunk.text).width;
+    const drawText = normalizeIndicText(chunk.text);
+    if (pdfSpan > 0.5 && drawText.length > 0) {
+      const browserWidth = ctx.measureText(drawText).width;
       if (browserWidth > 0.1) {
         const hScale = Math.abs(tRm.a) / effFontSize;
         const expectedWidth = pdfSpan / (hScale || 1);
@@ -1012,12 +1064,12 @@ function drawWordGrouped(
       }
     }
 
-    ctx.fillText(chunk.text, 0, 0);
+    ctx.fillText(drawText, 0, 0);
 
     if (run.isUnderline) {
       const underlineY = effFontSize * 0.15;
       const underlineThickness = Math.max(1, effFontSize * 0.05);
-      const charWidth = ctx.measureText(chunk.text).width;
+      const charWidth = ctx.measureText(drawText).width;
       ctx.beginPath();
       ctx.moveTo(0, underlineY);
       ctx.lineTo(charWidth, underlineY);
@@ -1062,18 +1114,20 @@ function drawGlyph(
 
   ctx.font = `${style} ${weight} ${effFontSize}px ${family}`;
 
+  const drawGlyphText = normalizeIndicText(glyph.unicode);
+
   // Fit substitute-font glyph into the PDF advance so letters don't overlap.
   const pdfAdvance = Math.max(glyph.width, 0.01);
   const hScale = Math.abs(tRm.a) / effFontSize || 1;
   const expected = pdfAdvance / hScale;
-  const measured = ctx.measureText(glyph.unicode).width;
+  const measured = ctx.measureText(drawGlyphText).width;
   if (measured > 0.1) {
     let ratio = expected / measured;
     ratio = Math.max(0.45, Math.min(1.85, ratio));
     if (Math.abs(ratio - 1) > 0.005) ctx.scale(ratio, 1);
   }
 
-  ctx.fillText(glyph.unicode, 0, 0);
+  ctx.fillText(drawGlyphText, 0, 0);
 
   if (run.isUnderline) {
     const underlineY = effFontSize * 0.15;
@@ -1133,25 +1187,41 @@ function getCanvasFontProperties(
     // Symbol / ZapfDingbats: always paint remapped Unicode with a real system
     // symbols face. Embedded Symbol subsets only cmap PUA/Mac bytes, so
     // fillText("•") / fillText("x") both fail against the embedded FontFace.
+    const isIndic =
+      lower.includes('kruti') ||
+      lower.includes('devlys') ||
+      lower.includes('chanakya') ||
+      lower.includes('mangal') ||
+      lower.includes('nirmala') ||
+      lower.includes('deva') ||
+      lower.includes('hindi') ||
+      lower.includes('hind') ||
+      lower.includes('walkman') ||
+      lower.includes('shusha') ||
+      lower.includes('shree') ||
+      lower.includes('aps');
+
     if (isDingbatOrSymbolFamily(fontData.baseFont)) {
       family = '"Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols", sans-serif';
       weight = 'normal';
       style = 'normal';
+    } else if (isIndic) {
+      family = `${INDIC_FONT_FALLBACKS}`;
     } else if (fontData.fontBytes && stripped) {
       // Embedded face already carries weight/style. Applying CSS bold/italic
       // on top synthesizes extra stroke and breaks measureText vs PDF Widths
       // (classic Acrobat vs canvas mismatch). Only use CSS weight when the
       // FontFace failed to load and we fall back to a system family.
-      let fallback = 'serif';
+      let fallback = `serif, ${INDIC_FONT_FALLBACKS}`;
       if (lower.includes('courier') || lower.includes('mono') || lower.includes('cumberland')) {
-        fallback = '"Courier New", Courier, monospace';
+        fallback = `"Courier New", Courier, monospace, ${INDIC_FONT_FALLBACKS}`;
       } else if (lower.includes('helv') || lower.includes('arial') || lower.includes('sans') || lower.includes('albany')) {
-        fallback = 'Helvetica, Arial, sans-serif';
+        fallback = `Helvetica, Arial, ${INDIC_FONT_FALLBACKS}`;
       } else if (
         lower.includes('times') || lower.includes('roman') ||
         lower.includes('serif') || lower.includes('cmr') || lower.includes('ptm') || lower.includes('thorndale')
       ) {
-        fallback = '"Times New Roman", Times, serif';
+        fallback = `"Times New Roman", Times, "Noto Serif Devanagari", ${INDIC_FONT_FALLBACKS}`;
       }
       const rawStripped = stripFontSubsetPrefix(fontData.baseFont);
       family = `"${stripped}", "${rawStripped}", "${fontData.baseFont}", ${fallback}`;
@@ -1168,26 +1238,26 @@ function getCanvasFontProperties(
         style = 'normal';
       }
     } else if (fontData.standardMetrics) {
-      family = fontData.standardMetrics.cssFamily;
+      family = `${fontData.standardMetrics.cssFamily}, ${INDIC_FONT_FALLBACKS}`;
       if (isDingbatOrSymbolFamily(fontData.baseFont)) {
         family = '"Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols", sans-serif';
       }
     } else if (isDingbatOrSymbolFamily(fontData.baseFont)) {
       family = '"Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols", sans-serif';
     } else if (lower.includes('courier') || lower.includes('mono') || lower.includes('cmtt') || lower.includes('lmtt') || lower.includes('cumberland')) {
-      family = '"Courier New", Courier, monospace';
+      family = `"Courier New", Courier, monospace, ${INDIC_FONT_FALLBACKS}`;
     } else if (
       lower.includes('times') || lower.includes('roman') ||
       lower.includes('cmr') || lower.includes('lmr') || lower.includes('ptm') || lower.includes('thorndale')
     ) {
-      family = '"Times New Roman", Times, serif';
+      family = `"Times New Roman", Times, "Noto Serif Devanagari", ${INDIC_FONT_FALLBACKS}`;
     } else if (lower.includes('helv') || lower.includes('arial') || lower.includes('cms') || lower.includes('lmss') || lower.includes('albany')) {
-      family = 'Helvetica, Arial, sans-serif';
+      family = `Helvetica, Arial, ${INDIC_FONT_FALLBACKS}`;
     } else if (stripped) {
-      family = `"${stripped}", serif`;
+      family = `"${stripped}", serif, ${INDIC_FONT_FALLBACKS}`;
     }
   } else {
-    family = getCSSFontFamily(fontName);
+    family = `${getCSSFontFamily(fontName)}, ${INDIC_FONT_FALLBACKS}`;
   }
 
   return { family, weight, style };

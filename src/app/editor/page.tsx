@@ -8,19 +8,23 @@ import {
   loadEditorSession,
   saveEditorSession,
   clearEditorSession,
+  saveRemovedImages,
+  loadRemovedImages,
+  clearRemovedImages,
 } from '@/lib/pdfStorage';
-import { X, Loader2, ChevronLeft, Image, Type } from 'lucide-react';
+import { X, Loader2, ChevronLeft, Image, Type, Copy, RotateCw } from 'lucide-react';
 
 // We import types only — the engine modules are loaded dynamically
 // because they require browser APIs (canvas, DecompressionStream)
-import type { PDFDocumentData, RenderResult, TextRun, TextLine, ImageItem, PathItem, DisplayItem, TextWatermark, ImageWatermark, Watermark, DetectedWatermark, AcroFormWidget, BloomPage, DetectedTable, VisualSignature, SignatureLibraryEntry, SignatureField, ManagedIdentity, ValidationReport, LtvStatus, ManagedSignature, RevisionViewEntry } from '@/engine';
+import type { PDFDocumentData, PDFObject, PDFPageInfo, RenderResult, TextRun, TextLine, ImageItem, PathItem, DisplayItem, TextWatermark, ImageWatermark, Watermark, DetectedWatermark, AcroFormWidget, BloomPage, DetectedTable, VisualSignature, SignatureLibraryEntry, SignatureField, ManagedIdentity, ValidationReport, LtvStatus, ManagedSignature, RevisionViewEntry } from '@/engine';
 
-import type { EditorTool, ToolDef, PathType, DrawnPath, FloatingText, FloatingImage, DrawMode } from './types';
+import type { EditorTool, ToolDef, PathType, DrawnPath, FloatingText, FloatingImage, DrawMode, RemovedImageRecord } from './types';
 import { TOOLS } from './types';
 import {
   canvasToPdf, pdfToCanvas, hexToRGB,
   hitTestTextLine, findNearestTextLine, caretIndexFromLineX,
   getLineBounds, getOverlayFontFamily, getOverlayFontStyle, getDisplayFontFamily,
+  extractImageItemDataUrl,
 } from './utils';
 import { buildDisplayListIndex, hitTestDisplayList, isSelectableDisplayItem, EditorHistory, captureHistoryEntry, restoreAnnotSnapshot, parseOverlaySnapshot, deleteObject, visualFontSize, resolveRunStyleFlags, transformObject, applyObjectTransform, distributeTextChangeToSegments, segmentAtIndex, createVisualSignature, hitTestSignature, moveSignature, resizeSignature, rotateSignature, setSignatureOpacity, setSignatureLocked, deleteSignature, updateSignature, getSignatureLibrary, DEFAULT_SIGNATURE_SIZE, detectSignatureFieldsOnPage, hitTestSignatureField, createSignatureFieldAtPoint, applySignatureFieldAppearanceAsync, getCertificateManager, signDocumentCryptographic, validateDocumentSignatures, enableLongTermValidation, getLtvStatus, listManagedSignatures, buildRevisionViewer, lockSignaturesAfterSigning, pushRecentSignatureId, orderLibraryByRecent, SIGNATURE_SHORTCUTS } from '@/engine';
 import type { QuadTree, SelectableItem, EditableObject } from '@/engine';
@@ -395,6 +399,11 @@ export default function EditorPage() {
   /** When set, next file pick replaces this embedded PDF image in-place. */
   const replacingEmbeddedImageRef = useRef<ImageItem | null>(null);
 
+  /** Removed / deleted images bin for instant restoration */
+  const [removedImages, setRemovedImages] = useState<RemovedImageRecord[]>([]);
+  const removedImagesRef = useRef<RemovedImageRecord[]>([]);
+  removedImagesRef.current = removedImages;
+
   const dragInfo = useRef<{ id: string; type: 'text' | 'image'; startX: number; startY: number; startPdfX: number; startPdfY: number } | null>(null);
 
   /** Viewport grab-to-pan while zoomed (or Space held). */
@@ -469,6 +478,7 @@ export default function EditorPage() {
   const floatingImagesRef = useRef<FloatingImage[]>([]);
   floatingImagesRef.current = floatingImages;
   const signaturesRef = useRef<VisualSignature[]>([]);
+  const committingPromiseRef = useRef<Promise<void> | null>(null);
 
   const syncTxState = useCallback(() => {
     setCanUndo(historyRef.current.canUndo());
@@ -810,16 +820,18 @@ export default function EditorPage() {
               floatingTextsJson: JSON.stringify(floatingTextsRef.current),
               floatingImagesJson: JSON.stringify(floatingImagesRef.current),
               signaturesJson: JSON.stringify(signaturesRef.current),
+              removedImagesJson: JSON.stringify(removedImagesRef.current),
               currentPage,
             },
           });
+          await saveRemovedImages(removedImagesRef.current);
         } catch (e) {
           console.warn('[Editor] Session autosave failed:', e);
         }
       })();
     }, 2500);
     return () => clearTimeout(timer);
-  }, [isDirty, doc, fileName, currentPage, isLoading, drawnPaths, floatingTexts, floatingImages, signatures, renderKey]);
+  }, [isDirty, doc, fileName, currentPage, isLoading, drawnPaths, floatingTexts, floatingImages, signatures, removedImages, renderKey]);
 
   // Caret blinking
   const caretVisibleRef = useRef(true);
@@ -888,11 +900,20 @@ export default function EditorPage() {
         engineRef.current = engine;
         setEngineModule(engine);
 
-        // Prefer dirty session recovery when available
+        // Prefer dirty session recovery ONLY when it matches the current document file name
         const session = await loadEditorSession();
-        if (session && session.bytes?.byteLength) {
+        if (session && session.bytes?.byteLength && session.fileName === stored.fileName) {
           try {
             setFileName(session.fileName || stored.fileName);
+            if (session.overlays?.removedImagesJson) {
+              try {
+                const sessionRemoved = parseOverlaySnapshot<RemovedImageRecord[]>(session.overlays.removedImagesJson);
+                if (sessionRemoved && Array.isArray(sessionRemoved) && sessionRemoved.length > 0) {
+                  setRemovedImages(sessionRemoved);
+                  removedImagesRef.current = sessionRemoved;
+                }
+              } catch {}
+            }
             const parsed = await engine.parsePDF(new Uint8Array(session.bytes));
             if (cancelled) return;
             if (!engine.securityEngine.isEncrypted(parsed)) {
@@ -912,6 +933,20 @@ export default function EditorPage() {
             console.warn('[Editor] Session restore failed, falling back to upload:', sessErr);
           }
         }
+
+        // Fresh PDF load — clear previous session, removed images, and overlays
+        await clearEditorSession();
+        await clearRemovedImages();
+        setRemovedImages([]);
+        removedImagesRef.current = [];
+        setDrawnPaths([]);
+        drawnPathsRef.current = [];
+        setFloatingTexts([]);
+        floatingTextsRef.current = [];
+        setFloatingImages([]);
+        floatingImagesRef.current = [];
+        setSignatures([]);
+        signaturesRef.current = [];
 
         setFileName(stored.fileName);
         const pdfBytes = new Uint8Array(stored.bytes);
@@ -1249,24 +1284,13 @@ export default function EditorPage() {
         baseline,
         scale, renderResult.pageHeight, mediaBox.x, mediaBox.y,
       );
-      // Cover the active line plus same-baseline peers that the growing text
-      // would collide with (split title|tags cells). Keep the char-width estimate
-      // conservative — inflated factors painted huge white bands over the page.
-      const growWPdf = Math.max(
-        bounds.width,
-        editText.length > 0 ? editText.length * maxFs * 0.55 : 0,
-      );
-      let coverWPdf = growWPdf;
-      const peerLines = renderResult.textLines ?? [];
-      for (let pi = 0; pi < peerLines.length; pi++) {
-        const pl = peerLines[pi];
-        if (pl.id === anchor.id) continue;
-        if (Math.abs(pl.baseline - baseline) > Math.max(2, maxFs * 0.35)) continue;
-        const peerRight = pl.x + pl.width;
-        if (pl.x < bounds.x + growWPdf + maxFs && peerRight > bounds.x) {
-          coverWPdf = Math.max(coverWPdf, peerRight - bounds.x);
-        }
-      }
+      // Cover the original line being edited on canvas so it doesn't show behind
+      // the HTML edit box. Never expand across other lines, emblems, or columns.
+      const origWPdf = bounds.width;
+      const textLen = (editText || '').length;
+      const origLen = Math.max(1, (anchor.text || '').length);
+      const growRatio = textLen > origLen ? textLen / origLen : 1;
+      const coverWPdf = Math.max(origWPdf, Math.min(origWPdf * 2.5, origWPdf * growRatio));
       const growW = coverWPdf * scale;
       const rx = leftPt.cssX + editOffsetCss.x;
       const ry = leftPt.cssY - ascent + editOffsetCss.y;
@@ -1274,7 +1298,7 @@ export default function EditorPage() {
       const rh = editManualSize.h ?? (ascent + descent);
 
       ctx.fillStyle = '#ffffff';
-      ctx.fillRect(rx - 1, ry - 1, rw + 2, rh + 2);
+      ctx.fillRect(rx - 0.5, ry - 0.5, rw + 1, rh + 1);
 
       // Path underlines only cover original glyph spans — extend a stroke under
       // underlined runs as the line grows so mid-line inserts stay underlined.
@@ -2760,8 +2784,96 @@ export default function EditorPage() {
     }
   }, [renderResult, doc, currentPage, scale, activeTool, editingLine, handleEditSubmit, beginEditSession]);
 
-  const handleSignatureDrop = useCallback((e: React.DragEvent) => {
+  const handleCanvasDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
+    e.stopPropagation();
+
+    // 1. Check for dropped image files (Drag and Drop / "Dragon draw")
+    const files = Array.from(e.dataTransfer.files || []);
+    const imageFile = files.find(f => f.type.startsWith('image/'));
+
+    if (imageFile && doc) {
+      const page = doc.pages[currentPage];
+      if (!page) return;
+
+      const canvasContainer = canvasContainerRef.current;
+      const rect = canvasContainer?.getBoundingClientRect();
+      const clientX = e.clientX;
+      const clientY = e.clientY;
+
+      let dropPdfX: number;
+      let dropPdfY: number;
+
+      if (rect) {
+        const cssX = clientX - rect.left;
+        const cssY = clientY - rect.top;
+        const pt = canvasToPdf(
+          cssX, cssY, scale,
+          renderResult?.pageWidth || page.mediaBox.width,
+          renderResult?.pageHeight || page.mediaBox.height,
+          page.mediaBox.x, page.mediaBox.y
+        );
+        dropPdfX = pt.pdfX;
+        dropPdfY = pt.pdfY;
+      } else {
+        dropPdfX = page.mediaBox.width / 2;
+        dropPdfY = page.mediaBox.height / 2;
+      }
+
+      const reader = new FileReader();
+      reader.onload = (re) => {
+        const dataUrl = re.target?.result as string;
+        if (!dataUrl) return;
+
+        const img = new window.Image();
+        img.onload = () => {
+          let pdfWidth = img.width;
+          let pdfHeight = img.height;
+          const maxDim = 200;
+          if (pdfWidth > maxDim || pdfHeight > maxDim) {
+            const ratio = Math.min(maxDim / pdfWidth, maxDim / pdfHeight);
+            pdfWidth *= ratio;
+            pdfHeight *= ratio;
+          }
+
+          // Center the image around the drop location
+          const pdfX = Math.max(0, dropPdfX - pdfWidth / 2);
+          const pdfY = Math.min(page.mediaBox.height, dropPdfY + pdfHeight / 2);
+
+          let jpegDataUrl = dataUrl;
+          try {
+            const canvas = document.createElement('canvas');
+            canvas.width = img.naturalWidth || pdfWidth;
+            canvas.height = img.naturalHeight || pdfHeight;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              ctx.fillStyle = '#ffffff';
+              ctx.fillRect(0, 0, canvas.width, canvas.height);
+              ctx.drawImage(img, 0, 0);
+              jpegDataUrl = canvas.toDataURL('image/jpeg', 0.95);
+            }
+          } catch {}
+
+          const newImg: FloatingImage = {
+            id: Math.random().toString(36).substr(2, 9),
+            pdfX,
+            pdfY,
+            pdfWidth,
+            pdfHeight,
+            dataUrl: jpegDataUrl,
+            rotation: 0,
+          };
+          setFloatingImages(prev => [...prev, newImg]);
+          setActiveFloatingImageId(newImg.id);
+          setIsDirty(true);
+        };
+        img.src = dataUrl;
+      };
+      reader.readAsDataURL(imageFile);
+      return;
+    }
+
+    // 2. Signature drop from library
     const signatureId =
       e.dataTransfer.getData('application/x-signature-id') ||
       e.dataTransfer.getData('text/plain');
@@ -2925,14 +3037,216 @@ export default function EditorPage() {
 
   // ── Commit drawings, texts, and images to PDF ──
   const commitDrawingsToPdf = useCallback(async (pathsToCommit?: DrawnPath[], textsToCommit?: FloatingText[], imagesToCommit?: FloatingImage[]) => {
-    const paths = pathsToCommit || drawnPaths;
-    const fTexts = textsToCommit || floatingTexts;
-    const fImages = imagesToCommit || floatingImages;
-    if (!doc || !engineRef.current || (paths.length === 0 && fTexts.length === 0 && fImages.length === 0)) return;
-    const engine = engineRef.current;
-    const page = doc.pages[currentPage];
-    let currentObjNum = engine.getNextObjNum(doc);
+    if (committingPromiseRef.current) {
+      await committingPromiseRef.current;
+    }
 
+    const executeCommit = async () => {
+      const paths = pathsToCommit ?? drawnPathsRef.current;
+      const fTexts = textsToCommit ?? floatingTextsRef.current;
+      const fImages = imagesToCommit ?? floatingImagesRef.current;
+      if (!doc || !engineRef.current || (paths.length === 0 && fTexts.length === 0 && fImages.length === 0)) return;
+      const engine = engineRef.current;
+      const page = doc.pages[currentPage];
+      if (!page) return;
+      let currentObjNum = engine.getNextObjNum(doc);
+
+      const pageHeight = renderResult?.pageHeight || page.mediaBox.height;
+
+      const toPdf = (cx: number, cy: number) => canvasToPdf(
+        cx, cy, scale,
+        renderResult?.pageWidth || page.mediaBox.width,
+        pageHeight,
+        page.mediaBox.x, page.mediaBox.y,
+      );
+
+      for (const p of paths) {
+        const kind = p.kind ?? 'freehand';
+        const lw = p.size / scale;
+        const rgb = hexToRGB(p.color);
+
+        let annotation: import('@/engine').Annotation | null = null;
+
+        if (kind !== 'freehand' && p.start && p.end) {
+          const a = toPdf(p.start.x, p.start.y);
+          const b = toPdf(p.end.x, p.end.y);
+          if (kind === 'line' || kind === 'arrow') {
+            const minX = Math.min(a.pdfX, b.pdfX);
+            const minY = Math.min(a.pdfY, b.pdfY);
+            const maxX = Math.max(a.pdfX, b.pdfX);
+            const maxY = Math.max(a.pdfY, b.pdfY);
+            const pad = Math.max(lw * 4, 8);
+            annotation = {
+              type: 'Line',
+              rect: { x: minX - pad, y: minY - pad, width: (maxX - minX) + pad * 2, height: (maxY - minY) + pad * 2 },
+              color: rgb,
+              opacity: 1,
+              x1: a.pdfX,
+              y1: a.pdfY,
+              x2: b.pdfX,
+              y2: b.pdfY,
+              lineWidth: lw,
+              startStyle: 'None',
+              endStyle: kind === 'arrow' ? 'OpenArrow' : 'None',
+            };
+          } else if (kind === 'rectangle') {
+            const minX = Math.min(a.pdfX, b.pdfX);
+            const minY = Math.min(a.pdfY, b.pdfY);
+            const maxX = Math.max(a.pdfX, b.pdfX);
+            const maxY = Math.max(a.pdfY, b.pdfY);
+            annotation = {
+              type: 'Square',
+              rect: { x: minX, y: minY, width: Math.max(maxX - minX, lw), height: Math.max(maxY - minY, lw) },
+              color: rgb,
+              opacity: 1,
+              lineWidth: lw,
+              fillColor: null,
+            };
+          } else if (kind === 'ellipse') {
+            const minX = Math.min(a.pdfX, b.pdfX);
+            const minY = Math.min(a.pdfY, b.pdfY);
+            const maxX = Math.max(a.pdfX, b.pdfX);
+            const maxY = Math.max(a.pdfY, b.pdfY);
+            annotation = {
+              type: 'Circle',
+              rect: { x: minX, y: minY, width: Math.max(maxX - minX, lw), height: Math.max(maxY - minY, lw) },
+              color: rgb,
+              opacity: 1,
+              lineWidth: lw,
+              fillColor: null,
+            };
+          }
+        } else {
+          if (p.points.length < 2) continue;
+          const inkPathsPdf: number[][] = [[]];
+          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+          for (const pt of p.points) {
+            const { pdfX, pdfY } = toPdf(pt.x, pt.y);
+            inkPathsPdf[0].push(pdfX, pdfY);
+            minX = Math.min(minX, pdfX);
+            minY = Math.min(minY, pdfY);
+            maxX = Math.max(maxX, pdfX);
+            maxY = Math.max(maxY, pdfY);
+          }
+          annotation = {
+            type: 'Ink',
+            rect: { x: minX - lw, y: minY - lw, width: (maxX - minX) + lw * 2, height: (maxY - minY) + lw * 2 },
+            color: rgb,
+            opacity: p.type === 'highlight' ? 0.4 : 1.0,
+            inkPaths: inkPathsPdf,
+            lineWidth: lw,
+          };
+        }
+
+        if (!annotation) continue;
+
+        const { dict, appearanceStream } = engine.createAnnotationDict(annotation, currentObjNum++);
+        if (appearanceStream) {
+          doc.objects.set(`${currentObjNum}_0`, appearanceStream as import('@/engine').PDFObject);
+          currentObjNum++;
+        }
+
+        const annotRef = new engine.PDFRef(currentObjNum, 0);
+        engine.addAnnotationToPage(page.dict, dict, annotRef, doc.objects);
+        currentObjNum++;
+      }
+
+      if (fTexts.length > 0 || fImages.length > 0) {
+        let contentBytes = engine.getPageContentBytes(page, doc.objects);
+        let newContentBytes: any = new Uint8Array(contentBytes);
+
+        for (const ft of fTexts) {
+          if (!ft.text.trim()) continue;
+          const rgb = hexToRGB(ft.color);
+
+          newContentBytes = engine.insertTextRun(
+            newContentBytes, page, doc.objects,
+            ft.text, ft.pdfX, ft.pdfY, ft.fontSize, rgb
+          );
+        }
+
+        for (const fi of fImages) {
+          const { newContentBytes: b } = await engine.insertImageRun(
+            newContentBytes, page, doc.objects,
+            fi.dataUrl, fi.pdfX, fi.pdfY, fi.pdfWidth, fi.pdfHeight,
+            () => {
+              const num = currentObjNum;
+              currentObjNum++;
+              return num;
+            },
+            fi.rotation || 0
+          );
+          newContentBytes = b;
+        }
+
+        try {
+          await engine.updatePageContent(page.contentRefs, newContentBytes, doc.objects, true, page);
+        } catch (e: unknown) {
+          console.error('[Editor] Failed to commit content:', e);
+        }
+      }
+
+      const clearedOverlays = { drawnPaths: [] as DrawnPath[], floatingTexts: [] as FloatingText[], floatingImages: [] as FloatingImage[] };
+      setDrawnPaths([]);
+      setFloatingTexts([]);
+      setFloatingImages([]);
+      setActiveFloatingTextId(null);
+      setActiveFloatingImageId(null);
+      pushEditorHistory('commit-drawings', clearedOverlays);
+      setIsDirty(true);
+      setRenderKey(k => k + 1);
+    };
+
+    const promise = executeCommit();
+    committingPromiseRef.current = promise;
+    try {
+      await promise;
+    } finally {
+      if (committingPromiseRef.current === promise) {
+        committingPromiseRef.current = null;
+      }
+    }
+  }, [doc, currentPage, scale, renderResult, pushEditorHistory]);
+
+  // ── Create an export copy of the document with all overlays applied without clearing them from editor ──
+  const createExportDocWithOverlays = useCallback(async (
+    targetDoc: PDFDocumentData,
+    targetPageIdx: number,
+    paths: DrawnPath[],
+    texts: FloatingText[],
+    images: FloatingImage[]
+  ): Promise<PDFDocumentData> => {
+    if (!engineRef.current) return targetDoc;
+    const engine = engineRef.current;
+
+    // Clone objects and pages so live document in memory is never modified
+    const newObjects = new Map<string, PDFObject>();
+    for (const [k, v] of targetDoc.objects) {
+      newObjects.set(k, v);
+    }
+    const newPages: PDFPageInfo[] = targetDoc.pages.map((p) => {
+      const pageDict = new (engine as any).PDFDict();
+      for (const [k, v] of p.dict.entries()) {
+        pageDict.set(k, v);
+      }
+      return {
+        ...p,
+        dict: pageDict,
+        contentRefs: [...p.contentRefs],
+        resources: p.resources ? p.resources : new (engine as any).PDFDict(),
+      };
+    });
+
+    const exportDoc: PDFDocumentData = {
+      ...targetDoc,
+      objects: newObjects,
+      pages: newPages,
+    };
+
+    const page = exportDoc.pages[targetPageIdx];
+    if (!page) return exportDoc;
+
+    let currentObjNum = engine.getNextObjNum(exportDoc);
     const pageHeight = renderResult?.pageHeight || page.mediaBox.height;
 
     const toPdf = (cx: number, cy: number) => canvasToPdf(
@@ -2946,9 +3260,7 @@ export default function EditorPage() {
       const kind = p.kind ?? 'freehand';
       const lw = p.size / scale;
       const rgb = hexToRGB(p.color);
-
       let annotation: import('@/engine').Annotation | null = null;
-
       if (kind !== 'freehand' && p.start && p.end) {
         const a = toPdf(p.start.x, p.start.y);
         const b = toPdf(p.end.x, p.end.y);
@@ -3020,61 +3332,50 @@ export default function EditorPage() {
         };
       }
 
-      if (!annotation) continue;
-
-      const { dict, appearanceStream } = engine.createAnnotationDict(annotation, currentObjNum++);
-      if (appearanceStream) {
-        doc.objects.set(`${currentObjNum}_0`, appearanceStream as import('@/engine').PDFObject);
+      if (annotation) {
+        const { dict, appearanceStream } = engine.createAnnotationDict(annotation, currentObjNum++);
+        if (appearanceStream) {
+          exportDoc.objects.set(`${currentObjNum}_0`, appearanceStream as import('@/engine').PDFObject);
+          currentObjNum++;
+        }
+        const annotRef = new engine.PDFRef(currentObjNum, 0);
+        engine.addAnnotationToPage(page.dict, dict, annotRef, exportDoc.objects);
         currentObjNum++;
       }
-
-      const annotRef = new engine.PDFRef(currentObjNum, 0);
-      engine.addAnnotationToPage(page.dict, dict, annotRef, doc.objects);
-      currentObjNum++;
     }
 
-    if (fTexts.length > 0 || fImages.length > 0) {
-      let contentBytes = engine.getPageContentBytes(page, doc.objects);
+    if (texts.length > 0 || images.length > 0) {
+      let contentBytes = engine.getPageContentBytes(page, exportDoc.objects);
       let newContentBytes: any = new Uint8Array(contentBytes);
 
-      for (const ft of fTexts) {
+      for (const ft of texts) {
         if (!ft.text.trim()) continue;
         const rgb = hexToRGB(ft.color);
-
         newContentBytes = engine.insertTextRun(
-          newContentBytes, page, doc.objects,
+          newContentBytes, page, exportDoc.objects,
           ft.text, ft.pdfX, ft.pdfY, ft.fontSize, rgb
         );
       }
 
-      for (const fi of fImages) {
+      for (const fi of images) {
         const { newContentBytes: b } = await engine.insertImageRun(
-          newContentBytes, page, doc.objects,
+          newContentBytes, page, exportDoc.objects,
           fi.dataUrl, fi.pdfX, fi.pdfY, fi.pdfWidth, fi.pdfHeight,
-          () => {
-            const num = currentObjNum;
-            currentObjNum++;
-            return num;
-          }
+          () => currentObjNum++,
+          fi.rotation || 0
         );
         newContentBytes = b;
       }
 
-      engine.updatePageContent(page.contentRefs, newContentBytes, doc.objects).catch((e: Error) => {
-        console.error('[Editor] Failed to commit content:', e);
-      });
+      try {
+        await engine.updatePageContent(page.contentRefs, newContentBytes, exportDoc.objects, true, page);
+      } catch (e: unknown) {
+        console.error('[Editor] Failed to update export content:', e);
+      }
     }
 
-    const clearedOverlays = { drawnPaths: [] as DrawnPath[], floatingTexts: [] as FloatingText[], floatingImages: [] as FloatingImage[] };
-    setDrawnPaths([]);
-    setFloatingTexts([]);
-    setFloatingImages([]);
-    setActiveFloatingTextId(null);
-    setActiveFloatingImageId(null);
-    pushEditorHistory('commit-drawings', clearedOverlays);
-    setIsDirty(true);
-    setRenderKey(k => k + 1);
-  }, [doc, currentPage, drawnPaths, floatingTexts, floatingImages, scale, renderResult, pushEditorHistory]);
+    return exportDoc;
+  }, [scale, renderResult]);
 
   const strokeShapePreview = useCallback((
     ctx: CanvasRenderingContext2D,
@@ -3529,6 +3830,42 @@ export default function EditorPage() {
     window.addEventListener('pointerup', handleUp);
   }, [floatingImages, scale, doc, renderResult]);
 
+  const handleFloatingImageRotateDown = useCallback((e: React.PointerEvent, id: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const parentEl = (e.currentTarget as HTMLElement).closest('.floating-image-container');
+    if (!parentEl) return;
+
+    const rect = parentEl.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+
+    const fi = floatingImagesRef.current.find(f => f.id === id);
+    const initialRot = fi?.rotation || 0;
+    const startAngle = Math.atan2(e.clientY - centerY, e.clientX - centerX) * (180 / Math.PI);
+
+    const onPointerMove = (ev: PointerEvent) => {
+      const currentAngle = Math.atan2(ev.clientY - centerY, ev.clientX - centerX) * (180 / Math.PI);
+      const diff = currentAngle - startAngle;
+      let newRot = Math.round((initialRot + diff) % 360);
+      if (newRot < 0) newRot += 360;
+      if (ev.shiftKey) {
+        newRot = Math.round(newRot / 15) * 15;
+      }
+      setFloatingImages(prev => prev.map(p => p.id === id ? { ...p, rotation: newRot } : p));
+      setIsDirty(true);
+    };
+
+    const onPointerUp = () => {
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+    };
+
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+  }, []);
+
   const handleImageUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -3572,8 +3909,9 @@ export default function EditorPage() {
         }
 
         // Add new floating image
-        if (!doc || !renderResult) return;
+        if (!doc) return;
         const page = doc.pages[currentPage];
+        if (!page) return;
 
         let pdfWidth = img.width;
         let pdfHeight = img.height;
@@ -3647,6 +3985,45 @@ export default function EditorPage() {
     replacingImageIdRef.current = null;
     fileInputRef.current?.click();
   }, [selectedDisplayItem]);
+
+  const handleCopyEmbeddedImage = useCallback(async () => {
+    if (!doc || !selectedDisplayItem || selectedDisplayItem.type !== 'image') return;
+    const item = selectedDisplayItem as ImageItem;
+    const page = doc.pages[currentPage];
+    try {
+      const dataUrl = await extractImageItemDataUrl(item, page, doc.objects);
+      if (!dataUrl) return;
+
+      // 1. Copy image to system clipboard if supported
+      try {
+        const res = await fetch(dataUrl);
+        const blob = await res.blob();
+        if (typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write) {
+          await navigator.clipboard.write([
+            new ClipboardItem({ [blob.type || 'image/png']: blob }),
+          ]);
+        }
+      } catch (clipErr) {
+        console.warn('[Editor] System clipboard copy failed:', clipErr);
+      }
+
+      // 2. Duplicate as a floating image overlay on the page
+      const newImg: FloatingImage = {
+        id: `copy-img-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+        pdfX: item.x + 20,
+        pdfY: (item.y + item.height) - 20,
+        pdfWidth: item.width,
+        pdfHeight: item.height,
+        dataUrl,
+      };
+
+      setFloatingImages(prev => [...prev, newImg]);
+      setActiveFloatingImageId(newImg.id);
+      setIsDirty(true);
+    } catch (e) {
+      console.error('[Editor] Copy image failed:', e);
+    }
+  }, [doc, currentPage, selectedDisplayItem]);
 
   // ── Hidden / line input — preview only; PDF commits on submit ──
   const handleHiddenInput = useCallback((e: React.FormEvent<HTMLTextAreaElement | HTMLInputElement>) => {
@@ -3876,15 +4253,15 @@ export default function EditorPage() {
   }, [editingLine, handleEditSubmit]);
 
   // ── Navigation handlers ──
-  const goToPrev = useCallback(() => {
-    commitDrawingsToPdf();
+  const goToPrev = useCallback(async () => {
+    await commitDrawingsToPdf();
     closeLinkPopover();
     setLinkCreatePending(false);
     setCurrentPage(p => Math.max(0, p - 1));
   }, [commitDrawingsToPdf, closeLinkPopover]);
 
-  const goToNext = useCallback(() => {
-    commitDrawingsToPdf();
+  const goToNext = useCallback(async () => {
+    await commitDrawingsToPdf();
     closeLinkPopover();
     setLinkCreatePending(false);
     setCurrentPage(p => Math.min(totalPages - 1, p + 1));
@@ -4071,7 +4448,7 @@ export default function EditorPage() {
 
       const results = engineRef.current.applyWatermarks(doc, [wm], () => engineRef.current!.getNextObjNum(doc));
 
-      const updatePromises: Promise<void>[] = [];
+      const updatePromises: Promise<unknown>[] = [];
       results.forEach((newBytes, pageIdx) => {
         const page = doc.pages[pageIdx];
         updatePromises.push(
@@ -4216,21 +4593,33 @@ export default function EditorPage() {
     if (!isDirty && raw && raw.byteLength > 5) {
       return raw instanceof Uint8Array ? raw : new Uint8Array(raw);
     }
-    await commitDrawingsToPdf();
-    const bytes = await engineRef.current.saveQuick(doc);
+    const exportDoc = await createExportDocWithOverlays(
+      doc,
+      currentPage,
+      drawnPathsRef.current,
+      floatingTextsRef.current,
+      floatingImagesRef.current
+    );
+    const bytes = await engineRef.current.saveQuick(exportDoc);
     return bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  }, [doc, commitDrawingsToPdf, isDirty]);
+  }, [doc, currentPage, isDirty, createExportDocWithOverlays]);
 
   // ── Download / Save ──
   const handleDownload = useCallback(async () => {
     if (!doc || !engineRef.current) return;
     try {
       setIsSaving(true);
-      await commitDrawingsToPdf();
+      const exportDoc = await createExportDocWithOverlays(
+        doc,
+        currentPage,
+        drawnPathsRef.current,
+        floatingTextsRef.current,
+        floatingImagesRef.current
+      );
       const engine = engineRef.current;
       const bytes = saveMode === 'quick'
-        ? await engine.saveQuick(doc)
-        : await engine.saveOptimized(doc);
+        ? await engine.saveQuick(exportDoc)
+        : await engine.saveOptimized(exportDoc);
       const blob = new Blob([bytes as unknown as BlobPart], { type: 'application/pdf' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -4245,7 +4634,7 @@ export default function EditorPage() {
     } finally {
       setIsSaving(false);
     }
-  }, [doc, fileName, saveMode, commitDrawingsToPdf]);
+  }, [doc, currentPage, fileName, saveMode, createExportDocWithOverlays]);
 
   // ── Compressed Download ──
   const handleCompressedDownload = useCallback(async (opts: {
@@ -4257,11 +4646,17 @@ export default function EditorPage() {
     try {
       setIsSaving(true);
       setError(null);
-      await commitDrawingsToPdf();
+      const exportDoc = await createExportDocWithOverlays(
+        doc,
+        currentPage,
+        drawnPathsRef.current,
+        floatingTextsRef.current,
+        floatingImagesRef.current
+      );
       const engine = engineRef.current;
       const originalLen = doc.rawBytes?.length ?? 0;
 
-      const result = await engine.compressDocumentImages(doc, {
+      const result = await engine.compressDocumentImages(exportDoc, {
         quality: opts.quality,
         dpi: opts.dpi,
         targetBytes: opts.targetBytes,
@@ -4307,7 +4702,7 @@ export default function EditorPage() {
     } finally {
       setIsSaving(false);
     }
-  }, [doc, fileName, commitDrawingsToPdf]);
+  }, [doc, currentPage, fileName, createExportDocWithOverlays]);
 
   const handleClose = useCallback(async () => {
     await clearEditorSession();
@@ -4399,15 +4794,25 @@ export default function EditorPage() {
   const handleSplitCurrentPage = useCallback(async () => {
     if (!doc || !engineRef.current) return;
     try {
+      setIsSaving(true);
+      const exportDoc = await createExportDocWithOverlays(
+        doc,
+        currentPage,
+        drawnPathsRef.current,
+        floatingTextsRef.current,
+        floatingImagesRef.current
+      );
       const engine = engineRef.current;
-      const extracted = engine.extractPages(doc, [currentPage]);
+      const extracted = engine.extractPages(exportDoc, [currentPage]);
       const bytes = await engine.saveQuick(extracted);
       const base = (fileName || 'document').replace(/\.pdf$/i, '');
       downloadPdfBytes(bytes, `${base}-page-${currentPage + 1}.pdf`);
     } catch (e) {
       setError(`Failed to split page: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setIsSaving(false);
     }
-  }, [doc, currentPage, fileName, downloadPdfBytes]);
+  }, [doc, currentPage, fileName, downloadPdfBytes, createExportDocWithOverlays]);
 
   const handleSplitAllPages = useCallback(async () => {
     if (!doc || !engineRef.current) return;
@@ -4417,10 +4822,18 @@ export default function EditorPage() {
     );
     if (!ok) return;
     try {
+      setIsSaving(true);
+      const exportDoc = await createExportDocWithOverlays(
+        doc,
+        currentPage,
+        drawnPathsRef.current,
+        floatingTextsRef.current,
+        floatingImagesRef.current
+      );
       const engine = engineRef.current;
       const base = (fileName || 'document').replace(/\.pdf$/i, '');
-      for (let i = 0; i < doc.pages.length; i++) {
-        const extracted = engine.extractPages(doc, [i]);
+      for (let i = 0; i < exportDoc.pages.length; i++) {
+        const extracted = engine.extractPages(exportDoc, [i]);
         const bytes = await engine.saveQuick(extracted);
         downloadPdfBytes(bytes, `${base}-page-${i + 1}.pdf`);
         // Brief pause so the browser doesn't coalesce / block downloads
@@ -4428,8 +4841,10 @@ export default function EditorPage() {
       }
     } catch (e) {
       setError(`Failed to split pages: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setIsSaving(false);
     }
-  }, [doc, fileName, downloadPdfBytes]);
+  }, [doc, currentPage, fileName, downloadPdfBytes, createExportDocWithOverlays]);
 
   const handleRemoveCurrentPage = useCallback(() => {
     if (!doc || doc.pages.length <= 1) return;
@@ -4454,6 +4869,37 @@ export default function EditorPage() {
           );
           if (!ok) return;
         }
+
+        // Extract image data to store in removed images bin
+        try {
+          const dataUrl = await extractImageItemDataUrl(item, page, doc.objects);
+          if (dataUrl) {
+            const record: RemovedImageRecord = {
+              id: `removed-img-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+              dataUrl,
+              name: item.name,
+              fileName,
+              sourceType: 'embedded',
+              originalPage: currentPage,
+              originalBounds: {
+                x: item.x,
+                y: item.y,
+                width: item.width,
+                height: item.height,
+              },
+              deletedAt: Date.now(),
+            };
+            setRemovedImages(prev => {
+              const isDuplicate = prev.some(r => r.dataUrl === dataUrl);
+              if (isDuplicate) return prev;
+              const updated = [record, ...prev.filter(r => !(r.originalPage === currentPage && r.name === item.name))];
+              saveRemovedImages(updated);
+              return updated;
+            });
+          }
+        } catch (extractErr) {
+          console.warn('[Editor] Failed to extract image for removed bin:', extractErr);
+        }
       }
 
       const editable: EditableObject = {
@@ -4477,7 +4923,74 @@ export default function EditorPage() {
       console.error('[Editor] Delete object failed:', e);
       setError(`Delete failed: ${e instanceof Error ? e.message : String(e)}`);
     }
-  }, [doc, currentPage, selectedDisplayItem, pushEditorHistory]);
+  }, [doc, currentPage, selectedDisplayItem, fileName, pushEditorHistory]);
+
+  const handleRestoreRemovedImage = useCallback((record: RemovedImageRecord) => {
+    if (!doc) return;
+    const targetPage = (record.originalPage >= 0 && record.originalPage < doc.pages.length)
+      ? record.originalPage
+      : currentPage;
+
+    if (targetPage !== currentPage) {
+      setCurrentPage(targetPage);
+    }
+
+    const pdfY = record.sourceType === 'floating'
+      ? record.originalBounds.y
+      : record.originalBounds.y + record.originalBounds.height;
+
+    const newFloatingImage: FloatingImage = {
+      id: `restored-img-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+      pdfX: record.originalBounds.x,
+      pdfY: pdfY,
+      pdfWidth: record.originalBounds.width,
+      pdfHeight: record.originalBounds.height,
+      dataUrl: record.dataUrl,
+    };
+
+    setFloatingImages(prev => [...prev, newFloatingImage]);
+    setActiveFloatingImageId(newFloatingImage.id);
+    setIsDirty(true);
+  }, [doc, currentPage]);
+
+  const handleInsertRemovedImage = useCallback((record: RemovedImageRecord) => {
+    if (!doc) return;
+    const page = doc.pages[currentPage];
+    const pageW = page?.mediaBox.width || 612;
+    const pageH = page?.mediaBox.height || 792;
+
+    const fitW = Math.min(record.originalBounds.width || 200, pageW * 0.7);
+    const fitH = (fitW / (record.originalBounds.width || 1)) * (record.originalBounds.height || fitW);
+
+    const pdfX = Math.max(20, (pageW - fitW) / 2);
+    const pdfY = Math.max(20, (pageH + fitH) / 2);
+
+    const newFloatingImage: FloatingImage = {
+      id: `inserted-img-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+      pdfX,
+      pdfY,
+      pdfWidth: fitW,
+      pdfHeight: fitH,
+      dataUrl: record.dataUrl,
+    };
+
+    setFloatingImages(prev => [...prev, newFloatingImage]);
+    setActiveFloatingImageId(newFloatingImage.id);
+    setIsDirty(true);
+  }, [doc, currentPage]);
+
+  const handleDeleteRemovedImage = useCallback((id: string) => {
+    setRemovedImages(prev => {
+      const updated = prev.filter(r => r.id !== id);
+      saveRemovedImages(updated);
+      return updated;
+    });
+  }, []);
+
+  const handleClearRemovedImages = useCallback(() => {
+    setRemovedImages([]);
+    clearRemovedImages();
+  }, []);
 
   const handleInsertBlankPage = useCallback((index: number) => {
     if (!doc || !engineRef.current) return;
@@ -4517,21 +5030,32 @@ export default function EditorPage() {
         e.preventDefault(); goToPrev();
       } else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
         e.preventDefault(); goToNext();
-      } else if ((e.key === '+' || e.key === '=') && (e.metaKey || e.ctrlKey)) {
-        e.preventDefault(); zoomIn();
-      } else if (e.key === '-' && (e.metaKey || e.ctrlKey)) {
-        e.preventDefault(); zoomOut();
+      } else if (e.key === '+' || e.key === '=') {
+        if (e.metaKey || e.ctrlKey) { e.preventDefault(); zoomIn(); }
+      } else if (e.key === '-') {
+        if (e.metaKey || e.ctrlKey) { e.preventDefault(); zoomOut(); }
+      } else if (e.key === 'z' || e.key === 'Z') {
+        if ((e.metaKey || e.ctrlKey) && !e.shiftKey) {
+          e.preventDefault();
+          handleUndo();
+        } else if ((e.metaKey || e.ctrlKey) && e.shiftKey) {
+          e.preventDefault();
+          handleRedo();
+        }
+      } else if (e.key === 'y' || e.key === 'Y') {
+        if (e.metaKey || e.ctrlKey) {
+          e.preventDefault();
+          handleRedo();
+        }
       } else if (e.key === 'v' || e.key === 'V') {
-        setActiveTool('select');
+        if (!e.metaKey && !e.ctrlKey) setActiveTool('select');
       } else if (e.key === 't' || e.key === 'T') {
-        setActiveTool('text');
-      } else if (e.key === 'a' || e.key === 'A') {
-        setActiveTool('addtext');
+        if (!e.metaKey && !e.ctrlKey) setActiveTool('text');
+      } else if (e.key === 'd' || e.key === 'D') {
+        if (!e.metaKey && !e.ctrlKey) setActiveTool('draw');
       } else if (e.key === 'h' || e.key === 'H') {
         if (!e.metaKey && !e.ctrlKey) setActiveTool('highlight');
-      } else if (e.key === 'l' || e.key === 'L') {
-        if (!e.metaKey && !e.ctrlKey) setActiveTool('text');
-      } else if (e.key === 'd') {
+      } else if (e.key === 'p' || e.key === 'P') {
         setActiveTool('draw');
       } else if (e.key === 'e' || e.key === 'E') {
         if (!e.metaKey && !e.ctrlKey) setActiveTool('erase');
@@ -4546,6 +5070,38 @@ export default function EditorPage() {
       } else if ((e.key === 'Delete' || e.key === 'Backspace') && selectedSignatureId) {
         e.preventDefault();
         handleSignatureDelete(selectedSignatureId);
+      } else if ((e.key === 'Delete' || e.key === 'Backspace') && selectedDisplayItem) {
+        e.preventDefault();
+        void handleDeleteSelectedDisplayItem();
+      } else if ((e.key === 'Delete' || e.key === 'Backspace') && activeFloatingImageId) {
+        e.preventDefault();
+        const fi = floatingImages.find(f => f.id === activeFloatingImageId);
+        if (fi && fi.dataUrl) {
+          const record: RemovedImageRecord = {
+            id: `removed-fi-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+            dataUrl: fi.dataUrl,
+            name: `Image ${fi.id}`,
+            fileName,
+            sourceType: 'floating',
+            originalPage: currentPage,
+            originalBounds: {
+              x: fi.pdfX,
+              y: fi.pdfY,
+              width: fi.pdfWidth,
+              height: fi.pdfHeight,
+            },
+            deletedAt: Date.now(),
+          };
+          setRemovedImages(prev => {
+            const isDuplicate = prev.some(r => r.dataUrl === fi.dataUrl);
+            if (isDuplicate) return prev;
+            const updated = [record, ...prev];
+            saveRemovedImages(updated);
+            return updated;
+          });
+        }
+        setFloatingImages(prev => prev.filter(p => p.id !== activeFloatingImageId));
+        setActiveFloatingImageId(null);
       } else if (e.key === 'w' || e.key === 'W') {
         if (!e.metaKey && !e.ctrlKey) setActiveTool('watermark');
       } else if (e.key === 'x' || e.key === 'X') {
@@ -4560,7 +5116,95 @@ export default function EditorPage() {
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [goToPrev, goToNext, zoomIn, zoomOut, editingLine, selectedSignatureId, handleSignatureDelete, activeTool, handleValidateSignatures]);
+  }, [goToPrev, goToNext, zoomIn, zoomOut, editingLine, selectedSignatureId, handleSignatureDelete, selectedDisplayItem, handleDeleteSelectedDisplayItem, activeFloatingImageId, floatingImages, fileName, currentPage, activeTool, handleValidateSignatures]);
+
+  // ── Global clipboard paste listener for images (Ctrl+V on Windows / Cmd+V on Mac) ──
+  useEffect(() => {
+    const handlePaste = (e: ClipboardEvent) => {
+      // Don't intercept when user is typing in an input or textarea
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+         target.tagName === 'TEXTAREA' ||
+         target.isContentEditable)
+      ) {
+        return;
+      }
+
+      if (!doc) return;
+      const page = doc.pages[currentPage];
+      if (!page) return;
+
+      const items = e.clipboardData?.items;
+      if (!items) return;
+
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (item.type.startsWith('image/')) {
+          e.preventDefault();
+          const file = item.getAsFile();
+          if (!file) continue;
+
+          const reader = new FileReader();
+          reader.onload = (re) => {
+            const dataUrl = re.target?.result as string;
+            if (!dataUrl) return;
+
+            const img = new window.Image();
+            img.onload = () => {
+              let pdfWidth = img.width;
+              let pdfHeight = img.height;
+              const maxDim = 200;
+              if (pdfWidth > maxDim || pdfHeight > maxDim) {
+                const ratio = Math.min(maxDim / pdfWidth, maxDim / pdfHeight);
+                pdfWidth *= ratio;
+                pdfHeight *= ratio;
+              }
+
+              // Center on the page
+              const pdfX = Math.max(0, page.mediaBox.width / 2 - pdfWidth / 2);
+              const pdfY = Math.min(page.mediaBox.height, page.mediaBox.height / 2 + pdfHeight / 2);
+
+              let jpegDataUrl = dataUrl;
+              try {
+                const canvas = document.createElement('canvas');
+                canvas.width = img.naturalWidth || pdfWidth;
+                canvas.height = img.naturalHeight || pdfHeight;
+                const ctx = canvas.getContext('2d');
+                if (ctx) {
+                  ctx.fillStyle = '#ffffff';
+                  ctx.fillRect(0, 0, canvas.width, canvas.height);
+                  ctx.drawImage(img, 0, 0);
+                  jpegDataUrl = canvas.toDataURL('image/jpeg', 0.95);
+                }
+              } catch {}
+
+              const newImg: FloatingImage = {
+                id: Math.random().toString(36).substr(2, 9),
+                pdfX,
+                pdfY,
+                pdfWidth,
+                pdfHeight,
+                dataUrl: jpegDataUrl,
+                rotation: 0,
+              };
+
+              setFloatingImages(prev => [...prev, newImg]);
+              setActiveFloatingImageId(newImg.id);
+              setIsDirty(true);
+            };
+            img.src = dataUrl;
+          };
+          reader.readAsDataURL(file);
+          break;
+        }
+      }
+    };
+
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  }, [doc, currentPage]);
 
   // Clean, Minimalist 3D Tilted Pink Square Rubber Block Eraser Cursor
   const eraser3dSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><defs><filter id="er-pinksq-shadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="1" dy="1.4" stdDeviation="1.2" flood-color="#000000" flood-opacity="0.45"/></filter><linearGradient id="er-pink-top" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#FFA8E0"/><stop offset="60%" stop-color="#FF65C8"/><stop offset="100%" stop-color="#E840A8"/></linearGradient><linearGradient id="er-pink-left" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#FF52B7"/><stop offset="100%" stop-color="#D6208A"/></linearGradient><linearGradient id="er-pink-right" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#BF157A"/><stop offset="100%" stop-color="#80094F"/></linearGradient></defs><g filter="url(#er-pinksq-shadow)"><path d="M 4 16 L 16 4 L 28 16 L 28 19 L 16 31 L 4 19 Z" fill="none" stroke="#FFFFFF" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/><path d="M 4 16 L 16 4 L 28 16 L 16 28 Z" fill="url(#er-pink-top)" stroke="#80094F" stroke-width="0.6"/><path d="M 4 16 L 16 28 L 16 31 L 4 19 Z" fill="url(#er-pink-left)" stroke="#80094F" stroke-width="0.6"/><path d="M 16 28 L 28 16 L 28 19 L 16 31 Z" fill="url(#er-pink-right)" stroke="#80094F" stroke-width="0.6"/><path d="M 4 16 L 16 4 L 22 10 L 10 22 Z" fill="#FFFFFF" fill-opacity="0.45"/><circle cx="4" cy="28" r="0.8" fill="#FFFFFF" stroke="#80094F" stroke-width="0.4"/></g></svg>`;
@@ -4927,8 +5571,14 @@ export default function EditorPage() {
           setSelectedDisplayItem={setSelectedDisplayItem}
           onDeleteSelectedDisplayItem={handleDeleteSelectedDisplayItem}
           onReplaceSelectedImage={handleReplaceEmbeddedImage}
+          onCopySelectedImage={handleCopyEmbeddedImage}
           onClearImageReplaceMode={() => { replacingEmbeddedImageRef.current = null; }}
           displayItems={displayItems}
+          removedImages={removedImages}
+          onRestoreRemovedImage={handleRestoreRemovedImage}
+          onInsertRemovedImage={handleInsertRemovedImage}
+          onDeleteRemovedImage={handleDeleteRemovedImage}
+          onClearRemovedImages={handleClearRemovedImages}
           formFields={formFields}
           selectedFormField={selectedFormField}
           formFieldDraft={formFieldDraft}
@@ -5044,6 +5694,11 @@ export default function EditorPage() {
           onPointerMove={handleViewportPointerMove}
           onPointerUp={handleViewportPointerUp}
           onPointerCancel={handleViewportPointerUp}
+          onDragOver={(e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'copy';
+          }}
+          onDrop={handleCanvasDrop}
         >
           {/* Floating Search & OCR Panel (viewport-fixed) */}
           {isSearchOpen && (
@@ -5101,7 +5756,7 @@ export default function EditorPage() {
               e.preventDefault();
               e.dataTransfer.dropEffect = 'copy';
             }}
-            onDrop={handleSignatureDrop}
+            onDrop={handleCanvasDrop}
             onClick={(e) => {
               if (panDragRef.current?.moved || isPanning) {
                 e.preventDefault();
@@ -5244,6 +5899,8 @@ export default function EditorPage() {
                   onCommitMove={handleEmbeddedImageMove}
                   onCommitResize={handleEmbeddedImageResize}
                   onReplace={handleReplaceEmbeddedImage}
+                  onCopy={handleCopyEmbeddedImage}
+                  onDelete={handleDeleteSelectedDisplayItem}
                   onDeselect={() => setSelectedDisplayItem(null)}
                 />
               );
@@ -5396,16 +6053,19 @@ export default function EditorPage() {
                 doc?.pages[currentPage]?.mediaBox.y || 0
               );
               const isActive = activeFloatingImageId === fi.id;
+              const rot = fi.rotation || 0;
 
               return (
                 <div
                   key={fi.id}
-                  className={`absolute z-20 cursor-move border-2 ${isActive ? 'border-[#E8607A] border-dashed' : 'border-transparent hover:border-zinc-500 hover:border-dashed'} p-1 -m-1`}
+                  className={`floating-image-container absolute z-20 cursor-move border-2 ${isActive ? 'border-[#E8607A] border-dashed' : 'border-transparent hover:border-zinc-500 hover:border-dashed'} p-1 -m-1`}
                   style={{
                     left: cssX,
                     top: cssY,
                     width: fi.pdfWidth * scale + 8, // +8 for padding/border
                     height: fi.pdfHeight * scale + 8,
+                    transform: `rotate(${rot}deg)`,
+                    transformOrigin: 'center center',
                   }}
                   onPointerDown={(e) => handleFloatingImagePointerDown(e, fi.id)}
                   onClick={(e) => e.stopPropagation()}
@@ -5418,16 +6078,84 @@ export default function EditorPage() {
 
                   {isActive && (
                     <>
+                      {/* Rotation Handle */}
+                      <div
+                        className="absolute -top-8 left-1/2 -translate-x-1/2 flex flex-col items-center cursor-grab active:cursor-grabbing z-30"
+                        onPointerDown={(e) => handleFloatingImageRotateDown(e, fi.id)}
+                        title="Drag to rotate image (Hold Shift for 15° steps)"
+                      >
+                        <div className="w-5 h-5 rounded-full bg-[#E8607A] text-white flex items-center justify-center shadow-md hover:scale-110 transition-transform">
+                          <RotateCw size={11} />
+                        </div>
+                        <div className="w-0.5 h-3 bg-[#E8607A]" />
+                      </div>
+
                       <button
                         className="absolute -top-3 -right-3 bg-red-500 text-white rounded-full p-1 shadow hover:bg-red-600 transition-colors z-30"
                         title="Delete Image"
                         onClick={(e) => {
                           e.stopPropagation();
+                          if (fi.dataUrl) {
+                            const record: RemovedImageRecord = {
+                              id: `removed-fi-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+                              dataUrl: fi.dataUrl,
+                              name: `Image ${fi.id}`,
+                              fileName,
+                              sourceType: 'floating',
+                              originalPage: currentPage,
+                              originalBounds: {
+                                x: fi.pdfX,
+                                y: fi.pdfY,
+                                width: fi.pdfWidth,
+                                height: fi.pdfHeight,
+                              },
+                              deletedAt: Date.now(),
+                            };
+                            setRemovedImages(prev => {
+                              const isDuplicate = prev.some(r => r.dataUrl === fi.dataUrl);
+                              if (isDuplicate) return prev;
+                              const updated = [record, ...prev];
+                              saveRemovedImages(updated);
+                              return updated;
+                            });
+                          }
                           setFloatingImages(prev => prev.filter(p => p.id !== fi.id));
                           if (activeFloatingImageId === fi.id) setActiveFloatingImageId(null);
                         }}
                       >
                         <X size={12} />
+                      </button>
+                      <button
+                        className="absolute -top-3 -left-3 bg-zinc-800 text-zinc-200 border border-zinc-600 rounded-full p-1 shadow hover:bg-zinc-700 transition-colors z-30"
+                        title="Copy Image (Duplicate & clipboard)"
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          if (fi.dataUrl) {
+                            try {
+                              const res = await fetch(fi.dataUrl);
+                              const blob = await res.blob();
+                              if (typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write) {
+                                await navigator.clipboard.write([
+                                  new ClipboardItem({ [blob.type || 'image/png']: blob }),
+                                ]);
+                              }
+                            } catch {}
+                            const dup: FloatingImage = {
+                              id: `dup-fi-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+                              dataUrl: fi.dataUrl,
+                              pdfX: fi.pdfX + 20,
+                              pdfY: fi.pdfY - 20,
+                              pdfWidth: fi.pdfWidth,
+                              pdfHeight: fi.pdfHeight,
+                              rotation: fi.rotation,
+                            };
+                            setFloatingImages(prev => [...prev, dup]);
+                            setActiveFloatingImageId(dup.id);
+                            setIsDirty(true);
+                          }
+                        }}
+                      >
+                        <Copy size={12} />
                       </button>
                       <button
                         className="absolute -bottom-3 -right-3 bg-[#E8607A] text-white rounded-full p-1 shadow hover:bg-[#D94D6A] transition-colors z-30"
@@ -5441,13 +6169,13 @@ export default function EditorPage() {
                         <Image size={12} />
                       </button>
 
-                      {/* Dimensions panel in cm */}
+                      {/* Dimensions panel in cm + Rotation */}
                       <div
-                        className="absolute top-0 -right-[110px] bg-zinc-900 text-white rounded p-2 shadow-xl border border-zinc-700 text-xs flex flex-col gap-2 z-30 w-24"
+                        className="absolute top-0 -right-[118px] bg-zinc-900 text-white rounded p-2 shadow-xl border border-zinc-700 text-xs flex flex-col gap-2 z-30 w-28"
                         onClick={e => e.stopPropagation()}
                         onPointerDown={e => e.stopPropagation()}
                       >
-                        <div className="text-[9px] text-zinc-400 font-bold uppercase tracking-wider mb-0.5">Dimensions</div>
+                        <div className="text-[9px] text-zinc-400 font-bold uppercase tracking-wider mb-0.5">Transform</div>
                         <div className="flex items-center justify-between gap-1">
                           <span className="text-zinc-500 w-3 text-center">W</span>
                           <input
@@ -5475,6 +6203,29 @@ export default function EditorPage() {
                             step="0.1"
                           />
                           <span className="text-zinc-500 text-[10px]">cm</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-1 border-t border-zinc-800 pt-1.5 mt-0.5">
+                          <span className="text-zinc-500 w-3 text-center">↻</span>
+                          <input
+                            type="number"
+                            value={Math.round(rot)}
+                            onChange={e => {
+                              const val = (parseFloat(e.target.value) || 0) % 360;
+                              setFloatingImages(prev => prev.map(p => p.id === fi.id ? { ...p, rotation: (val + 360) % 360 } : p));
+                            }}
+                            className="w-10 bg-zinc-800 rounded px-1 py-0.5 text-right no-spinners outline-none focus:ring-1 focus:ring-[#E8607A]"
+                          />
+                          <button
+                            type="button"
+                            title="Rotate 90° clockwise"
+                            className="p-1 hover:bg-zinc-800 rounded text-zinc-300 hover:text-white transition-colors"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setFloatingImages(prev => prev.map(p => p.id === fi.id ? { ...p, rotation: ((p.rotation || 0) + 90) % 360 } : p));
+                            }}
+                          >
+                            <RotateCw size={11} />
+                          </button>
                         </div>
                       </div>
                     </>
@@ -5633,8 +6384,6 @@ export default function EditorPage() {
                 let italic = fd?.fontBytes
                   ? faceStyle.fontStyle === 'italic' || flags.italic
                   : flags.italic;
-                // When embedded bold face is used, CSS weight stays normal
-                const useEmbeddedFace = !!(fd?.fontBytes && fd.baseFont);
                 let underline = !!run.isUnderline || runHasPathUnderline(run, pathItems);
                 let color = run.fillColor
                   ? `rgb(${Math.round(run.fillColor[0] * 255)}, ${Math.round(run.fillColor[1] * 255)}, ${Math.round(run.fillColor[2] * 255)})`
@@ -5655,23 +6404,15 @@ export default function EditorPage() {
                   }
                 }
 
-                const hasBoldOv = editStyleOverrides.some(
-                  o => piece.start >= o.start && piece.end <= o.end && o.bold != null,
-                );
-                const hasItalicOv = editStyleOverrides.some(
-                  o => piece.start >= o.start && piece.end <= o.end && o.italic != null,
-                );
-
-                const fontWeight = useEmbeddedFace && !hasBoldOv ? 'normal' : (bold ? 'bold' : 'normal');
+                const fontWeight = bold ? 'bold' : 'normal';
+                const fontStyle = italic ? 'italic' : 'normal';
 
                 return {
                   text: piece.text,
                   fontFamily: segFontFamily,
                   fontSizeCss: segFontSize,
-                  // Embedded faces already include weight — synthesizing CSS bold
-                  // on top makes mid-line inserts look heavier/wrong vs neighbors.
                   fontWeight,
-                  fontStyle: useEmbeddedFace && !hasItalicOv ? 'normal' : (italic ? 'italic' : 'normal'),
+                  fontStyle,
                   underline,
                   color,
                 };

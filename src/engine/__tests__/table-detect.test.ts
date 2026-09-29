@@ -96,4 +96,37 @@ describe('reconstructLines table cells', () => {
     expect(tables[0].cols).toBe(4);
     expect(tables[0].rows).toBe(2);
   });
+
+  it('splits a single monolithic run with two separate boxes into independent TextLines', () => {
+    resetLineIdCounter();
+    // Simulate two boxes in a single run: Box 1 at x=50, Box 2 at x=350
+    const text1 = '1 *Corporate Identity Number (CIN)';
+    const text2 = 'U62011TS2026PTC210';
+    const glyphs1 = [...text1].map((ch, i) => glyph(ch, 50 + i * 6, 12));
+    const glyphs2 = [...text2].map((ch, i) => glyph(ch, 350 + i * 6, 12));
+    const combinedRun: TextRun = {
+      type: 'text',
+      text: text1 + text2,
+      glyphs: [...glyphs1, ...glyphs2],
+      x: 50,
+      y: 700,
+      width: 350 + text2.length * 6 - 50,
+      height: 12,
+      fontName: 'F1',
+      fontSize: 12,
+      textMatrix: identityMatrix(),
+      fillColor: [0, 0, 0],
+      fillAlpha: 1,
+      blendMode: 'Normal',
+      softMask: null,
+      clipPaths: [],
+    };
+
+    const lines = reconstructLines([combinedRun]);
+    expect(lines.length).toBe(2);
+    expect(lines[0].text).toBe(text1);
+    expect(lines[0].x).toBe(50);
+    expect(lines[1].text).toBe(text2);
+    expect(lines[1].x).toBe(350);
+  });
 });

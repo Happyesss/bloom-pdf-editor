@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Image as ImageIcon, Replace, X } from 'lucide-react';
+import { Image as ImageIcon, Replace, Copy, Trash2, X, Check } from 'lucide-react';
 import type { ImageItem } from '@/engine';
 
 interface EmbeddedImageOverlayProps {
@@ -16,6 +16,8 @@ interface EmbeddedImageOverlayProps {
   /** Commit SE resize (new PDF width/height; top-left screen corner stays fixed). */
   onCommitResize: (newWidth: number, newHeight: number) => Promise<void>;
   onReplace: () => void;
+  onCopy?: () => void;
+  onDelete?: () => void;
   onDeselect: () => void;
 }
 
@@ -26,9 +28,10 @@ interface EmbeddedImageOverlayProps {
 export function EmbeddedImageOverlay(props: EmbeddedImageOverlayProps) {
   const {
     item, toCss, scale,
-    onCommitMove, onCommitResize, onReplace, onDeselect,
+    onCommitMove, onCommitResize, onReplace, onCopy, onDelete, onDeselect,
   } = props;
 
+  const [copied, setCopied] = useState(false);
   const [live, setLive] = useState({
     x: item.x, y: item.y, width: item.width, height: item.height,
   });
@@ -147,6 +150,41 @@ export function EmbeddedImageOverlay(props: EmbeddedImageOverlayProps) {
         >
           <Replace size={10} /> Replace
         </button>
+        {onCopy && (
+          <button
+            type="button"
+            title="Copy image to clipboard & duplicate"
+            className={`flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded border shadow transition-colors ${
+              copied
+                ? 'bg-emerald-900/90 text-emerald-200 border-emerald-600'
+                : 'bg-zinc-800 text-zinc-200 border-zinc-600 hover:bg-zinc-700'
+            }`}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              onCopy();
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1500);
+            }}
+          >
+            {copied ? <Check size={10} className="text-emerald-300" /> : <Copy size={10} />}
+            {copied ? 'Copied' : 'Copy'}
+          </button>
+        )}
+        {onDelete && (
+          <button
+            type="button"
+            title="Delete image (saved to Removed Images bin)"
+            className="flex items-center gap-1 px-1.5 py-0.5 bg-red-950/80 text-red-300 text-[10px] rounded border border-red-700 hover:bg-red-800 hover:text-white shadow transition-colors"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+          >
+            <Trash2 size={10} /> Delete
+          </button>
+        )}
         <button
           type="button"
           title="Deselect"

@@ -37,6 +37,13 @@ import {
 } from '../fonts/dingbat-encodings';
 import { parseTTF, isTrueTypeFontData } from '../fonts/truetype-parser';
 import { isCFFData, wrapCFFInOTF } from '../fonts/cff-wrapper';
+import {
+  normalizeIndicText,
+  reorderIndicGlyphs,
+  repairIndicRuns,
+  isLegacyIndicFont,
+  convertKrutiDevToUnicode,
+} from '../fonts/indic-normalizer';
 
 // ─── Graphics State ─────────────────────────────────────────────────────────
 
@@ -679,16 +686,49 @@ export function interpretPage(
         // Operand is an array of strings and numbers
         const arr = ops[0];
         if (arr instanceof PDFArray) {
-          const combinedGlyphs: GlyphPosition[] = [];
-          let combinedText = '';
+          let currentGlyphs: GlyphPosition[] = [];
+          let currentText = '';
           let firstRun: TextRun | null = null;
-          let lastRun: TextRun | null = null;
+
+          const flushChunk = () => {
+            if (firstRun && currentGlyphs.length > 0) {
+              let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+              for (let k = 0; k < currentGlyphs.length; k++) {
+                const g = currentGlyphs[k];
+                if (g.x < minX) minX = g.x;
+                if (g.y < minY) minY = g.y;
+                if (g.x + g.width > maxX) maxX = g.x + g.width;
+                if (g.y + g.fontSize > maxY) maxY = g.y + g.fontSize;
+              }
+              const run: TextRun = {
+                ...firstRun,
+                text: currentText,
+                glyphs: currentGlyphs,
+                x: minX,
+                y: minY,
+                width: maxX - minX,
+                height: maxY - minY,
+              };
+              displayList.push(run);
+              rawTextRuns.push(run);
+            }
+            currentGlyphs = [];
+            currentText = '';
+            firstRun = null;
+          };
 
           for (let j = 0; j < arr.length; j++) {
             const item = arr.get(j)!;
             if (item instanceof PDFNumber) {
               // Negative number = move right, positive = move left (in thousandths of text space unit)
               const displacement = -item.value / 1000 * gs.textFontSize * (gs.horizontalScaling / 100);
+
+              // Detect large gap (column jump / table cell separator) to separate runs cleanly
+              const isColumnJump = Math.abs(item.value) > 400 || Math.abs(displacement) > Math.max(gs.textFontSize * 1.25, 10);
+              if (isColumnJump && currentGlyphs.length > 0) {
+                flushChunk();
+              }
+
               textMatrix = {
                 ...textMatrix,
                 e: textMatrix.e + displacement * textMatrix.a,
@@ -698,35 +738,13 @@ export function interpretPage(
               const result = showTextString(item, gs, textMatrix, fonts, objects, page, i);
               if (result) {
                 if (!firstRun) firstRun = result.run;
-                lastRun = result.run;
-                combinedGlyphs.push(...result.run.glyphs);
-                combinedText += result.run.text;
+                currentGlyphs.push(...result.run.glyphs);
+                currentText += result.run.text;
                 textMatrix = result.newTextMatrix;
               }
             }
           }
-
-          if (firstRun && lastRun && combinedGlyphs.length > 0) {
-            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-            for (let k = 0; k < combinedGlyphs.length; k++) {
-              const g = combinedGlyphs[k];
-              if (g.x < minX) minX = g.x;
-              if (g.y < minY) minY = g.y;
-              if (g.x + g.width > maxX) maxX = g.x + g.width;
-              if (g.y + g.fontSize > maxY) maxY = g.y + g.fontSize;
-            }
-            const combinedRun: TextRun = {
-              ...firstRun,
-              text: combinedText,
-              glyphs: combinedGlyphs,
-              x: minX,
-              y: minY,
-              width: maxX - minX,
-              height: maxY - minY,
-            };
-            displayList.push(combinedRun);
-            rawTextRuns.push(combinedRun);
-          }
+          flushChunk();
         }
         break;
       }
@@ -952,6 +970,9 @@ export function interpretPage(
   // Apostrophe often arrives as its own Tj ("FATHER" + "§" + "S NAME")
   repairApostrophesAcrossRuns(rawTextRuns);
 
+  // Normalize Devanagari / Indic text runs and syllable order
+  repairIndicRuns(rawTextRuns);
+
   // Merge adjacent text runs on the same baseline to eliminate gaps
   // caused by font-substitution width mismatches between runs.
   mergeAdjacentTextRuns(displayList, rawTextRuns);
@@ -1131,7 +1152,7 @@ function showTextString(
 
   if (rawBytes.length === 0) return null;
 
-  const glyphs: GlyphPosition[] = [];
+  let glyphs: GlyphPosition[] = [];
   let text = '';
   let totalWidth = 0;
   const fontSize = gs.textFontSize;
@@ -1300,7 +1321,16 @@ function showTextString(
   if (glyphs.length === 0) return null;
 
   repairObscureApostropheGlyphs(glyphs);
-  text = glyphs.map(g => g.unicode).join('');
+
+  const isLegacy = font && isLegacyIndicFont(font.baseFont) && !isComposite;
+  if (isLegacy) {
+    const rawText = glyphs.map(g => g.unicode).join('');
+    const convertedText = convertKrutiDevToUnicode(rawText);
+    text = convertedText;
+  } else {
+    glyphs = reorderIndicGlyphs(glyphs);
+    text = normalizeIndicText(glyphs.map(g => g.unicode).join(''));
+  }
 
   // Compute bounding box
   const effectiveMatrix = multiplyMatrices(textMatrix, gs.ctm);

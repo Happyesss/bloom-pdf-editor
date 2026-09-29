@@ -26,6 +26,7 @@ import {
   getRunBounds,
   visualFontSize,
 } from './metrics';
+import { detectTablesOnPage, findCellForLine } from './table-detect';
 import type { DocumentFlow, TextLine } from './types';
 
 /** Normalize bullets/dashes so "• " still matches rewritten "- ". */
@@ -206,10 +207,10 @@ function estimateLineGrowthDx(
     return Math.max(0, Math.max(estimated, spaceFloor) - oldW);
   }
   const scaled = oldW * (newText.length / Math.max(1, oldText.length));
-  const deltaFloor = oldW + Math.max(0, deltaLetters) * fs * 0.4;
-  const emCap = newText.length * fs * 0.52;
+  const deltaFloor = oldW + Math.max(0, deltaLetters) * fs * 0.55;
+  const emCap = newText.length * fs * 0.72;
   const proportional = Math.max(estimated, scaled);
-  const newW = Math.max(deltaFloor, Math.min(proportional, emCap));
+  const newW = Math.max(deltaFloor, Math.min(proportional, emCap), estimated);
   return Math.max(0, newW - oldW);
 }
 
@@ -233,34 +234,71 @@ function buildLayoutPlan(
 }
 
 /**
- * Nudge same-baseline peer runs that are not part of this line's segments.
- *
- * Covers: right-column date cells past the edited line, and orphan duplicate
- * draws (common in resume PDFs) that sit mid-line after the grown run — those
- * used to stay put when only segment trailers moved, overlapping the new gap.
+ * Nudge same-baseline peer runs when a line grows.
+ * - Table cells are independent columns and NEVER shift peer cells.
+ * - Independent columns/boxes with large gutters (> 3.5× font size or 45px)
+ *   only shift if the grown text physically collides / overlaps with them.
+ * - Subtitle / inline fragments on the same line shift to preserve relative spacing.
  */
 function collectPeerShiftsAfter(
   line: TextLine,
   flow: DocumentFlow | undefined,
-  afterX: number,
-  dx: number,
+  peerAfterX: number,
+  peerDx: number,
+  newRightEdge: number,
 ): RunPositionShift[] {
-  if (!flow?.rawRuns?.length || dx < 0.5) return [];
+  if (!flow?.rawRuns?.length || peerDx < 0.5) return [];
+
+  // Table cells are independent columns with fixed column alignments — never shift peer cells in a table
+  if (flow.lines?.length) {
+    const tables = detectTablesOnPage(flow.lines);
+    if (findCellForLine(tables, line.id)) {
+      return [];
+    }
+  }
 
   const owned = new Set<TextRun>(line.runs);
   const fs = Math.max(line.fontSize, 8);
+  const minGutter = Math.max(fs * 0.3, 4);
   const shifts: RunPositionShift[] = [];
 
-  for (let i = 0; i < flow.rawRuns.length; i++) {
-    const run = flow.rawRuns[i];
-    if (owned.has(run)) continue;
-    if ((run.sourceInstructionIndices ?? []).length === 0) continue;
+  const peers = flow.rawRuns
+    .filter(r => {
+      if (owned.has(r)) return false;
+      if ((r.sourceInstructionIndices ?? []).length === 0) return false;
+      const baseline = r.glyphs.length > 0 ? r.glyphs[0].tRm.f : r.y;
+      if (Math.abs(baseline - line.baseline) > Math.max(2, fs * 0.35)) return false;
+      return r.x >= peerAfterX - 0.5;
+    })
+    .sort((a, b) => a.x - b.x);
 
-    const baseline = run.glyphs.length > 0 ? run.glyphs[0].tRm.f : run.y;
-    if (Math.abs(baseline - line.baseline) > Math.max(2, fs * 0.35)) continue;
-    if (run.x < afterX - 0.5) continue;
+  let currentRight = newRightEdge;
+  let cumDx = 0;
 
-    shifts.push({ run, dx, dy: 0 });
+  for (let i = 0; i < peers.length; i++) {
+    const run = peers[i];
+    const isPunctuationContinuation = /^[\s|•·\-,–—]/.test(run.text);
+    const initialGap = run.x - line.rightEdge;
+    const isIndependentColumn = !isPunctuationContinuation && initialGap > Math.max(fs * 3.0, 35);
+
+    if (isIndependentColumn) {
+      const neededX = currentRight + minGutter;
+      if (neededX > run.x + cumDx) {
+        cumDx = neededX - run.x;
+        shifts.push({ run, dx: cumDx, dy: 0 });
+        currentRight = (run.x + cumDx) + run.width;
+      } else if (cumDx > 0) {
+        shifts.push({ run, dx: cumDx, dy: 0 });
+        currentRight = (run.x + cumDx) + run.width;
+      } else {
+        currentRight = Math.max(currentRight, run.x + run.width);
+      }
+    } else {
+      // Subtitle / inline continuation on the same line
+      cumDx = peerDx;
+      shifts.push({ run, dx: cumDx, dy: 0 });
+      currentRight = (run.x + cumDx) + run.width;
+    }
   }
 
   return shifts;
@@ -299,17 +337,55 @@ export function correctLineResidualGaps(
   line: TextLine,
   options?: { gapSourceLine?: TextLine },
 ): { bytes: Uint8Array; corrections: RunPositionShift[] } {
-  if (line.segments.length < 2) {
+  const targetLine = options?.gapSourceLine ?? line;
+  if (targetLine.segments.length < 2) {
     return { bytes: contentBytes, corrections: [] };
   }
-  return correctResidualRunGaps(
-    contentBytes,
-    page,
-    objects,
-    line,
-    line.segments.map(s => ({ run: s.run, newText: s.text })),
-    options?.gapSourceLine,
+
+  // Re-read page to get fresh glyph positions after text replacement
+  const fresh = interpretPage(contentBytes, page, objects);
+  const baseline = targetLine.baseline;
+  const fs = targetLine.fontSize;
+
+  const runs = resolveFreshSegmentRuns(
+    fresh.textRuns,
+    targetLine.segments.map(s => ({ run: s.run, newText: s.text })),
+    baseline,
+    fs,
   );
+  if (!runs || runs.length < 2) {
+    return { bytes: contentBytes, corrections: [] };
+  }
+
+  const corrections: RunPositionShift[] = [];
+  const spaceEm = 0.28;
+
+  for (let i = 0; i < runs.length - 1; i++) {
+    const cur = runs[i];
+    const next = runs[i + 1];
+    const prevSeg = targetLine.segments[i];
+    const nextSeg = targetLine.segments[i + 1];
+
+    if (!prevSeg || !nextSeg) continue;
+
+    const hadSpace = prevSeg.text.endsWith(' ') || nextSeg.text.startsWith(' ');
+    const desiredGap = hadSpace ? visualFontSize(cur) * spaceEm : 0;
+    const actualGap = next.x - (cur.x + cur.width);
+    const residual = desiredGap - actualGap;
+
+    if (Math.abs(residual) > 0.5 && Math.abs(residual) < fs * 2.5) {
+      for (let j = i + 1; j < runs.length; j++) {
+        corrections.push({ run: runs[j], dx: residual, dy: 0 });
+      }
+    }
+  }
+
+  if (corrections.length === 0) {
+    return { bytes: contentBytes, corrections: [] };
+  }
+
+  const shiftedBytes = applyRunPositionShifts(contentBytes, corrections);
+  return { bytes: shiftedBytes, corrections };
 }
 
 export function applyLineTextEdit(
@@ -358,15 +434,26 @@ export function applyLineTextEdit(
 
   let horizShifts = editShifts.filter(s => Math.abs(s.dy) < 0.01 && Math.abs(s.dx) > 0.01);
   const segmentGrowthDx = horizShifts.reduce((m, s) => Math.max(m, s.dx), 0);
-  // Multi-segment: trust segment chain. Single-segment: estimate line growth for
-  // right-column peers. Never inflate the whole line by a pending fontSize.
   const lineGrowthDx = primaryLine.segments.length <= 1
     ? estimateLineGrowthDx(primaryLine, oldText, newText, options?.fontSizeOverrides)
     : 0;
   const growthDx = Math.max(segmentGrowthDx, lineGrowthDx);
   const dSpaces = (newText.match(/\s/g) || []).length - (oldText.match(/\s/g) || []).length;
 
-  // Peer origin: just after the last changed segment (or classic right-column fence).
+  // Calculate new right edge of the edited line
+  let newRightEdge = primaryLine.rightEdge + growthDx;
+  if (primarySegmentEdits && primaryLine.segments.length > 0) {
+    for (let i = 0; i < primaryLine.segments.length; i++) {
+      const seg = primaryLine.segments[i];
+      const edit = primarySegmentEdits.find(e => e.run === seg.run) ?? primarySegmentEdits[i];
+      const text = edit?.newText ?? seg.text;
+      const shift = horizShifts.find(s => s.run === seg.run);
+      const segX = seg.run.x + (shift?.dx ?? 0);
+      const segW = Math.max(estimateTextWidth(text, seg.run), text.length * visualFontSize(seg.run) * 0.55);
+      newRightEdge = Math.max(newRightEdge, segX + segW);
+    }
+  }
+
   const fsPeer = Math.max(primaryLine.fontSize, 8);
   let peerAfterX = primaryLine.rightEdge - fsPeer * 0.25;
   let peerDx = growthDx;
@@ -383,12 +470,13 @@ export function applyLineTextEdit(
       .sort((a, b) => a.run.x - b.run.x)[0];
     if (trailer) peerDx = trailer.dx;
   }
+
   // Skip peers that share content-stream ops with segment trailers already shifted.
   const shiftedOps = new Set<number>();
   for (const s of horizShifts) {
     for (const idx of s.run.sourceInstructionIndices ?? []) shiftedOps.add(idx);
   }
-  const peerShifts = collectPeerShiftsAfter(primaryLine, flow, peerAfterX, peerDx)
+  const peerShifts = collectPeerShiftsAfter(primaryLine, flow, peerAfterX, peerDx, newRightEdge)
     .filter(s => !(s.run.sourceInstructionIndices ?? []).some(idx => shiftedOps.has(idx)));
   if (peerShifts.length > 0) {
     horizShifts = [...horizShifts, ...peerShifts];

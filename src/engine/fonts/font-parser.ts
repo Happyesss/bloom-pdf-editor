@@ -34,6 +34,7 @@ import {
   zapfDingbatsCharToUnicode,
   ZAPF_DINGBATS_GLYPH_TO_UNICODE,
 } from './dingbat-encodings';
+import { INDIC_FONT_FALLBACKS, isLegacyIndicFont } from './indic-normalizer';
 
 // ─── Font data structure ────────────────────────────────────────────────────
 
@@ -538,13 +539,21 @@ function buildCSSFont(fontData: FontData): string {
   const style = (lower.includes('italic') || lower.includes('oblique')) ? 'italic' : 'normal';
 
   // Try to match to a system font
-  let family = 'sans-serif';
-  if (lower.includes('courier') || lower.includes('mono')) {
-    family = '"Courier New", Courier, monospace';
+  let family = `sans-serif, ${INDIC_FONT_FALLBACKS}`;
+  if (
+    isLegacyIndicFont(fontData.baseFont) ||
+    lower.includes('mangal') ||
+    lower.includes('nirmala') ||
+    lower.includes('deva') ||
+    lower.includes('hindi')
+  ) {
+    family = `${INDIC_FONT_FALLBACKS}`;
+  } else if (lower.includes('courier') || lower.includes('mono')) {
+    family = `"Courier New", Courier, monospace, ${INDIC_FONT_FALLBACKS}`;
   } else if (lower.includes('times') || lower.includes('roman') || lower.includes('serif')) {
-    family = '"Times New Roman", Times, serif';
+    family = `"Times New Roman", Times, "Noto Serif Devanagari", ${INDIC_FONT_FALLBACKS}`;
   } else if (lower.includes('helv') || lower.includes('arial')) {
-    family = 'Helvetica, Arial, sans-serif';
+    family = `Helvetica, Arial, ${INDIC_FONT_FALLBACKS}`;
   }
 
   return `${style} ${weight} 10px ${family}`;

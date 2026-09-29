@@ -75,6 +75,17 @@ export {
   buildSimpleToUnicodeCMap,
   augmentFontsForMissingGlyphs,
 } from './fonts/font-augmentation';
+export {
+  normalizeIndicText,
+  reorderPreBaseVowels,
+  reorderIndicGlyphs,
+  repairIndicRuns,
+  isIndicCombiningChar,
+  isDevanagariChar,
+  isLegacyIndicFont,
+  convertKrutiDevToUnicode,
+  INDIC_FONT_FALLBACKS,
+} from './fonts/indic-normalizer';
 
 // ── Renderer ──
 export { renderPage, renderPageToCanvas, renderPDFPage, renderAllPages } from './render/renderer';

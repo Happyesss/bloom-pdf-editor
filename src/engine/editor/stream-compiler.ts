@@ -63,10 +63,27 @@ export async function updatePageContent(
   newContentBytes: Uint8Array,
   objects: Map<string, PDFObject>,
   compress: boolean = true,
-): Promise<void> {
+  page?: { dict: PDFDict; contentRefs: PDFRef[] },
+): Promise<PDFRef | void> {
   const newStream = await compileContentStream(newContentBytes, compress);
 
-  if (contentRefs.length === 0) return;
+  if (contentRefs.length === 0) {
+    let max = 0;
+    for (const key of objects.keys()) {
+      const num = parseInt(key.split('_')[0], 10);
+      if (num > max) max = num;
+    }
+    const newRef = new PDFRef(max + 1, 0);
+    objects.set(newRef.toKey(), newStream);
+    contentRefs.push(newRef);
+    if (page) {
+      page.dict.set('Contents', newRef);
+      if (!page.contentRefs.includes(newRef)) {
+        page.contentRefs.push(newRef);
+      }
+    }
+    return newRef;
+  }
 
   if (contentRefs.length === 1) {
     // Single content stream — replace it

@@ -173,7 +173,8 @@ export function insertBlankPage(
   if (pagesRef) pageDict.set('Parent', pagesRef);
 
   // Empty resources
-  pageDict.set('Resources', new PDFDict());
+  const resourcesDict = new PDFDict();
+  pageDict.set('Resources', resourcesDict);
 
   // Empty content stream
   const contentDict = new PDFDict();
@@ -195,7 +196,7 @@ export function insertBlankPage(
     cropBox: size,
     rotate: 0,
     ref: pageRef,
-    resources: new PDFDict(),
+    resources: resourcesDict,
     contentRefs: [contentRef],
   };
 

@@ -35,26 +35,30 @@ export async function saveQuick(
  * Optimized save: garbage-collect unreachable objects, dedupe streams, full serialize.
  */
 export async function saveOptimized(doc: PDFDocumentData): Promise<Uint8Array> {
+  let objectsToSerialize = doc.objects;
   try {
-    const roots = rootsFromTrailer(doc.xref.trailerDict);
-    const gc = garbageCollect(doc.objects, roots, { deduplicateStreams: true });
-    doc.objects.clear();
-    for (const [k, v] of gc.objects) {
-      doc.objects.set(k, v);
+    const extraRoots: import('../types').PDFRef[] = [];
+    const catRef = doc.xref?.trailerDict?.getRef('Root');
+    if (catRef) extraRoots.push(catRef);
+    for (const page of doc.pages) {
+      if (page.ref) extraRoots.push(page.ref);
+    }
+    const roots = rootsFromTrailer(doc.xref.trailerDict, extraRoots);
+    if (roots.length > 0) {
+      const gc = garbageCollect(doc.objects, roots, { deduplicateStreams: true });
+      objectsToSerialize = gc.objects;
     }
   } catch {
     try {
       const dedup = deduplicateStreams(doc.objects);
       if (dedup.refMap.size > 0) {
-        const remapped = applyRefMap(doc.objects, dedup.refMap);
-        doc.objects.clear();
-        for (const [k, v] of remapped) doc.objects.set(k, v);
+        objectsToSerialize = applyRefMap(doc.objects, dedup.refMap);
       }
     } catch {
       // continue
     }
   }
-  return serializeDocument(doc);
+  return serializeDocument({ ...doc, objects: objectsToSerialize });
 }
 
 export type SaveMode = 'quick' | 'optimized';

@@ -68,6 +68,7 @@ export interface FloatingImage {
   pdfWidth: number;
   pdfHeight: number;
   dataUrl: string;
+  rotation?: number;
 }
 
 export interface RemovedImageRecord {

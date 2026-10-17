@@ -5,7 +5,7 @@ import type * as Engine from '@/engine';
 
 /**
  * Lightweight PDF parse debugger.
- * Document conversion debugging moves to the Bloom server engine.
+ * Document conversion runs in the Bloom engine Web Worker (Export panel).
  */
 export default function DebugPage() {
   const [loading, setLoading] = useState(false);
@@ -34,7 +34,7 @@ export default function DebugPage() {
       const parsed = await engineRef.current.parsePDF(pdfBytes);
       setSummary(
         `Parsed ${file.name}: ${parsed.pages.length} page(s), PDF ${parsed.version}. ` +
-          `Document conversion is handled by the Bloom server engine.`,
+          `Document conversion runs in the Export panel.`,
       );
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
@@ -44,22 +44,24 @@ export default function DebugPage() {
   };
 
   return (
+    <div className="min-h-screen bg-background text-foreground">
     <div className="p-8 max-w-5xl mx-auto font-sans">
-      <h1 className="text-3xl font-bold mb-4">PDF Parse Debugger</h1>
-      <p className="mb-6 text-gray-600">
-        Upload a PDF to verify the in-browser parser. Word/Markdown conversion runs on the Bloom server.
+      <h1 className="text-3xl font-extrabold tracking-tight mb-4">PDF Parse Debugger</h1>
+      <p className="mb-6 text-muted-foreground">
+        Upload a PDF to verify the in-browser parser.
       </p>
 
       <input
         type="file"
         accept="application/pdf"
         onChange={handleFileUpload}
-        className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-[#B83A57] hover:file:bg-blue-100 mb-8"
+        className="block w-full text-sm text-muted-foreground file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-primary/10 file:text-primary hover:file:bg-primary/15 mb-8"
       />
 
-      {loading && <div className="text-[#E8607A] animate-pulse">Processing PDF...</div>}
-      {error && <div className="text-red-600 font-medium">Error: {error}</div>}
-      {summary && <div className="text-emerald-700 font-medium">{summary}</div>}
+      {loading && <div className="text-primary animate-pulse">Processing PDF...</div>}
+      {error && <div className="text-destructive font-medium">Error: {error}</div>}
+      {summary && <div className="text-emerald-700 dark:text-emerald-400 font-medium">{summary}</div>}
+    </div>
     </div>
   );
 }

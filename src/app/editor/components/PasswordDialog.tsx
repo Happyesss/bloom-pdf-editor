@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useCallback, FormEvent } from 'react';
-import { Lock, Loader2 } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
+import { LockDoodle } from '@/components/art/Illustrations';
 
 interface PasswordDialogProps {
   fileName?: string;
@@ -32,24 +33,22 @@ export function PasswordDialog({
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background bg-paper p-4">
       <form
         onSubmit={handleSubmit}
-        className="w-full max-w-sm rounded-2xl border border-app bg-panel p-6 shadow-2xl"
+        className="w-full max-w-sm rounded-3xl border border-border bg-card p-6 sm:p-7 shadow-[0_20px_60px_-30px_rgba(0,0,0,0.35)] animate-scale-in"
       >
-        <div className="mb-4 flex items-center gap-3">
-          <div className="rounded-xl bg-[#E8607A]/10 p-2.5 text-[#E8607A]">
-            <Lock size={20} />
-          </div>
+        <LockDoodle className="mx-auto mb-2 w-28 h-28 text-primary" />
+        <div className="mb-5 text-center">
           <div>
-            <h2 className="text-base font-semibold text-app">Password required</h2>
-            <p className="text-xs text-app-muted">
+            <h2 className="text-lg font-extrabold tracking-tight text-foreground">Password required</h2>
+            <p className="mt-0.5 text-[13px] text-muted-foreground break-all">
               {fileName ? `"${fileName}" is encrypted` : 'This PDF is encrypted'}
             </p>
           </div>
         </div>
 
-        <label className="mb-1 block text-xs font-medium text-app-muted" htmlFor="pdf-password">
+        <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-muted-foreground" htmlFor="pdf-password">
           Document password
         </label>
         <input
@@ -58,13 +57,13 @@ export function PasswordDialog({
           autoFocus
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          className="mb-3 w-full rounded-xl border border-app bg-panel-elevated px-3 py-2 text-sm text-app outline-none focus:border-[#E8607A]"
+          className="mb-3 w-full h-11 rounded-xl border border-border bg-card px-3 text-sm text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
           placeholder="Enter password"
           disabled={isVerifying}
         />
 
         {error && (
-          <p className="mb-3 text-xs text-red-400" role="alert">
+          <p className="mb-3 text-xs font-medium text-destructive" role="alert">
             {error}
           </p>
         )}
@@ -75,7 +74,7 @@ export function PasswordDialog({
               type="button"
               onClick={onCancel}
               disabled={isVerifying}
-              className="rounded-xl px-3 py-1.5 text-sm text-app-muted hover:bg-panel-elevated hover:text-app"
+              className="h-10 rounded-xl px-4 text-sm font-semibold text-muted-foreground hover:bg-muted hover:text-foreground"
             >
               Cancel
             </button>
@@ -83,7 +82,7 @@ export function PasswordDialog({
           <button
             type="submit"
             disabled={isVerifying}
-            className="inline-flex items-center gap-2 rounded-xl bg-[#E8607A] px-4 py-1.5 text-sm font-semibold text-white hover:bg-[#D94D6A] disabled:opacity-60 shadow-md shadow-[#E8607A]/20 transition-all"
+            className="inline-flex items-center gap-2 h-10 rounded-xl bg-primary px-5 text-sm font-bold text-primary-foreground hover:brightness-105 disabled:opacity-60 shadow-[0_6px_20px_-6px_rgba(232,96,122,0.6)] transition-all"
           >
             {isVerifying ? <Loader2 size={14} className="animate-spin" /> : null}
             Unlock

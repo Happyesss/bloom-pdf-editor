@@ -1,4 +1,4 @@
-import { inflateSync, inflateRawSync } from 'node:zlib';
+import { zlib } from '../../utils/zlib.js';
 import { PdfLexer, type Token } from './lexer.js';
 import { decodeStream } from './filters.js';
 import {
@@ -205,14 +205,14 @@ function parseXRefTable(
 }
 
 function parseXRefStreamSync(stream: PdfStream): { entries: XRefEntry[]; trailer: PdfDict } {
-  let data: Buffer;
+  let data: Uint8Array;
   try {
-    data = inflateSync(Buffer.from(stream.rawBytes));
+    data = zlib().inflateSync(stream.rawBytes);
   } catch {
     try {
-      data = inflateRawSync(Buffer.from(stream.rawBytes));
+      data = zlib().inflateRawSync(stream.rawBytes);
     } catch {
-      data = Buffer.from(stream.rawBytes);
+      data = stream.rawBytes;
     }
   }
 
@@ -261,7 +261,7 @@ function parseXRefStreamSync(stream: PdfStream): { entries: XRefEntry[]; trailer
   return { entries, trailer: stream.dict };
 }
 
-function readUint(buf: Uint8Array | Buffer, offset: number, len: number): number {
+function readUint(buf: Uint8Array, offset: number, len: number): number {
   let v = 0;
   for (let i = 0; i < len; i++) {
     v = (v << 8) | (buf[offset + i] ?? 0);

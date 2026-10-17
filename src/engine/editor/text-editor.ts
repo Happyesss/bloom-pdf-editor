@@ -1527,6 +1527,9 @@ export function findTextInPage(
 
 /**
  * Find and replace text in a page's content stream.
+ *
+ * @param occurrence When set, replace only that match (0-based, counted across
+ *   the page's text runs in reading order); otherwise replace every match.
  */
 export function findAndReplace(
   contentBytes: Uint8Array,
@@ -1535,8 +1538,27 @@ export function findAndReplace(
   searchText: string,
   replaceText: string,
   caseSensitive: boolean = false,
+  occurrence?: number,
 ): EditResult {
   const matchingRuns = findTextInPage(contentBytes, page, objects, searchText, caseSensitive);
+
+  if (occurrence !== undefined) {
+    const needle = caseSensitive ? searchText : searchText.toLowerCase();
+    let seen = 0;
+    for (const run of matchingRuns) {
+      const hay = caseSensitive ? run.text : run.text.toLowerCase();
+      let idx = 0;
+      while ((idx = hay.indexOf(needle, idx)) !== -1) {
+        if (seen === occurrence) {
+          const newText = run.text.slice(0, idx) + replaceText + run.text.slice(idx + searchText.length);
+          return applyTextEdits(contentBytes, page, objects, [{ targetRun: run, newText }]);
+        }
+        seen++;
+        idx += Math.max(needle.length, 1);
+      }
+    }
+    return { newContentBytes: contentBytes, needsFontAugmentation: false, missingCharCodes: [] };
+  }
 
   const edits: TextEdit[] = matchingRuns.map((run) => {
     let newText: string;

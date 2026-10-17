@@ -50,18 +50,20 @@ export class TesseractOcrAdapter implements OcrAdapter {
     if (!ctx) return [];
     ctx.putImageData(imageData, 0, 0);
 
-    const result = await worker.recognize(canvas);
+    // tesseract.js ≥ 6 only returns word boxes when `blocks` output is requested,
+    // nested as blocks → paragraphs → lines → words.
+    const result = await worker.recognize(canvas, {}, { blocks: true });
+    type TWord = { text: string; confidence: number; bbox: { x0: number; y0: number; x1: number; y1: number } };
+    const data = result.data as {
+      words?: TWord[];
+      blocks?: Array<{ paragraphs?: Array<{ lines?: Array<{ words?: TWord[] }> }> }> | null;
+    };
+    const found: TWord[] = data.words?.length
+      ? data.words
+      : (data.blocks ?? []).flatMap((b) => (b.paragraphs ?? []).flatMap((p) => (p.lines ?? []).flatMap((l) => l.words ?? [])));
     const words: OcrWord[] = [];
 
-    const data = result.data as {
-      words?: Array<{
-        text: string;
-        confidence: number;
-        bbox: { x0: number; y0: number; x1: number; y1: number };
-      }>;
-    };
-
-    for (const w of data.words ?? []) {
+    for (const w of found) {
       const text = (w.text || '').trim();
       if (!text) continue;
       if (w.confidence < 35) continue;
@@ -98,9 +100,17 @@ export function createDefaultOcrAdapter(): OcrAdapter {
 }
 
 export function canvasToImageData(canvas: HTMLCanvasElement): ImageData {
-  const ctx = canvas.getContext('2d');
+  // The page canvas is transparent where nothing is painted; flatten it onto
+  // white first, or OCR sees black text on a black (alpha 0) background.
+  const flat = document.createElement('canvas');
+  flat.width = canvas.width;
+  flat.height = canvas.height;
+  const ctx = flat.getContext('2d');
   if (!ctx) throw new Error('2D context unavailable');
-  return ctx.getImageData(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, flat.width, flat.height);
+  ctx.drawImage(canvas, 0, 0);
+  return ctx.getImageData(0, 0, flat.width, flat.height);
 }
 
 /**

@@ -119,12 +119,12 @@ export function DownloadDropdown({
 
   return (
     <div className="relative" ref={dropdownRef}>
-      <div className="flex items-stretch shadow-md shadow-[#E8607A]/15 rounded-xl">
+      <div className="flex items-stretch shadow-[0_6px_20px_-6px_rgba(232,96,122,0.6)] rounded-xl">
         <button
           onClick={onDownload}
           disabled={isSaving}
           title="Download original / edited PDF (no recompression)"
-          className="flex items-center gap-2 text-xs font-semibold pl-3 md:pl-4 pr-2 md:pr-3 py-2 bg-gradient-to-b from-[#E8607A] to-[#D94D6A] hover:from-[#FF6B8E] hover:to-[#E8607A] disabled:from-zinc-700 disabled:to-zinc-800 disabled:text-zinc-500 text-white rounded-l-xl transition-all duration-200 ease-out active:scale-[0.98]"
+          className="flex items-center gap-2 text-xs font-semibold pl-3 md:pl-4 pr-2 md:pr-3 py-2 bg-primary text-primary-foreground hover:brightness-105 disabled:opacity-50 rounded-l-xl transition-all duration-200 ease-out active:scale-[0.98]"
         >
           {isSaving ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
           <span className="hidden sm:inline">Download</span>
@@ -134,7 +134,7 @@ export function DownloadDropdown({
           onClick={() => setIsOpen(!isOpen)}
           disabled={isSaving}
           title="Download options"
-          className="flex items-center px-2 py-2 bg-gradient-to-b from-[#E8607A] to-[#D94D6A] hover:from-[#FF6B8E] hover:to-[#E8607A] disabled:from-zinc-700 disabled:to-zinc-800 disabled:text-zinc-500 text-white rounded-r-xl border-l border-[#FFC5D3]/30 transition-all duration-200 ease-out active:scale-[0.98]"
+          className="flex items-center px-2 py-2 bg-primary text-primary-foreground hover:brightness-105 disabled:opacity-50 rounded-r-xl border-l border-white/25 transition-all duration-200 ease-out active:scale-[0.98]"
         >
           <ChevronDown
             size={14}
@@ -145,7 +145,7 @@ export function DownloadDropdown({
 
       {isOpen && (
         <div
-          className="fixed inset-x-0 bottom-0 md:absolute md:inset-auto md:right-0 md:top-full md:mt-2 w-full md:w-[380px] bg-panel/98 backdrop-blur-2xl border border-app md:rounded-2xl rounded-t-2xl shadow-2xl shadow-black/50 overflow-hidden z-50 text-app max-h-[80vh] md:max-h-none overflow-y-auto"
+          className="fixed inset-x-0 bottom-0 md:absolute md:inset-auto md:right-0 md:top-full md:mt-2 w-full md:w-[380px] bg-popover border border-border md:rounded-2xl rounded-t-2xl shadow-[0_12px_32px_-8px_rgba(0,0,0,0.22)] animate-scale-in md:origin-top-right overflow-hidden z-50 text-app max-h-[80vh] md:max-h-none overflow-y-auto"
           style={{ animation: 'dropdownIn 0.25s cubic-bezier(0.16, 1, 0.3, 1)' }}
         >
           <div className="px-5 pt-4 pb-3 border-b border-app">
@@ -190,7 +190,7 @@ export function DownloadDropdown({
                   onClick={() => onSaveModeChange(opt.value)}
                   className={`flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all duration-200 ${
                     saveMode === opt.value
-                      ? 'bg-[#E8607A] text-white shadow-sm font-semibold'
+                      ? 'bg-primary text-white shadow-sm font-semibold'
                       : 'text-app-muted hover:text-app'
                   }`}
                 >
@@ -230,7 +230,7 @@ export function DownloadDropdown({
                   onClick={() => setSelectedDpi(preset.value)}
                   className={`px-2 py-2 rounded-lg text-center transition-all duration-200 ${
                     selectedDpi === preset.value
-                      ? 'bg-[#E8607A]/15 text-[#E8607A] border border-[#E8607A]/40 ring-1 ring-[#E8607A]/20 font-semibold'
+                      ? 'bg-primary/15 text-primary border border-primary/40 ring-1 ring-primary/20 font-semibold'
                       : 'bg-panel-elevated text-app-muted border border-app hover:text-app'
                   }`}
                 >
@@ -268,7 +268,7 @@ export function DownloadDropdown({
                   onClick={() => setCompressionQuality(preset.value)}
                   className={`px-2 py-2 rounded-lg text-center transition-all duration-200 ${
                     compressionQuality === preset.value
-                      ? 'bg-[#E8607A]/15 text-[#E8607A] border border-[#E8607A]/40 ring-1 ring-[#E8607A]/20 font-semibold'
+                      ? 'bg-primary/15 text-primary border border-primary/40 ring-1 ring-primary/20 font-semibold'
                       : 'bg-panel-elevated text-app-muted border border-app hover:text-app'
                   }`}
                 >
@@ -286,7 +286,7 @@ export function DownloadDropdown({
             <button
               onClick={handleOptionsDownload}
               disabled={isSaving}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-b from-[#E8607A] to-[#D94D6A] hover:from-[#FF6B8E] hover:to-[#E8607A] disabled:from-zinc-700 disabled:to-zinc-800 disabled:text-zinc-500 text-white font-medium text-sm rounded-xl shadow-lg shadow-[#E8607A]/25 transition-all duration-200 ease-out active:scale-[0.98]"
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-primary text-primary-foreground hover:brightness-105 disabled:opacity-50 font-medium text-sm rounded-xl shadow-[0_6px_20px_-6px_rgba(232,96,122,0.6)] transition-all duration-200 ease-out active:scale-[0.98]"
             >
               {isSaving ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
               {`Download (${compressionQuality}% · ${selectedDpi} DPI)`}

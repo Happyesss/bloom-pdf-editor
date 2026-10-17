@@ -6,6 +6,7 @@ import { getPageContentBytes, resolveRef } from '../parser/parser';
 import { updatePageContent, concatBytes } from '../editor/stream-compiler';
 import {
   PDFArray,
+  PDFBoolean,
   PDFDict,
   PDFName,
   PDFObject,
@@ -22,19 +23,37 @@ function stringToBytes(str: string): Uint8Array {
   return bytes;
 }
 
-/** Set a widget's /V value in the object graph. */
+/**
+ * The terminal field dictionary that owns a widget's /V. When the widget and
+ * field are split (a /Kids widget without /T, as pdf-lib and Acrobat write
+ * them), the value belongs on the /Parent field, not on the widget.
+ */
+export function fieldDictForWidget(widget: AcroFormWidget, objects: Map<string, PDFObject>): PDFDict {
+  const dict = widget.dict;
+  if (dict.has('T')) return dict;
+  const parent = resolveRef(dict.get('Parent') as PDFObject, objects);
+  return parent instanceof PDFDict ? parent : dict;
+}
+
+/** Set a field's /V value in the object graph. */
 export function setFormFieldValue(
   doc: PDFDocumentData,
   widget: AcroFormWidget,
   value: string | boolean,
 ): void {
   const dict = widget.dict;
+  const field = fieldDictForWidget(widget, doc.objects);
   if (typeof value === 'boolean') {
-    dict.set('V', new PDFName(value ? 'Yes' : 'Off'));
+    field.set('V', new PDFName(value ? 'Yes' : 'Off'));
     dict.set('AS', new PDFName(value ? 'Yes' : 'Off'));
   } else {
-    dict.set('V', new PDFString(value));
+    field.set('V', new PDFString(value));
+    // The widget's stored appearance still shows the old text; ask viewers to rebuild it.
+    let acro = doc.catalog.get('AcroForm');
+    if (acro instanceof PDFRef) acro = resolveRef(acro, doc.objects);
+    if (acro instanceof PDFDict) acro.set('NeedAppearances', new PDFBoolean(true));
   }
+  if (field !== dict) dict.delete('V');
   widget.value = value;
 }
 
@@ -82,4 +101,35 @@ export async function flattenFormFieldsOnPage(
   const merged = concatBytes(existing, stringToBytes(`\n${content}`));
   await updatePageContent(page.contentRefs, merged, doc.objects);
   removeWidgetAnnots(page.dict, removedRefs, doc.objects);
+  removeFieldsForWidgets(doc, removedRefs);
+}
+
+/**
+ * Drop flattened widgets from the AcroForm field tree, and any field left with
+ * no widgets, so the form no longer lists them.
+ */
+function removeFieldsForWidgets(doc: PDFDocumentData, removedRefs: PDFRef[]): void {
+  let acro = doc.catalog.get('AcroForm');
+  if (acro instanceof PDFRef) acro = resolveRef(acro, doc.objects);
+  if (!(acro instanceof PDFDict)) return;
+  const removed = new Set(removedRefs.map((r) => r.toKey()));
+
+  const prune = (arr: PDFArray): PDFObject[] => {
+    const kept: PDFObject[] = [];
+    for (const item of arr.items) {
+      if (item instanceof PDFRef && removed.has(item.toKey())) continue;
+      const dict = resolveRef(item, doc.objects);
+      const kids = dict instanceof PDFDict ? resolveRef(dict.get('Kids') as PDFObject, doc.objects) : null;
+      if (dict instanceof PDFDict && kids instanceof PDFArray && kids.length > 0) {
+        const left = prune(kids);
+        if (left.length === 0) continue;
+        dict.set('Kids', new PDFArray(left));
+      }
+      kept.push(item);
+    }
+    return kept;
+  };
+
+  const fields = resolveRef(acro.get('Fields') as PDFObject, doc.objects);
+  if (fields instanceof PDFArray) acro.set('Fields', new PDFArray(prune(fields)));
 }

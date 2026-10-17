@@ -14,7 +14,7 @@ import {
   type PDFDocumentData,
 } from '../types';
 import { resolveRef } from '../parser/parser';
-import { setFormFieldValue } from './apply-field';
+import { fieldDictForWidget, setFormFieldValue } from './apply-field';
 import type { AcroFormWidget } from './types';
 import { getNextObjNum } from '../writer/serializer';
 
@@ -60,7 +60,7 @@ export function setButtonFieldValue(
   ap.set('N', nDict);
   widget.dict.set('AP', ap);
   widget.dict.set('AS', new PDFName(checked ? onName : 'Off'));
-  widget.dict.set('V', new PDFName(checked ? onName : 'Off'));
+  fieldDictForWidget(widget, doc.objects).set('V', new PDFName(checked ? onName : 'Off'));
 }
 
 /** Set a choice (dropdown/list) field value. */
@@ -70,7 +70,6 @@ export function setChoiceFieldValue(
   value: string,
 ): void {
   setFormFieldValue(doc, widget, value);
-  widget.dict.set('V', new PDFString(value));
 }
 
 /** Mark NeedAppearances so viewers regenerate widget appearances. */

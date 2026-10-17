@@ -1,11 +1,11 @@
 import React from 'react';
-import Image from 'next/image';
 import Link from 'next/link';
-import { ChevronLeft, ChevronRight, ZoomOut, ZoomIn, X, Undo2, Redo2, Search, FileOutput, Sun, Moon } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ZoomOut, ZoomIn, X, Undo2, Redo2, Search, FileOutput } from 'lucide-react';
 import type { DrawnPath } from '../types';
 import type { PDFDocumentData } from '@/engine';
 import { DownloadDropdown } from './DownloadDropdown';
-import { useTheme } from '@/app/theme/ThemeProvider';
+import { Logo, LogoMark } from '@/components/art/Logo';
+import { ThemeToggle } from '@/components/layout/ThemeToggle';
 
 interface ToolbarProps {
   fileName: string;
@@ -63,95 +63,74 @@ export function Toolbar({
   doc,
   onCompressedDownload,
 }: ToolbarProps) {
-  const { theme, toggleTheme } = useTheme();
-
   return (
-    <header className="flex items-center justify-between px-2 md:px-4 h-12 md:h-14 bg-panel/90 backdrop-blur-lg border-b border-app shrink-0 z-40">
+    <header className="flex items-center justify-between gap-2 px-2 md:px-4 h-12 md:h-[58px] bg-background/85 backdrop-blur-xl border-b border-border shrink-0 z-40">
       {/* ── Left: close + logo + filename ── */}
-      <div className="flex items-center gap-1.5 md:gap-3 shrink-0">
-        <button 
-          onClick={onClose} 
-          className="p-1.5 text-app-muted hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-all duration-200" 
+      <div className="flex items-center gap-1 md:gap-2 min-w-0 shrink">
+        <button
+          onClick={onClose}
+          className="w-8 h-8 md:w-9 md:h-9 flex items-center justify-center text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-lg transition-colors shrink-0"
           title="Close file & return home"
+          aria-label="Close file & return home"
         >
           <X size={18} />
         </button>
-        <Link href="/" className="flex items-center gap-2 mr-1.5 group">
-          <Image
-            src="/logo.png"
-            alt="BloomPDF Logo"
-            width={32}
-            height={32}
-            className="w-6 h-6 md:w-7 md:h-7 object-contain shrink-0"
-            priority
-          />
-          <span className="hidden sm:inline font-bold text-sm tracking-tight text-app group-hover:text-[#E8607A] transition-colors">
-            Bloom<span className="text-[#E8607A]">PDF</span>
+        <Link href="/" aria-label="BloomPDF Editor home" className="hidden sm:flex items-center shrink-0 overflow-visible md:mr-5">
+          <LogoMark size={26} className="md:hidden" />
+          <span className="hidden md:flex -ml-1">
+            <Logo variant="nav" />
           </span>
         </Link>
-        <div className="w-[1px] h-4 bg-[var(--border)] hidden md:block" />
-        <span className="hidden md:inline text-app font-medium text-xs sm:text-sm truncate max-w-[200px] opacity-90">{fileName}</span>
+        <div className="w-px h-5 bg-border hidden lg:block shrink-0" />
+        <span className="hidden lg:inline text-foreground/90 font-semibold text-[13px] truncate max-w-[220px]" title={fileName}>{fileName}</span>
       </div>
 
       {/* ── Center: undo/redo, page nav, zoom ── */}
-      <div className="flex items-center gap-1 md:gap-2 bg-panel-elevated px-1.5 md:px-2 py-1 md:py-1.5 rounded-lg border border-app shadow-sm overflow-x-auto scrollbar-hide">
-        <button
-          onClick={onUndo}
-          disabled={!canUndo}
-          className="p-1 text-app-muted hover:text-app disabled:opacity-30 disabled:hover:text-app-muted transition-colors shrink-0"
-          title="Undo (Ctrl+Z)"
-        >
+      <div className="flex items-center gap-0.5 md:gap-1.5 bg-card px-1 md:px-2 py-1 rounded-xl border border-border shadow-[0_1px_2px_rgba(0,0,0,0.04)] overflow-x-auto scrollbar-hide min-w-0">
+        <button onClick={onUndo} disabled={!canUndo} className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted-foreground transition-colors shrink-0" title="Undo (Ctrl+Z)" aria-label="Undo">
           <Undo2 size={16} />
         </button>
-        <button
-          onClick={onRedo}
-          disabled={!canRedo}
-          className="p-1 text-app-muted hover:text-app disabled:opacity-30 disabled:hover:text-app-muted transition-colors shrink-0"
-          title="Redo (Ctrl+Shift+Z)"
-        >
+        <button onClick={onRedo} disabled={!canRedo} className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted-foreground transition-colors shrink-0" title="Redo (Ctrl+Shift+Z)" aria-label="Redo">
           <Redo2 size={16} />
         </button>
 
-        <div className="w-[1px] h-4 bg-[var(--border)] mx-0.5 md:mx-1 hidden sm:block shrink-0" />
+        <div className="w-px h-4 bg-border mx-0.5 md:mx-1 hidden sm:block shrink-0" />
 
-        <button onClick={onPrevPage} disabled={currentPage === 0} className="p-1 text-app-muted hover:text-app disabled:opacity-30 disabled:hover:text-app-muted transition-colors shrink-0">
+        <button onClick={onPrevPage} disabled={currentPage === 0} className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted-foreground transition-colors shrink-0" title="Previous page" aria-label="Previous page">
           <ChevronLeft size={18} />
         </button>
-        <span className="text-app-muted text-xs font-medium w-12 md:w-16 text-center tracking-wider shrink-0">
+        <span data-testid="page-indicator" className="text-foreground/80 text-xs font-semibold w-10 sm:w-12 md:w-16 text-center tabular-nums shrink-0">
           {currentPage + 1} / {totalPages}
         </span>
-        <button onClick={onNextPage} disabled={currentPage >= totalPages - 1} className="p-1 text-app-muted hover:text-app disabled:opacity-30 disabled:hover:text-app-muted transition-colors shrink-0">
+        <button onClick={onNextPage} disabled={currentPage >= totalPages - 1} className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted-foreground transition-colors shrink-0" title="Next page" aria-label="Next page">
           <ChevronRight size={18} />
         </button>
 
-        <div className="w-[1px] h-4 bg-[var(--border)] mx-0.5 md:mx-2 hidden sm:block shrink-0" />
-
-        <button onClick={onZoomOut} disabled={scale <= 0.5} className="p-1 text-app-muted hover:text-app disabled:opacity-30 disabled:hover:text-app-muted transition-colors shrink-0">
-          <ZoomOut size={16} />
-        </button>
-        <span className="text-app-muted text-xs font-medium w-10 md:w-12 text-center shrink-0">
-          {Math.round(scale * 100)}%
-        </span>
-        <button onClick={onZoomIn} disabled={scale >= 4} className="p-1 text-app-muted hover:text-app disabled:opacity-30 disabled:hover:text-app-muted transition-colors shrink-0">
-          <ZoomIn size={16} />
-        </button>
+        <div className="hidden sm:flex items-center gap-0.5 md:gap-1.5 shrink-0">
+          <div className="w-px h-4 bg-border mx-0.5 md:mx-1 shrink-0" />
+          <button onClick={onZoomOut} disabled={scale <= 0.5} className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted-foreground transition-colors shrink-0" title="Zoom out" aria-label="Zoom out">
+            <ZoomOut size={16} />
+          </button>
+          <span data-testid="zoom-level" className="text-foreground/80 text-xs font-semibold w-10 md:w-12 text-center tabular-nums shrink-0">
+            {Math.round(scale * 100)}%
+          </span>
+          <button onClick={onZoomIn} disabled={scale >= 4} className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted-foreground transition-colors shrink-0" title="Zoom in" aria-label="Zoom in">
+            <ZoomIn size={16} />
+          </button>
+        </div>
       </div>
 
       {/* ── Right: actions ── */}
       <div className="flex items-center gap-1 md:gap-2 shrink-0">
-        <button
-          onClick={toggleTheme}
-          className="p-1.5 md:p-2 rounded-lg transition-colors border bg-panel-elevated text-app-muted hover:text-app border-app"
-          title={theme === 'dark' ? 'Switch to white mode' : 'Switch to dark mode'}
-        >
-          {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
-        </button>
+        <ThemeToggle className="hidden sm:flex" />
 
         {onToggleSearch && (
           <button
             onClick={onToggleSearch}
-            className={`p-1.5 md:p-2 rounded-lg transition-colors border ${isSearchOpen ? 'bg-[#E8607A]/20 text-[#E8607A] border-[#E8607A]/50' : 'bg-panel-elevated text-app-muted hover:text-app border-app'}`}
+            className={`w-8 h-8 md:w-9 md:h-9 flex items-center justify-center rounded-lg transition-colors ${isSearchOpen ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground hover:bg-muted'}`}
             title="Toggle Find & Replace"
+            aria-label="Toggle Find & Replace"
+            aria-pressed={!!isSearchOpen}
           >
             <Search size={16} />
           </button>
@@ -160,7 +139,7 @@ export function Toolbar({
         {drawnPaths.length > 0 && (
           <button
             onClick={onClearPaths}
-            className="hidden sm:block text-xs font-medium px-3 py-1.5 text-red-400 bg-red-400/10 hover:bg-red-400/20 rounded-md transition-colors"
+            className="hidden sm:block text-xs font-semibold px-3 py-1.5 text-destructive bg-destructive/10 hover:bg-destructive/15 rounded-lg transition-colors"
           >
             Clear
           </button>
@@ -168,16 +147,10 @@ export function Toolbar({
 
         {onExport && (
           <>
-            <div className="w-[1px] h-6 bg-[var(--border)] hidden md:block" />
+            <div className="w-[1px] h-6 bg-border hidden md:block" />
             <button
               onClick={onExport}
-              className="
-                flex items-center gap-1.5 text-xs font-medium px-2 md:px-3 py-1.5 md:py-2
-                bg-panel-elevated hover:opacity-90
-                text-app-muted hover:text-app
-                border border-app
-                rounded-xl transition-all duration-200
-              "
+              className="flex items-center gap-1.5 h-8 md:h-9 px-2.5 md:px-3 text-[13px] font-semibold bg-card text-foreground border border-border hover:border-primary/40 hover:text-primary rounded-xl transition-colors"
               title="Export to Word, PNG, Markdown, etc."
             >
               <FileOutput size={14} />
@@ -186,7 +159,7 @@ export function Toolbar({
           </>
         )}
 
-        <div className="w-[1px] h-6 bg-[var(--border)] hidden sm:block" />
+        <div className="w-[1px] h-6 bg-border hidden sm:block" />
 
         <DownloadDropdown
           isSaving={isSaving}

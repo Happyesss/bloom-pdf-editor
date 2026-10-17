@@ -1,8 +1,9 @@
 /**
  * Client-side export for editor-only formats (images + plain text).
  *
- * Document conversion (DOCX / Markdown / XLSX / …) lives in the Bloom
- * server engine (`server/`) via the Intermediate Document Model.
+ * Document conversion (DOCX / Markdown / XLSX / …) uses the Bloom engine
+ * (`server/`) via the Intermediate Document Model, run in a Web Worker
+ * (see src/lib/bloom-api.ts).
  */
 
 import type { PDFDocumentData } from '@/engine';

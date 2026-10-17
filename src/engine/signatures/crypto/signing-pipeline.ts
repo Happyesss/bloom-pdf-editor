@@ -180,6 +180,23 @@ export async function signDocumentCryptographic(
   }
 
   const modified = new Set<string>([fieldRef.toKey(), sigRef.toKey()]);
+  // Existing objects a new field touches must be rewritten in the update too:
+  // the catalog (/AcroForm), an indirect AcroForm (/Fields) and the page (/Annots).
+  // Without them the field is unreachable and readers find no signature.
+  const root = doc.xref?.trailerDict?.get('Root');
+  if (root instanceof PDFRef) modified.add(root.toKey());
+  const acroForm = doc.catalog.get('AcroForm');
+  if (acroForm instanceof PDFRef) modified.add(acroForm.toKey());
+  const fieldKey = fieldRef.toKey();
+  for (const page of doc.pages) {
+    const annots = page.dict.get('Annots');
+    const arr = annots instanceof PDFRef ? doc.objects.get(annots.toKey()) : annots;
+    if (!(arr instanceof PDFArray)) continue;
+    if (arr.items.some((item) => item instanceof PDFRef && item.toKey() === fieldKey)) {
+      modified.add(page.ref.toKey());
+      if (annots instanceof PDFRef) modified.add(annots.toKey());
+    }
+  }
   const newObjects = new Map<string, import('../../types').PDFObject>();
   for (const [key, obj] of doc.objects) {
     if (!doc.xref?.entries?.has(key) && key !== fieldRef.toKey() && key !== sigRef.toKey()) {

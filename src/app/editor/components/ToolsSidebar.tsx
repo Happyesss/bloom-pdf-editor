@@ -67,7 +67,7 @@ export function ToolsSidebar({
   /* ── Mobile: horizontal bottom strip ── */
   if (isMobile) {
     return (
-      <aside className="fixed bottom-0 left-0 right-0 z-30 bg-panel/95 backdrop-blur-md border-t border-app shadow-[0_-4px_24px_rgba(0,0,0,0.12)]">
+      <aside aria-label="Editing tools" className="fixed bottom-0 left-0 right-0 z-30 bg-card/95 backdrop-blur-md border-t border-border shadow-[0_-4px_24px_rgba(0,0,0,0.08)]">
         <div className="flex items-center gap-1 px-2 py-1.5 overflow-x-auto scrollbar-hide">
           {TOOLS.map((tool) => {
             const isActive = activeTool === tool.id;
@@ -97,6 +97,8 @@ export function ToolsSidebar({
                   color: isActive ? labelColor : undefined,
                 }}
                 title={tool.label}
+                data-tool={tool.id}
+                aria-pressed={isActive}
               >
                 <tool.icon size={18} />
                 <span className="text-[8px] font-medium leading-none">{tool.label}</span>
@@ -118,8 +120,8 @@ export function ToolsSidebar({
               className={`
                 flex items-center justify-center rounded-xl p-2 min-w-[44px] border transition-all duration-200 shrink-0
                 ${isPanelOpen 
-                  ? 'bg-panel-elevated/80 border-app text-app-muted'
-                  : 'bg-bloom-500/15 border-bloom-500/40 text-bloom-500'
+                  ? 'bg-muted border-border text-muted-foreground'
+                  : 'bg-primary/10 border-primary/40 text-primary'
                 }
               `}
             >
@@ -136,9 +138,9 @@ export function ToolsSidebar({
     <aside 
       className={`
         ${isCollapsed ? 'w-12' : 'w-16'} 
-        bg-panel/95 backdrop-blur-md border-r border-app flex flex-col items-center pt-3 pb-3 gap-2 
+        bg-card border-r border-border flex flex-col items-center pt-3 pb-3 gap-2
         shrink-0 z-30 relative transition-all duration-300
-        shadow-[4px_0_24px_rgba(0,0,0,0.08)] min-h-0 h-full overflow-hidden
+        min-h-0 h-full overflow-hidden
       `}
     >
       <div className="flex-1 flex flex-col gap-2 w-full px-1.5 overflow-y-auto overflow-x-hidden min-h-0 py-1">
@@ -163,14 +165,17 @@ export function ToolsSidebar({
                   w-full aspect-square flex flex-col items-center justify-center gap-1 rounded-2xl
                   transition-all duration-200 relative border
                   ${isActive 
-                    ? 'border-app-strong shadow-md scale-[1.04]' 
-                    : 'border-transparent hover:bg-panel-elevated/80 hover:text-app'
+                    ? 'border-border-strong shadow-sm'
+                    : 'border-transparent hover:bg-muted'
                   }
                 `}
                 style={{
                   backgroundColor: isActive ? `${accentColor}1C` : undefined,
                   color: isActive ? labelColor : undefined,
                 }}
+                aria-label={`${tool.label} (${tool.shortcut})`}
+                aria-pressed={isActive}
+                data-tool={tool.id}
               >
                 <div className={`transition-transform duration-200 ${isActive ? 'scale-110' : 'group-hover:scale-110'}`}>
                   <tool.icon size={isCollapsed ? 18 : 20} />
@@ -187,7 +192,7 @@ export function ToolsSidebar({
               <div 
                 className="
                   absolute left-full top-1/2 -translate-y-1/2 ml-3.5 px-3 py-1.5 
-                  rounded-xl bg-panel-elevated/98 backdrop-blur-xl border shadow-2xl z-[100]
+                  rounded-xl bg-popover border shadow-2xl z-[100]
                   pointer-events-none opacity-0 invisible group-hover:opacity-100 group-hover:visible
                   transition-all duration-200 flex items-center gap-2.5 whitespace-nowrap text-xs font-semibold
                 "
@@ -228,8 +233,8 @@ export function ToolsSidebar({
             className={`
               w-8 h-8 flex items-center justify-center rounded-xl border transition-all duration-200
               ${isPanelOpen 
-                ? 'bg-panel-elevated/80 border-app text-app-muted hover:text-app hover:border-app-strong'
-                : 'bg-bloom-500/15 border-bloom-500/40 text-bloom-500 hover:bg-bloom-500/25 shadow-md'
+                ? 'bg-card border-border text-muted-foreground hover:text-foreground hover:bg-muted'
+                : 'bg-primary/10 border-primary/40 text-primary hover:bg-primary/15 shadow-sm'
               }
             `}
           >
@@ -241,7 +246,7 @@ export function ToolsSidebar({
         <button
           onClick={toggleCollapse}
           title={isCollapsed ? 'Expand toolbar' : 'Shrink toolbar'}
-          className="w-8 h-8 flex items-center justify-center rounded-xl bg-panel-elevated/60 border border-app text-app-muted hover:text-app hover:border-app-strong transition-all duration-200"
+          className="w-8 h-8 flex items-center justify-center rounded-xl bg-card border border-border text-muted-foreground hover:text-foreground hover:bg-muted transition-all duration-200"
         >
           {isCollapsed ? <ChevronRight size={15} /> : <ChevronLeft size={15} />}
         </button>

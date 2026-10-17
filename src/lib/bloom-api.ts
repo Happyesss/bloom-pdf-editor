@@ -1,6 +1,9 @@
 /**
- * Browser client for Bloom conversion via Next.js `/api/bloom/*` proxies.
+ * Browser client for Bloom document conversion. The engine (server/dist)
+ * runs in a Web Worker in this tab — no network round-trip, no server.
  */
+
+import type { ConvertMessage, WorkerReply } from './bloom-engine/protocol';
 
 export type ConvertTarget =
   | 'docx'
@@ -79,107 +82,57 @@ export const BLOOM_JOB_STATE_LABELS: Record<BloomJobState, string> = {
   Cancelled: 'Cancelled',
 };
 
-const TERMINAL: ReadonlySet<BloomJobState> = new Set(['Completed', 'Failed', 'Cancelled']);
+/** File extensions the converted download should use (target ids are not always extensions). */
+const EXTENSION: Partial<Record<ConvertTarget, string>> = { markdown: 'md' };
 
+let worker: Worker | null = null;
+let nextId = 1;
+const pending = new Map<number, {
+  resolve: (r: { blob: Blob; filename: string; job: BloomJob }) => void;
+  reject: (e: Error) => void;
+  onProgress?: (job: BloomJob) => void;
+}>();
+
+function getWorker(): Worker {
+  if (worker) return worker;
+  worker = new Worker(new URL('./bloom-engine/bloom.worker.ts', import.meta.url), { type: 'module' });
+  worker.onmessage = (event: MessageEvent<WorkerReply>) => {
+    const msg = event.data;
+    const entry = pending.get(msg.id);
+    if (!entry) return;
+    if (msg.type === 'progress') {
+      entry.onProgress?.(msg.job);
+      return;
+    }
+    pending.delete(msg.id);
+    if (msg.type === 'error') {
+      entry.reject(new Error(msg.message));
+      return;
+    }
+    const ext = EXTENSION[msg.job.request.target];
+    const filename = ext ? msg.filename.replace(/\.[^.]+$/, `.${ext}`) : msg.filename;
+    entry.resolve({ blob: new Blob([msg.bytes], { type: msg.mimeType }), filename, job: msg.job });
+  };
+  worker.onerror = (event) => {
+    const error = new Error(event.message || 'Conversion engine failed to load');
+    for (const entry of pending.values()) entry.reject(error);
+    pending.clear();
+    worker?.terminate();
+    worker = null;
+  };
+  return worker;
+}
+
+/** The engine runs in a Web Worker in this tab, so it is available whenever workers are. */
 export async function checkBloomHealth(): Promise<BloomHealth> {
-  try {
-    const res = await fetch('/api/bloom/health', { cache: 'no-store' });
-    const data = (await res.json()) as BloomHealth & { error?: string };
-    if (!res.ok) {
-      return { ok: false, offline: Boolean(data.offline) || res.status === 503, error: data.error };
-    }
-    return { ok: Boolean(data.ok), phase: data.phase, targets: data.targets };
-  } catch (err) {
-    return {
-      ok: false,
-      offline: true,
-      error: err instanceof Error ? err.message : String(err),
-    };
+  if (typeof Worker === 'undefined') {
+    return { ok: false, error: 'This browser does not support Web Workers' };
   }
+  return { ok: true, phase: 'in-browser', targets: [...BLOOM_CONVERT_TARGETS] };
 }
 
-export async function convertPdf(
-  bytes: Uint8Array,
-  filename: string,
-  target: ConvertTarget,
-  pages?: number[] | null,
-): Promise<BloomJob> {
-  const form = new FormData();
-  const copy = bytes instanceof Uint8Array ? new Uint8Array(bytes) : new Uint8Array(bytes);
-  const blob = new Blob([copy], { type: 'application/pdf' });
-  form.append('file', blob, filename.endsWith('.pdf') ? filename : `${filename}.pdf`);
-  form.append('target', target);
-  if (pages && pages.length > 0) {
-    form.append('pages', JSON.stringify(pages));
-  }
-
-  const res = await fetch('/api/bloom/convert', { method: 'POST', body: form });
-  const data = (await res.json()) as { job?: BloomJob; error?: string; offline?: boolean };
-  if (!res.ok || !data.job) {
-    const msg = data.error ?? `Convert failed (${res.status})`;
-    throw new Error(msg);
-  }
-  return data.job;
-}
-
-export async function getBloomJob(id: string): Promise<BloomJob> {
-  const res = await fetch(`/api/bloom/jobs/${encodeURIComponent(id)}`, { cache: 'no-store' });
-  const data = (await res.json()) as { job?: BloomJob; error?: string };
-  if (!res.ok || !data.job) {
-    throw new Error(data.error ?? `Job not found (${res.status})`);
-  }
-  return data.job;
-}
-
-export async function pollJob(
-  id: string,
-  options: {
-    onProgress?: (job: BloomJob) => void;
-    intervalMs?: number;
-    signal?: AbortSignal;
-  } = {},
-): Promise<BloomJob> {
-  const intervalMs = options.intervalMs ?? 400;
-  for (;;) {
-    if (options.signal?.aborted) {
-      throw new DOMException('Aborted', 'AbortError');
-    }
-    const job = await getBloomJob(id);
-    options.onProgress?.(job);
-    if (TERMINAL.has(job.state)) {
-      if (job.state === 'Failed') {
-        throw new Error(job.error ?? 'Conversion failed');
-      }
-      if (job.state === 'Cancelled') {
-        throw new Error('Conversion cancelled');
-      }
-      return job;
-    }
-    await sleep(intervalMs, options.signal);
-  }
-}
-
-export async function downloadResult(
-  id: string,
-): Promise<{ blob: Blob; filename: string }> {
-  const res = await fetch(`/api/bloom/download/${encodeURIComponent(id)}`);
-  if (!res.ok) {
-    let message = `Download failed (${res.status})`;
-    try {
-      const data = (await res.json()) as { error?: string };
-      if (data.error) message = data.error;
-    } catch {
-      /* ignore */
-    }
-    throw new Error(message);
-  }
-  const blob = await res.blob();
-  const filename = filenameFromDisposition(res.headers.get('Content-Disposition')) ?? 'export.bin';
-  return { blob, filename };
-}
-
-/** Full convert → poll → download flow. */
-export async function convertAndDownload(
+/** Convert a PDF in the in-browser Bloom engine and return the converted file. */
+export function convertAndDownload(
   bytes: Uint8Array,
   filename: string,
   target: ConvertTarget,
@@ -189,38 +142,30 @@ export async function convertAndDownload(
     signal?: AbortSignal;
   } = {},
 ): Promise<{ blob: Blob; filename: string; job: BloomJob }> {
-  const job = await convertPdf(bytes, filename, target, pages);
-  options.onProgress?.(job);
-  const done = await pollJob(job.id, {
-    onProgress: options.onProgress,
-    signal: options.signal,
-  });
-  const file = await downloadResult(done.id);
-  return { ...file, job: done };
-}
-
-function filenameFromDisposition(header: string | null): string | null {
-  if (!header) return null;
-  const star = /filename\*=UTF-8''([^;]+)/i.exec(header);
-  if (star?.[1]) return decodeURIComponent(star[1].trim());
-  const plain = /filename="?([^";]+)"?/i.exec(header);
-  return plain?.[1]?.trim() ?? null;
-}
-
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (options.signal?.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'));
   return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(new DOMException('Aborted', 'AbortError'));
-      return;
-    }
-    const t = setTimeout(resolve, ms);
-    signal?.addEventListener(
+    const id = nextId++;
+    pending.set(id, { resolve, reject, onProgress: options.onProgress });
+    options.signal?.addEventListener(
       'abort',
       () => {
-        clearTimeout(t);
-        reject(new DOMException('Aborted', 'AbortError'));
+        if (pending.delete(id)) reject(new DOMException('Aborted', 'AbortError'));
       },
       { once: true },
     );
+    const copy = bytes.slice().buffer as ArrayBuffer;
+    const message: ConvertMessage = {
+      id,
+      bytes: copy,
+      filename: filename.toLowerCase().endsWith('.pdf') ? filename : `${filename}.pdf`,
+      target,
+      pages,
+    };
+    try {
+      getWorker().postMessage(message, [copy]);
+    } catch (err) {
+      pending.delete(id);
+      reject(err instanceof Error ? err : new Error(String(err)));
+    }
   });
 }

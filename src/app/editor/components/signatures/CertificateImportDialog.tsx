@@ -37,15 +37,21 @@ export function CertificateImportDialog({
     onChange?.(list);
   }, [onChange]);
 
+  // Reset only when the dialog opens. `refresh` changes whenever the parent
+  // re-renders (new onChange), and must not wipe a paste or error mid-import.
+  const refreshRef = useRef(refresh);
+  useEffect(() => {
+    refreshRef.current = refresh;
+  }, [refresh]);
   useEffect(() => {
     if (!open) return;
     setError(null);
     setPassword('');
     setPemPaste('');
     // Hydrate may be async on first open
-    const t = window.setTimeout(refresh, 50);
+    const t = window.setTimeout(() => refreshRef.current(), 50);
     return () => window.clearTimeout(t);
-  }, [open, refresh]);
+  }, [open]);
 
   const select = (id: string) => {
     getCertificateManager().select(id);
@@ -94,26 +100,26 @@ export function CertificateImportDialog({
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-[80] bg-black/60 backdrop-blur-sm" />
-        <Dialog.Content className="fixed left-1/2 top-1/2 z-[81] w-[min(520px,94vw)] max-h-[88vh] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl flex flex-col">
-          <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-700/80">
-            <Dialog.Title className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
+        <Dialog.Overlay className="fixed inset-0 z-[80] bg-[var(--scrim)] backdrop-blur-sm" />
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-[81] w-[min(520px,94vw)] max-h-[88vh] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-2xl border border-border bg-popover shadow-[0_24px_64px_-16px_rgba(0,0,0,0.3)] animate-scale-in flex flex-col">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+            <Dialog.Title className="text-sm font-semibold text-foreground flex items-center gap-2">
               <KeyRound size={16} /> Certificates
             </Dialog.Title>
-            <Dialog.Close className="p-1 rounded text-zinc-400 hover:text-white hover:bg-zinc-800">
+            <Dialog.Close className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted">
               <X size={16} />
             </Dialog.Close>
           </div>
 
           <div className="p-4 space-y-4 overflow-y-auto flex-1">
-            <p className="text-[11px] text-zinc-500">
+            <p className="text-[11px] text-muted-foreground">
               Import PEM, DER, or P12/PFX. Private keys stay in memory for this session only.
               Encrypted P12 files may need conversion:{' '}
-              <code className="text-zinc-400">openssl pkcs12 -nodes</code>
+              <code className="text-muted-foreground">openssl pkcs12 -nodes</code>
             </p>
 
             <div className="space-y-2">
-              <label className="text-[10px] font-bold tracking-widest text-zinc-400 uppercase">
+              <label className="text-[10px] font-bold tracking-widest text-muted-foreground uppercase">
                 Import file
               </label>
               <input
@@ -133,13 +139,13 @@ export function CertificateImportDialog({
                   placeholder="P12/PFX password (if any)"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="flex-1 rounded-md bg-zinc-800 border border-zinc-700 px-2 py-1.5 text-xs text-zinc-200 outline-none focus:border-zinc-500"
+                  className="flex-1 rounded-md bg-muted border border-border px-2 py-1.5 text-xs text-foreground outline-none focus:border-border-strong"
                 />
                 <button
                   type="button"
                   disabled={busy}
                   onClick={() => fileRef.current?.click()}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#E8607A] hover:bg-[#D94D6A] disabled:opacity-50 text-white text-xs font-semibold"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary hover:bg-bloom-600 disabled:opacity-50 text-white text-xs font-semibold"
                 >
                   <Upload size={14} /> Browse
                 </button>
@@ -147,38 +153,39 @@ export function CertificateImportDialog({
             </div>
 
             <div className="space-y-2">
-              <label className="text-[10px] font-bold tracking-widest text-zinc-400 uppercase">
+              <label className="text-[10px] font-bold tracking-widest text-muted-foreground uppercase">
                 Or paste PEM
               </label>
               <textarea
                 value={pemPaste}
+                aria-label="Paste PEM"
                 onChange={(e) => setPemPaste(e.target.value)}
                 placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----BEGIN PRIVATE KEY-----&#10;..."
                 rows={5}
-                className="w-full rounded-md bg-zinc-800 border border-zinc-700 px-2 py-1.5 text-[11px] font-mono text-zinc-200 outline-none focus:border-zinc-500 resize-y"
+                className="w-full rounded-md bg-muted border border-border px-2 py-1.5 text-[11px] font-mono text-foreground outline-none focus:border-border-strong resize-y"
               />
               <button
                 type="button"
                 disabled={busy}
                 onClick={() => void importPem()}
-                className="w-full py-1.5 rounded-md bg-zinc-800 border border-zinc-700 hover:bg-zinc-700 disabled:opacity-50 text-zinc-200 text-xs font-semibold"
+                className="w-full py-1.5 rounded-md bg-muted border border-border hover:bg-border disabled:opacity-50 text-foreground text-xs font-semibold"
               >
                 Import PEM
               </button>
             </div>
 
             {error && (
-              <div className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-[11px] text-red-300">
+              <div className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-[11px] text-red-600 dark:text-red-300">
                 {error}
               </div>
             )}
 
             <div className="space-y-2">
-              <div className="text-[10px] font-bold tracking-widest text-zinc-400 uppercase">
+              <div className="text-[10px] font-bold tracking-widest text-muted-foreground uppercase">
                 Available identities
               </div>
               {identities.length === 0 && (
-                <p className="text-[11px] text-zinc-500">No certificates imported yet.</p>
+                <p className="text-[11px] text-muted-foreground">No certificates imported yet.</p>
               )}
               {identities.map((id) => {
                 const active = selectedId === id.id;
@@ -191,18 +198,18 @@ export function CertificateImportDialog({
                     className={`rounded-lg border p-2.5 cursor-pointer transition-colors ${
                       active
                         ? 'border-emerald-500 bg-emerald-500/10'
-                        : 'border-zinc-700 hover:border-zinc-500 bg-zinc-800/40'
+                        : 'border-border hover:border-border-strong bg-muted'
                     }`}
                     onClick={() => select(id.id)}
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
-                        <div className="text-[12px] font-medium text-zinc-100 truncate flex items-center gap-1.5">
-                          {active && <Check size={12} className="text-emerald-400 shrink-0" />}
+                        <div className="text-[12px] font-medium text-foreground truncate flex items-center gap-1.5">
+                          {active && <Check size={12} className="text-emerald-600 dark:text-emerald-400 shrink-0" />}
                           {id.label}
                         </div>
-                        <div className="text-[10px] text-zinc-500 mt-0.5 truncate">{summary}</div>
-                        <div className="text-[10px] text-zinc-600 mt-1">
+                        <div className="text-[10px] text-muted-foreground mt-0.5 truncate">{summary}</div>
+                        <div className="text-[10px] text-app-faint mt-1">
                           {id.source.toUpperCase()}
                           {id.hasPrivateKey ? ' · key loaded' : ' · cert only (re-import key to sign)'}
                           {id.certificates.length > 1 ? ` · chain ${id.certificates.length}` : ''}
@@ -211,7 +218,7 @@ export function CertificateImportDialog({
                       <button
                         type="button"
                         title="Remove"
-                        className="p-1 rounded text-zinc-500 hover:text-red-300"
+                        className="p-1 rounded text-muted-foreground hover:text-red-300"
                         onClick={(e) => {
                           e.stopPropagation();
                           remove(id.id);
@@ -226,8 +233,8 @@ export function CertificateImportDialog({
             </div>
           </div>
 
-          <div className="px-4 py-3 border-t border-zinc-700/80 flex justify-end">
-            <Dialog.Close className="px-4 py-1.5 rounded-md bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-semibold">
+          <div className="px-4 py-3 border-t border-border flex justify-end">
+            <Dialog.Close className="px-4 py-1.5 rounded-md bg-muted hover:bg-border text-foreground text-xs font-semibold">
               Done
             </Dialog.Close>
           </div>

@@ -77,6 +77,8 @@ export function shouldEncryptStream(
   enc: EncryptDictionary,
   streamDictKeys: { type?: string; subtype?: string },
 ): boolean {
+  // Cross-reference streams are never encrypted (ISO 32000-2 §7.6.2).
+  if (streamDictKeys.type === 'XRef') return false;
   if (!enc.encryptMetadata && streamDictKeys.type === 'Metadata' && streamDictKeys.subtype === 'XML') {
     return false;
   }

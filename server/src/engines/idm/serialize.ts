@@ -1,4 +1,4 @@
-import { gunzipSync, gzipSync } from 'node:zlib';
+import { zlib } from '../../utils/zlib.js';
 import type { IntermediateDocument } from './types.js';
 import { IDM_VERSION } from './types.js';
 
@@ -18,7 +18,7 @@ export function serializeIdmJson(doc: IntermediateDocument): Uint8Array {
  */
 export function serializeIdmBinary(doc: IntermediateDocument, compress = false): Uint8Array {
   const json = serializeIdmJson(doc);
-  const body = compress ? gzipSync(json) : json;
+  const body = compress ? zlib().gzipSync(json) : json;
   const out = new Uint8Array(BINARY_MAGIC.length + 2 + 4 + body.length);
   out.set(BINARY_MAGIC, 0);
   out[BINARY_MAGIC.length] = compress ? 1 : 0;
@@ -63,7 +63,7 @@ function deserializeBinary(bytes: Uint8Array): IntermediateDocument {
   const len = view.getUint32(BINARY_MAGIC.length + 2, true);
   const start = BINARY_MAGIC.length + 6;
   let body = bytes.subarray(start, start + len);
-  if (compress) body = gunzipSync(body);
+  if (compress) body = zlib().gunzipSync(body);
   const text = new TextDecoder().decode(body);
   const parsed = JSON.parse(text) as IntermediateDocument;
   assertDoc(parsed);

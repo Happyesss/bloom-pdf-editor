@@ -2,6 +2,41 @@ import { PDFDict, PDFName, PDFNumber, PDFStream, PDFRef } from '../types';
 import type { PDFDocumentData, PDFPageInfo, PDFObject } from '../types';
 import type { ImageItem } from '../content/interpreter';
 import { getResource } from '../parser/parser';
+import { flateEncode } from '../parser/filters';
+
+export interface InsertImageOptions {
+  /**
+   * Keep the image's alpha channel (PNG/SVG signatures, logos) as a soft mask
+   * instead of flattening it onto white as a JPEG.
+   */
+  preserveAlpha?: boolean;
+  /** Constant opacity 0–1 applied through an ExtGState. */
+  opacity?: number;
+}
+
+/** Flate-compress when the browser can; otherwise store the bytes unfiltered. */
+async function flateStream(dict: PDFDict, bytes: Uint8Array): Promise<PDFStream> {
+  const encoded = await flateEncode(bytes);
+  if (encoded !== bytes) dict.set('Filter', new PDFName('FlateDecode'));
+  dict.set('Length', new PDFNumber(encoded.length));
+  return new PDFStream(dict, encoded);
+}
+
+function subDict(parent: PDFDict, key: string, objects: Map<string, PDFObject>): PDFDict {
+  let d = parent.get(key);
+  if (d instanceof PDFRef) d = objects.get(d.toKey());
+  if (!(d instanceof PDFDict)) {
+    d = new PDFDict();
+    parent.set(key, d);
+  }
+  return d as PDFDict;
+}
+
+function uniqueName(dict: PDFDict, prefix: string): string {
+  let i = 1;
+  while (dict.has(`${prefix}${i}`)) i++;
+  return `${prefix}${i}`;
+}
 
 /**
  * Inserts an image into the PDF content stream by creating an Image XObject.
@@ -18,6 +53,7 @@ export async function insertImageRun(
   height: number,
   getNextObjNum: () => number,
   rotation: number = 0,
+  options: InsertImageOptions = {},
 ): Promise<{ newContentBytes: Uint8Array }> {
   let finalDataUrl = imageDataUrl;
 
@@ -32,45 +68,52 @@ export async function insertImageRun(
   const trueWidth = img.naturalWidth || width || 100;
   const trueHeight = img.naturalHeight || height || 100;
 
-  // Ensure JPEG format for DCTDecode filter
-  if (typeof document !== 'undefined' && !imageDataUrl.startsWith('data:image/jpeg')) {
-    try {
-      const canvas = document.createElement('canvas');
-      canvas.width = trueWidth;
-      canvas.height = trueHeight;
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, trueWidth, trueHeight);
-        ctx.drawImage(img, 0, 0);
-        finalDataUrl = canvas.toDataURL('image/jpeg', 0.95);
+  let imageStream: PDFStream | null = null;
+  if (options.preserveAlpha && typeof document !== 'undefined') {
+    imageStream = await alphaImageStream(img, trueWidth, trueHeight, objects, getNextObjNum);
+  }
+
+  if (!imageStream) {
+    // Ensure JPEG format for DCTDecode filter
+    if (typeof document !== 'undefined' && !imageDataUrl.startsWith('data:image/jpeg')) {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = trueWidth;
+        canvas.height = trueHeight;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, trueWidth, trueHeight);
+          ctx.drawImage(img, 0, 0);
+          finalDataUrl = canvas.toDataURL('image/jpeg', 0.95);
+        }
+      } catch {
+        finalDataUrl = imageDataUrl;
       }
-    } catch {
-      finalDataUrl = imageDataUrl;
     }
+
+    // Convert Data URL to Uint8Array
+    const base64Data = (finalDataUrl.split(',')[1] || '').trim();
+    const binaryString = atob(base64Data);
+    const imageBytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      imageBytes[i] = binaryString.charCodeAt(i);
+    }
+
+    // 3. Create the Image XObject dictionary
+    const dict = new PDFDict();
+    dict.set('Type', new PDFName('XObject'));
+    dict.set('Subtype', new PDFName('Image'));
+    dict.set('Width', new PDFNumber(trueWidth));
+    dict.set('Height', new PDFNumber(trueHeight));
+    dict.set('ColorSpace', new PDFName('DeviceRGB'));
+    dict.set('BitsPerComponent', new PDFNumber(8));
+    dict.set('Filter', new PDFName('DCTDecode'));
+    dict.set('Length', new PDFNumber(imageBytes.length));
+
+    // 4. Create the stream object
+    imageStream = new PDFStream(dict, imageBytes);
   }
-
-  // Convert Data URL to Uint8Array
-  const base64Data = (finalDataUrl.split(',')[1] || '').trim();
-  const binaryString = atob(base64Data);
-  const imageBytes = new Uint8Array(binaryString.length);
-  for (let i = 0; i < binaryString.length; i++) {
-    imageBytes[i] = binaryString.charCodeAt(i);
-  }
-
-  // 3. Create the Image XObject dictionary
-  const dict = new PDFDict();
-  dict.set('Type', new PDFName('XObject'));
-  dict.set('Subtype', new PDFName('Image'));
-  dict.set('Width', new PDFNumber(trueWidth));
-  dict.set('Height', new PDFNumber(trueHeight));
-  dict.set('ColorSpace', new PDFName('DeviceRGB'));
-  dict.set('BitsPerComponent', new PDFNumber(8));
-  dict.set('Filter', new PDFName('DCTDecode'));
-  dict.set('Length', new PDFNumber(imageBytes.length));
-
-  // 4. Create the stream object
-  const imageStream = new PDFStream(dict, imageBytes);
   const objNum = getNextObjNum();
   const objRef = new PDFRef(objNum, 0);
   objects.set(objRef.toKey(), imageStream);
@@ -104,6 +147,19 @@ export async function insertImageRun(
   }
   xobjects.set(imgName, objRef);
 
+  let gsOp = '';
+  const opacity = options.opacity ?? 1;
+  if (opacity < 1) {
+    const extGState = subDict(resources, 'ExtGState', objects);
+    const gs = new PDFDict();
+    gs.set('Type', new PDFName('ExtGState'));
+    gs.set('ca', new PDFNumber(Math.max(0, opacity)));
+    gs.set('CA', new PDFNumber(Math.max(0, opacity)));
+    const gsName = uniqueName(extGState, 'GSimg');
+    extGState.set(gsName, gs);
+    gsOp = `/${gsName} gs\n`;
+  }
+
   // Keep page.resources in sync with page.dict
   page.resources = resources;
 
@@ -128,9 +184,9 @@ export async function insertImageRun(
     const d = height * cos;
     const e = cx - 0.5 * (a + c);
     const f = cy - 0.5 * (b + d);
-    injection = `\nq\n${fmt(a)} ${fmt(b)} ${fmt(c)} ${fmt(d)} ${fmt(e)} ${fmt(f)} cm\n/${imgName} Do\nQ\n`;
+    injection = `\nq\n${gsOp}${fmt(a)} ${fmt(b)} ${fmt(c)} ${fmt(d)} ${fmt(e)} ${fmt(f)} cm\n/${imgName} Do\nQ\n`;
   } else {
-    injection = `\nq\n${fmt(width)} 0 0 ${fmt(height)} ${fmt(x)} ${fmt(bottomY)} cm\n/${imgName} Do\nQ\n`;
+    injection = `\nq\n${gsOp}${fmt(width)} 0 0 ${fmt(height)} ${fmt(x)} ${fmt(bottomY)} cm\n/${imgName} Do\nQ\n`;
   }
 
   const enc = new TextEncoder();
@@ -141,6 +197,62 @@ export async function insertImageRun(
   newContentBytes.set(injectionBytes, contentBytes.length);
 
   return { newContentBytes };
+}
+
+/**
+ * RGB image XObject (Flate) with an 8-bit /SMask carrying the alpha channel.
+ * Returns null when the canvas can't be read so the caller falls back to JPEG.
+ */
+async function alphaImageStream(
+  img: HTMLImageElement,
+  width: number,
+  height: number,
+  objects: Map<string, PDFObject>,
+  getNextObjNum: () => number,
+): Promise<PDFStream | null> {
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.drawImage(img, 0, 0, width, height);
+    const { data } = ctx.getImageData(0, 0, width, height);
+    const rgb = new Uint8Array(width * height * 3);
+    const alpha = new Uint8Array(width * height);
+    let opaque = true;
+    for (let p = 0, i = 0; p < alpha.length; p++, i += 4) {
+      rgb[p * 3] = data[i];
+      rgb[p * 3 + 1] = data[i + 1];
+      rgb[p * 3 + 2] = data[i + 2];
+      alpha[p] = data[i + 3];
+      if (data[i + 3] !== 255) opaque = false;
+    }
+
+    const dict = new PDFDict();
+    dict.set('Type', new PDFName('XObject'));
+    dict.set('Subtype', new PDFName('Image'));
+    dict.set('Width', new PDFNumber(width));
+    dict.set('Height', new PDFNumber(height));
+    dict.set('ColorSpace', new PDFName('DeviceRGB'));
+    dict.set('BitsPerComponent', new PDFNumber(8));
+
+    if (!opaque) {
+      const maskDict = new PDFDict();
+      maskDict.set('Type', new PDFName('XObject'));
+      maskDict.set('Subtype', new PDFName('Image'));
+      maskDict.set('Width', new PDFNumber(width));
+      maskDict.set('Height', new PDFNumber(height));
+      maskDict.set('ColorSpace', new PDFName('DeviceGray'));
+      maskDict.set('BitsPerComponent', new PDFNumber(8));
+      const maskRef = new PDFRef(getNextObjNum(), 0);
+      objects.set(maskRef.toKey(), await flateStream(maskDict, alpha));
+      dict.set('SMask', maskRef);
+    }
+    return await flateStream(dict, rgb);
+  } catch {
+    return null;
+  }
 }
 
 /**

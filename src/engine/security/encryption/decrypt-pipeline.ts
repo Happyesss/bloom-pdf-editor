@@ -78,7 +78,14 @@ async function decryptStream(
   }
 
   const key = computeObjectKey(ctx.fileKey!, objNum, genNum, ctx.algorithm);
-  const plain = await decryptBytes(stream.rawBytes, key, ctx.algorithm);
+  let plain: Uint8Array;
+  try {
+    plain = await decryptBytes(stream.rawBytes, key, ctx.algorithm);
+  } catch (e) {
+    // One malformed stream shouldn't make the whole document unreadable.
+    console.warn(`[Security] Could not decrypt stream ${objNum} ${genNum}:`, e);
+    return;
+  }
   stream.rawBytes = plain;
   stream.dict.set('Length', new PDFNumber(plain.length));
   await decodeFilters(stream);
@@ -116,8 +123,12 @@ async function decryptObjectValue(
 
   if (obj instanceof PDFString || obj instanceof PDFHexString) {
     const key = computeObjectKey(ctx.fileKey!, objNum, genNum, ctx.algorithm);
-    const plain = await decryptBytes(obj.toBytes(), key, ctx.algorithm);
-    return new PDFString(pdfBytesToString(plain));
+    try {
+      const plain = await decryptBytes(obj.toBytes(), key, ctx.algorithm);
+      return new PDFString(pdfBytesToString(plain));
+    } catch {
+      return obj;
+    }
   }
 
   if (obj instanceof PDFDict) {

@@ -48,17 +48,17 @@ export function FindReplacePanel({
   };
 
   return (
-    <div className="p-3 space-y-2.5 bg-zinc-900/95 backdrop-blur-md rounded-xl border border-zinc-700/80 shadow-2xl w-full md:w-72 font-sans">
+    <div className="p-3 space-y-2.5 bg-popover backdrop-blur-md rounded-xl border border-border shadow-2xl w-full md:w-72 font-sans">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-1.5 text-[11px] font-bold tracking-wider text-zinc-300 uppercase">
-          <Search size={13} className="text-[#E8607A]" />
+        <div className="flex items-center gap-1.5 text-[11px] font-bold tracking-wider text-foreground/90 uppercase">
+          <Search size={13} className="text-primary" />
           Find & Replace
         </div>
         {onClose && (
           <button
             onClick={onClose}
-            className="text-zinc-400 hover:text-zinc-100 p-1 rounded-md hover:bg-zinc-800 transition-colors"
+            className="text-muted-foreground hover:text-foreground p-1 rounded-md hover:bg-muted transition-colors"
             title="Close Search"
           >
             <X size={14} />
@@ -75,13 +75,13 @@ export function FindReplacePanel({
             onKeyDown={handleKeyDown}
             placeholder="Search text in PDF..."
             autoFocus
-            className="w-full bg-zinc-800/90 border border-zinc-700 focus:border-[#E8607A] focus:ring-1 focus:ring-[#E8607A] rounded-lg pl-2.5 pr-20 py-1.5 text-xs text-zinc-100 placeholder-zinc-500 outline-none transition-all"
+            className="w-full bg-muted border border-border focus:border-primary focus:ring-1 focus:ring-primary rounded-lg pl-2.5 pr-20 py-1.5 text-xs text-foreground placeholder:text-muted-foreground outline-none transition-all"
           />
 
           <div className="absolute right-1 flex items-center gap-0.5">
             {/* Match Counter Badge */}
             {findText.trim() !== '' && (
-              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-zinc-700/60 text-zinc-300 mr-1">
+              <span data-testid="match-count" className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-muted text-foreground/90 mr-1">
                 {matchCount > 0 ? `${currentMatchIndex + 1}/${matchCount}` : '0'}
               </span>
             )}
@@ -92,8 +92,8 @@ export function FindReplacePanel({
               title={caseSensitive ? 'Match Case (Active)' : 'Match Case (Inactive)'}
               className={`p-1 rounded transition-colors ${
                 caseSensitive
-                  ? 'bg-[#E8607A]/20 text-[#E8607A] font-bold'
-                  : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/50'
+                  ? 'bg-primary/20 text-primary font-bold'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-border'
               }`}
             >
               <CaseSensitive size={14} />
@@ -104,7 +104,7 @@ export function FindReplacePanel({
               onClick={onPrevMatch}
               disabled={matchCount === 0}
               title="Previous Match (Shift+Enter)"
-              className="p-1 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700/50 rounded disabled:opacity-30 transition-colors"
+              className="p-1 text-muted-foreground hover:text-foreground hover:bg-border rounded disabled:opacity-30 transition-colors"
             >
               <ChevronUp size={14} />
             </button>
@@ -112,7 +112,7 @@ export function FindReplacePanel({
               onClick={onNextMatch}
               disabled={matchCount === 0}
               title="Next Match (Enter)"
-              className="p-1 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700/50 rounded disabled:opacity-30 transition-colors"
+              className="p-1 text-muted-foreground hover:text-foreground hover:bg-border rounded disabled:opacity-30 transition-colors"
             >
               <ChevronDown size={14} />
             </button>
@@ -126,7 +126,7 @@ export function FindReplacePanel({
           value={replaceText}
           onChange={(e) => onReplaceTextChange(e.target.value)}
           placeholder="Replace with..."
-          className="w-full bg-zinc-800/90 border border-zinc-700 focus:border-[#E8607A] focus:ring-1 focus:ring-[#E8607A] rounded-lg px-2.5 py-1.5 text-xs text-zinc-100 placeholder-zinc-500 outline-none transition-all"
+          className="w-full bg-muted border border-border focus:border-primary focus:ring-1 focus:ring-primary rounded-lg px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground outline-none transition-all"
         />
       </div>
 
@@ -135,7 +135,7 @@ export function FindReplacePanel({
         <button
           onClick={onReplaceCurrent}
           disabled={busy || matchCount === 0 || !findText.trim()}
-          className="flex items-center justify-center gap-1.5 py-1.5 px-2 bg-zinc-800 hover:bg-zinc-700/90 text-zinc-200 border border-zinc-700 hover:border-zinc-600 rounded-lg text-xs font-semibold disabled:opacity-40 transition-all"
+          className="flex items-center justify-center gap-1.5 py-1.5 px-2 bg-muted hover:bg-border text-foreground border border-border hover:border-border-strong rounded-lg text-xs font-semibold disabled:opacity-40 transition-all"
         >
           {busy ? <Loader2 size={12} className="animate-spin" /> : <Replace size={12} />}
           Replace
@@ -143,7 +143,7 @@ export function FindReplacePanel({
         <button
           onClick={onReplaceAll}
           disabled={busy || matchCount === 0 || !findText.trim()}
-          className="flex items-center justify-center gap-1.5 py-1.5 px-2 bg-[#E8607A]/20 hover:bg-[#E8607A]/30 text-[#E8607A] border border-[#E8607A]/40 rounded-lg text-xs font-semibold disabled:opacity-40 transition-all"
+          className="flex items-center justify-center gap-1.5 py-1.5 px-2 bg-primary/20 hover:bg-primary/30 text-primary border border-primary/40 rounded-lg text-xs font-semibold disabled:opacity-40 transition-all"
         >
           {busy ? <Loader2 size={12} className="animate-spin" /> : <Replace size={12} />}
           Replace All

@@ -216,25 +216,25 @@ export function SignatureOverlay(props: SignatureOverlayProps) {
           className="w-full h-full object-contain pointer-events-none select-none"
         />
       ) : (
-        <div className="w-full h-full border border-dashed border-zinc-400 bg-zinc-100/40 flex items-center justify-center">
-          <PenLine size={16} className="text-zinc-400" />
+        <div className="w-full h-full border border-dashed border-muted-foreground/60 bg-muted/40 flex items-center justify-center">
+          <PenLine size={16} className="text-muted-foreground" />
         </div>
       )}
 
       {selected && (
         <>
           <div
-            className={`absolute inset-0 border-2 ${sig.locked ? 'border-amber-500' : 'border-[#E8607A]'} border-dashed pointer-events-none`}
+            className={`absolute inset-0 border-2 ${sig.locked ? 'border-amber-500' : 'border-primary'} border-dashed pointer-events-none`}
           />
           <div className="absolute -top-8 left-0 flex items-center gap-1 whitespace-nowrap">
-            <span className="flex items-center gap-1 px-1.5 py-0.5 bg-[#E8607A] text-white text-[10px] rounded shadow">
+            <span className="flex items-center gap-1 px-1.5 py-0.5 bg-primary text-white text-[10px] rounded shadow">
               <PenLine size={10} /> Signature
               {sig.locked && <Lock size={10} />}
             </span>
             <button
               type="button"
               title="Rotate 15°"
-              className="p-0.5 bg-zinc-800 text-zinc-200 rounded border border-zinc-600 hover:bg-zinc-700 shadow"
+              className="p-0.5 bg-muted text-foreground rounded border border-border-strong hover:bg-border shadow"
               onPointerDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
@@ -258,7 +258,7 @@ export function SignatureOverlay(props: SignatureOverlayProps) {
             <button
               type="button"
               title="Deselect"
-              className="p-0.5 bg-zinc-800 text-zinc-300 rounded border border-zinc-600 hover:bg-zinc-700 shadow"
+              className="p-0.5 bg-muted text-foreground/90 rounded border border-border-strong hover:bg-border shadow"
               onPointerDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
@@ -272,7 +272,7 @@ export function SignatureOverlay(props: SignatureOverlayProps) {
           {!sig.locked && (
             <>
               <div
-                className="absolute w-2.5 h-2.5 bg-[#E8607A] border border-white rounded-sm cursor-se-resize z-50"
+                className="absolute w-2.5 h-2.5 bg-primary border border-white rounded-sm cursor-se-resize z-50"
                 style={{ right: -5, bottom: -5 }}
                 onPointerDown={(e) => begin('resize-se', e)}
               />

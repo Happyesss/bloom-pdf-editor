@@ -163,11 +163,11 @@ export function ThumbnailsSidebar({
       <div
         className={`rounded transition-colors ${
           dragIndex != null && dropTarget === (insertAt > dragIndex ? insertAt - 1 : insertAt)
-            ? (isExpanded ? 'bg-contrast w-1 h-full' : 'bg-contrast h-1 w-full')
-            : (isExpanded ? 'bg-contrast/50 w-0.5 h-full' : 'bg-contrast/50 h-0.5 w-full')
+            ? (isExpanded ? 'bg-primary w-1 h-full' : 'bg-primary h-1 w-full')
+            : (isExpanded ? 'bg-border w-px h-full' : 'bg-border h-px w-full')
         }`}
       />
-      <div className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-panel border border-app rounded-md p-0.5 shadow-md flex ${isExpanded ? 'flex-col gap-0.5' : 'gap-0.5'}`}>
+      <div className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-card border border-border rounded-lg p-0.5 shadow-sm flex ${isExpanded ? 'flex-col gap-0.5' : 'gap-0.5'}`}>
         <IconTip label="Insert blank page here">
           <button
             type="button"
@@ -211,7 +211,7 @@ export function ThumbnailsSidebar({
           onClick={onClose}
         />
       )}
-      <div className={`transition-all duration-300 bg-panel/95 backdrop-blur-md border-l border-app flex flex-col shrink-0 min-h-0 h-full shadow-[0_0_40px_rgba(0,0,0,0.06)] ${
+      <div className={`transition-all duration-300 bg-card border-l border-border flex flex-col shrink-0 min-h-0 h-full ${
         isMobile
           ? 'fixed right-0 top-0 bottom-0 w-[75vw] max-w-[320px] z-50 mobile-drawer-right overflow-y-auto'
           : isExpanded
@@ -234,7 +234,7 @@ export function ThumbnailsSidebar({
         />
 
         <div className={`flex-1 min-h-0 overflow-y-auto p-3 flex ${isExpanded ? 'flex-row flex-wrap gap-x-2 gap-y-6 items-stretch content-start' : 'flex-col gap-3'}`}>
-          <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-app-muted uppercase px-1 pt-1 pb-1 sticky top-0 bg-panel/95 backdrop-blur-sm z-30 w-full">
+          <div className="flex items-center gap-2 text-[11px] font-bold tracking-wider text-foreground uppercase px-1 pt-1 pb-1 sticky top-0 bg-card z-30 w-full">
             <Layers size={12} />
             Pages
             <Tooltip.Root delayDuration={250}>
@@ -323,14 +323,16 @@ export function ThumbnailsSidebar({
                 <React.Fragment key={i}>
                   <div
                     draggable={!!onReorderPages && totalPages > 1}
+                    data-testid="page-thumb"
+                    aria-current={currentPage === i ? 'page' : undefined}
                     className={`group relative flex flex-col items-center cursor-pointer p-1.5 rounded-lg border-2 transition-all duration-200 ${
                       isExpanded ? 'w-32 sm:w-40 md:w-48' : 'w-full'
                     } ${
                       currentPage === i
-                        ? 'border-contrast bg-contrast/5 shadow-[0_0_12px_rgba(0,0,0,0.1)]'
+                        ? 'border-primary bg-primary/5 shadow-[0_4px_14px_-6px_rgba(232,96,122,0.45)]'
                         : isDropTarget
-                          ? 'border-contrast/80 bg-contrast/10'
-                          : 'border-transparent hover:bg-panel-elevated'
+                          ? 'border-primary/70 bg-primary/10'
+                          : 'border-transparent hover:bg-muted'
                     } ${isDragging ? 'opacity-40 scale-[0.98]' : ''} ${
                       onReorderPages && totalPages > 1 ? 'cursor-grab active:cursor-grabbing' : ''
                     }`}
@@ -405,7 +407,7 @@ export function ThumbnailsSidebar({
                       <span
                         className={`text-[9px] font-bold transition-colors ${
                           currentPage === i
-                            ? 'text-contrast'
+                            ? 'text-primary'
                             : 'text-app-faint group-hover:text-app-muted'
                         }`}
                       >

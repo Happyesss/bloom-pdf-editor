@@ -48,6 +48,8 @@ import { PasswordDialog } from './components/PasswordDialog';
 import { SecurityPanel } from './components/SecurityPanel';
 import { useTextStyleActions, type TextStyleUI } from './hooks/useTextStyleActions';
 import { useIsMobile } from './hooks/useIsMobile';
+import { Lotus } from '@/components/art/Doodles';
+import { LostPageIllustration } from '@/components/art/Illustrations';
 
 export interface SearchMatch {
   id: string;
@@ -440,6 +442,11 @@ export default function EditorPage() {
   const [showApplySuccessModal, setShowApplySuccessModal] = useState(false);
   const [watermarkPageFrom, setWatermarkPageFrom] = useState(1);
   const [watermarkPageTo, setWatermarkPageTo] = useState(1);
+  // Watermark the whole document by default (the range follows the page count).
+  useEffect(() => {
+    setWatermarkPageFrom(1);
+    setWatermarkPageTo(Math.max(1, totalPages));
+  }, [totalPages]);
   const [watermarkLayer, setWatermarkLayer] = useState<'above' | 'below'>('above');
   const [watermarkColor, setWatermarkColor] = useState('#000000');
   const [watermarkImageFile, setWatermarkImageFile] = useState<File | null>(null);
@@ -492,9 +499,18 @@ export default function EditorPage() {
   const [textItalic, setTextItalic] = useState(false);
   const [textUnderline, setTextUnderline] = useState(false);
   const [textAlign, setTextAlign] = useState<'left' | 'center' | 'right'>('left');
-  const [textOpacity, setTextOpacity] = useState(100);
   const [saveMode, setSaveMode] = useState<'quick' | 'optimized'>('optimized');
-  const [isDirty, setIsDirty] = useState(false);
+  const [isDirty, setIsDirtyState] = useState(false);
+  /**
+   * True right after a digital signature (or LTV) is written: doc.rawBytes is
+   * then the complete signed file, so a download must hand those bytes back
+   * untouched — re-serializing would invalidate the signature.
+   */
+  const signedPristineRef = useRef(false);
+  const setIsDirty = useCallback((dirty: boolean) => {
+    if (dirty) signedPristineRef.current = false;
+    setIsDirtyState(dirty);
+  }, []);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [findText, setFindText] = useState('');
   const [replaceText, setReplaceText] = useState('');
@@ -2122,6 +2138,7 @@ export default function EditorPage() {
       setRevisionEntries(buildRevisionViewer(doc).revisions);
       setLtvStatus(getLtvStatus(doc));
       setIsDirty(true);
+      signedPristineRef.current = true;
       setRenderKey((k) => k + 1);
       if (result.timestampError) {
         console.warn('[Editor] Timestamp fallback:', result.timestampError);
@@ -2167,9 +2184,12 @@ export default function EditorPage() {
   const handleEnableLtv = useCallback(() => {
     if (!doc) return;
     try {
+      const wasPristine = signedPristineRef.current;
       enableLongTermValidation(doc);
       setLtvStatus(getLtvStatus(doc));
       setIsDirty(true);
+      // DSS is appended as an incremental update, so a signed file stays intact.
+      signedPristineRef.current = wasPristine;
       refreshMultiSigPanel();
     } catch (err) {
       setError(`LTV failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -2186,6 +2206,8 @@ export default function EditorPage() {
       setFormFields(prev => prev.map(f =>
         f.ref.toKey() === selectedFormField.ref.toKey() ? { ...f, value: checked } : f,
       ));
+      // Keep the selected field in sync so the toggle label flips each click.
+      setSelectedFormField({ ...selectedFormField, value: checked });
     } else if (selectedFormField.fieldType === 'Ch') {
       engine.setChoiceFieldValue(doc, selectedFormField, value);
       setFormFields(prev => prev.map(f =>
@@ -2312,8 +2334,12 @@ export default function EditorPage() {
       const engine = engineRef.current;
       const page = doc.pages[currentMatch.pageIndex];
       const bytes = engine.getPageContentBytes(page, doc.objects);
-      const result = engine.findAndReplace(bytes, page, doc.objects, findText, replaceText, caseSensitive);
-      if (result.newContentBytes) {
+      // Matches are listed page by page in reading order; find this one's index on its page.
+      const occurrence = searchResults
+        .slice(0, activeMatchIndex)
+        .filter((m) => m.pageIndex === currentMatch.pageIndex).length;
+      const result = engine.findAndReplace(bytes, page, doc.objects, findText.trim(), replaceText, caseSensitive, occurrence);
+      if (result.newContentBytes && result.newContentBytes !== bytes) {
         await engine.updatePageContent(page.contentRefs, result.newContentBytes, doc.objects);
         setIsDirty(true);
         setRenderKey(k => k + 1);
@@ -2334,7 +2360,7 @@ export default function EditorPage() {
       for (let p = 0; p < doc.pages.length; p++) {
         const page = doc.pages[p];
         const bytes = engine.getPageContentBytes(page, doc.objects);
-        const result = engine.findAndReplace(bytes, page, doc.objects, findText, replaceText, caseSensitive);
+        const result = engine.findAndReplace(bytes, page, doc.objects, findText.trim(), replaceText, caseSensitive);
         if (result.newContentBytes) {
           await engine.updatePageContent(page.contentRefs, result.newContentBytes, doc.objects);
           replacedCount++;
@@ -2496,10 +2522,12 @@ export default function EditorPage() {
         target?.tagName === 'INPUT' ||
         target?.isContentEditable;
       if (inTextEdit) return; // native undo for typing; document undo when not editing
-      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+      // Shift turns 'z' into 'Z' on most keyboards, so compare case-insensitively.
+      const key = e.key.toLowerCase();
+      if ((e.ctrlKey || e.metaKey) && key === 'z' && !e.shiftKey) {
         e.preventDefault();
         void handleUndo();
-      } else if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+      } else if ((e.ctrlKey || e.metaKey) && (key === 'y' || (key === 'z' && e.shiftKey))) {
         e.preventDefault();
         void handleRedo();
       }
@@ -3229,6 +3257,9 @@ export default function EditorPage() {
       for (const [k, v] of p.dict.entries()) {
         pageDict.set(k, v);
       }
+      // The writer serializes pages from the object map, so point the copy's map
+      // at the cloned page dict; edits below then land only in the export copy.
+      newObjects.set(p.ref.toKey(), pageDict);
       return {
         ...p,
         dict: pageDict,
@@ -3245,6 +3276,32 @@ export default function EditorPage() {
 
     const page = exportDoc.pages[targetPageIdx];
     if (!page) return exportDoc;
+
+    // Give a page its own Resources / XObject / ExtGState dicts before images are
+    // added, so the export copy never writes new entries into the live document.
+    const isolateResources = (target: PDFPageInfo) => {
+      const copy = (value: unknown) => {
+        const src = value instanceof engine.PDFRef ? exportDoc.objects.get(value.toKey()) : value;
+        const dict = new engine.PDFDict();
+        if (src instanceof engine.PDFDict) {
+          for (const [k, v] of src.entries()) dict.set(k, v);
+        }
+        return dict;
+      };
+      const resources = copy(target.dict.get('Resources') ?? target.resources);
+      for (const key of ['XObject', 'ExtGState']) {
+        if (resources.has(key)) resources.set(key, copy(resources.get(key)));
+      }
+      target.dict.set('Resources', resources);
+      target.resources = resources;
+    };
+
+    // Same for /Annots: annotations are appended to a copy, not the live page's array.
+    if (paths.length > 0) {
+      const annots = page.dict.get('Annots');
+      const arr = annots instanceof engine.PDFRef ? exportDoc.objects.get(annots.toKey()) : annots;
+      if (arr instanceof engine.PDFArray) page.dict.set('Annots', new engine.PDFArray([...arr.items]));
+    }
 
     let currentObjNum = engine.getNextObjNum(exportDoc);
     const pageHeight = renderResult?.pageHeight || page.mediaBox.height;
@@ -3345,6 +3402,7 @@ export default function EditorPage() {
     }
 
     if (texts.length > 0 || images.length > 0) {
+      isolateResources(page);
       let contentBytes = engine.getPageContentBytes(page, exportDoc.objects);
       let newContentBytes: any = new Uint8Array(contentBytes);
 
@@ -3371,6 +3429,36 @@ export default function EditorPage() {
         await engine.updatePageContent(page.contentRefs, newContentBytes, exportDoc.objects, true, page);
       } catch (e: unknown) {
         console.error('[Editor] Failed to update export content:', e);
+      }
+    }
+
+    // Placed (visual) signatures can sit on any page: stamp each one in as a
+    // transparent image so it appears in the downloaded / exported PDF.
+    const placed = signaturesRef.current;
+    const library = getSignatureLibrary();
+    for (const pageIdx of new Set(placed.map((sig) => sig.pageIndex))) {
+      const sigPage = exportDoc.pages[pageIdx];
+      if (!sigPage) continue;
+      isolateResources(sigPage);
+      let bytes: Uint8Array = new Uint8Array(engine.getPageContentBytes(sigPage, exportDoc.objects));
+      let stamped = 0;
+      for (const sig of placed) {
+        if (sig.pageIndex !== pageIdx) continue;
+        const src = library.get(sig.appearanceId)?.imageDataUrl;
+        if (!src) continue;
+        // Signature rotation is counter-clockwise; insertImageRun rotates clockwise.
+        const { newContentBytes } = await engine.insertImageRun(
+          bytes, sigPage, exportDoc.objects,
+          src, sig.x, sig.y + sig.height, sig.width, sig.height,
+          () => currentObjNum++,
+          -(sig.rotation || 0),
+          { preserveAlpha: true, opacity: sig.opacity },
+        );
+        bytes = newContentBytes;
+        stamped++;
+      }
+      if (stamped > 0) {
+        await engine.updatePageContent(sigPage.contentRefs, bytes, exportDoc.objects, true, sigPage);
       }
     }
 
@@ -3689,6 +3777,8 @@ export default function EditorPage() {
     setSelectedLink(null);
     setLinkDraftUrl('');
     setLinkDisplayDraft('');
+    // The popover unmounts under the pointer, so its mouseleave never fires.
+    linkPopoverHoverRef.current = false;
   }, []);
 
   const saveLinkFromPopover = useCallback(async (andClose = true) => {
@@ -4275,6 +4365,18 @@ export default function EditorPage() {
     setScale(s => Math.max(0.5, Math.round((s - 0.25) * 100) / 100));
   }, []);
 
+  // On phones, open the document fitted to the screen width instead of at 100%.
+  const fittedDocRef = useRef<PDFDocumentData | null>(null);
+  useEffect(() => {
+    if (!isMobile || !doc || fittedDocRef.current === doc) return;
+    const viewport = scrollViewportRef.current;
+    const firstPage = doc.pages[0];
+    if (!viewport || !firstPage) return;
+    fittedDocRef.current = doc;
+    const fit = (viewport.clientWidth - 16) / firstPage.mediaBox.width;
+    if (fit < 1) setScale(Math.max(0.5, Math.floor(fit * 100) / 100));
+  }, [isMobile, doc]);
+
   // Trackpad pinch / Ctrl+wheel zoom (browsers fire wheel+ctrlKey for pinch)
   useEffect(() => {
     if (isLoading || !doc) return;
@@ -4460,6 +4562,7 @@ export default function EditorPage() {
         setDoc({ ...doc });
         setRenderKey(k => k + 1);
         setWatermarkLivePreview(false);
+        setIsDirty(true);
         setShowApplySuccessModal(true);
       }).catch(err => {
         console.error('[Editor] Apply watermark failed:', err);
@@ -4570,6 +4673,7 @@ export default function EditorPage() {
       setRenderKey(k => k + 1);
       setDetectedWatermarks(null);
       setIsConfirmingRemoval(false);
+      setIsDirty(true);
     } catch (e) {
       console.error('[Editor] Remove watermarks failed:', e);
       setError(`Failed to remove watermarks: ${e instanceof Error ? e.message : String(e)}`);
@@ -4609,17 +4713,33 @@ export default function EditorPage() {
     if (!doc || !engineRef.current) return;
     try {
       setIsSaving(true);
-      const exportDoc = await createExportDocWithOverlays(
-        doc,
-        currentPage,
-        drawnPathsRef.current,
-        floatingTextsRef.current,
-        floatingImagesRef.current
-      );
       const engine = engineRef.current;
-      const bytes = saveMode === 'quick'
-        ? await engine.saveQuick(exportDoc)
-        : await engine.saveOptimized(exportDoc);
+      const raw = doc.rawBytes;
+      const noOverlays =
+        drawnPathsRef.current.length === 0 &&
+        floatingTextsRef.current.length === 0 &&
+        floatingImagesRef.current.length === 0;
+      // Nothing changed (or only a signature was just added): return the file
+      // byte-for-byte, which keeps existing digital signatures valid.
+      const untouched =
+        noOverlays &&
+        !!raw && raw.byteLength > 5 &&
+        (signedPristineRef.current || (!isDirty && signaturesRef.current.length === 0));
+      let bytes: Uint8Array;
+      if (untouched) {
+        bytes = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
+      } else {
+        const exportDoc = await createExportDocWithOverlays(
+          doc,
+          currentPage,
+          drawnPathsRef.current,
+          floatingTextsRef.current,
+          floatingImagesRef.current
+        );
+        bytes = saveMode === 'quick'
+          ? await engine.saveQuick(exportDoc)
+          : await engine.saveOptimized(exportDoc);
+      }
       const blob = new Blob([bytes as unknown as BlobPart], { type: 'application/pdf' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -4627,14 +4747,16 @@ export default function EditorPage() {
       a.download = fileName || 'edited.pdf';
       a.click();
       URL.revokeObjectURL(url);
+      const keepSigned = signedPristineRef.current;
       setIsDirty(false);
+      signedPristineRef.current = keepSigned;
     } catch (e) {
       console.error('[Editor] Download failed:', e);
       setError(`Download failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setIsSaving(false);
     }
-  }, [doc, currentPage, fileName, saveMode, createExportDocWithOverlays]);
+  }, [doc, currentPage, fileName, saveMode, isDirty, setIsDirty, createExportDocWithOverlays]);
 
   // ── Compressed Download ──
   const handleCompressedDownload = useCallback(async (opts: {
@@ -5023,8 +5145,10 @@ export default function EditorPage() {
       // Don't intercept when the hidden input has focus (editing)
       if (editingLine) return;
 
-      // Don't intercept when the user is typing in any text box or input
-      if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA') return;
+      // Don't intercept when the user is typing in any text box, input or dropdown
+      const focusedTag = document.activeElement?.tagName;
+      if (focusedTag === 'INPUT' || focusedTag === 'TEXTAREA' || focusedTag === 'SELECT') return;
+      if ((document.activeElement as HTMLElement | null)?.isContentEditable) return;
 
       if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
         e.preventDefault(); goToPrev();
@@ -5034,19 +5158,10 @@ export default function EditorPage() {
         if (e.metaKey || e.ctrlKey) { e.preventDefault(); zoomIn(); }
       } else if (e.key === '-') {
         if (e.metaKey || e.ctrlKey) { e.preventDefault(); zoomOut(); }
-      } else if (e.key === 'z' || e.key === 'Z') {
-        if ((e.metaKey || e.ctrlKey) && !e.shiftKey) {
-          e.preventDefault();
-          handleUndo();
-        } else if ((e.metaKey || e.ctrlKey) && e.shiftKey) {
-          e.preventDefault();
-          handleRedo();
-        }
-      } else if (e.key === 'y' || e.key === 'Y') {
-        if (e.metaKey || e.ctrlKey) {
-          e.preventDefault();
-          handleRedo();
-        }
+      } else if ((e.key === 'v' || e.key === 'V') && e.shiftKey && !e.metaKey && !e.ctrlKey && activeTool === 'sign') {
+        // SIGNATURE_SHORTCUTS.validate (undo/redo live in the document-level handler above)
+        e.preventDefault();
+        void handleValidateSignatures();
       } else if (e.key === 'v' || e.key === 'V') {
         if (!e.metaKey && !e.ctrlKey) setActiveTool('select');
       } else if (e.key === 't' || e.key === 'T') {
@@ -5056,17 +5171,11 @@ export default function EditorPage() {
       } else if (e.key === 'h' || e.key === 'H') {
         if (!e.metaKey && !e.ctrlKey) setActiveTool('highlight');
       } else if (e.key === 'p' || e.key === 'P') {
-        setActiveTool('draw');
+        if (!e.metaKey && !e.ctrlKey) setActiveTool('draw');
       } else if (e.key === 'e' || e.key === 'E') {
         if (!e.metaKey && !e.ctrlKey) setActiveTool('erase');
       } else if (e.key === 's' || e.key === 'S') {
         if (!e.metaKey && !e.ctrlKey && !e.shiftKey) setActiveTool('sign');
-      } else if ((e.key === 'v' || e.key === 'V') && e.shiftKey && !e.metaKey && !e.ctrlKey) {
-        // SIGNATURE_SHORTCUTS.validate
-        if (activeTool === 'sign') {
-          e.preventDefault();
-          void handleValidateSignatures();
-        }
       } else if ((e.key === 'Delete' || e.key === 'Backspace') && selectedSignatureId) {
         e.preventDefault();
         handleSignatureDelete(selectedSignatureId);
@@ -5349,9 +5458,9 @@ export default function EditorPage() {
   // ── Loading state ──
   if (isLoading) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-surface text-app-muted">
-        <div className="w-8 h-8 border-4 border-[var(--border)] border-t-[#E8607A] rounded-full animate-spin" />
-        <p className="mt-4 text-sm font-medium animate-pulse">Processing PDF...</p>
+      <div className="min-h-screen flex flex-col items-center justify-center bg-background bg-paper text-muted-foreground">
+        <Lotus size={56} className="text-primary animate-pulse-glow" />
+        <p className="mt-3 font-hand text-[24px] text-primary">opening your PDF…</p>
       </div>
     );
   }
@@ -5374,13 +5483,15 @@ export default function EditorPage() {
   // ── Error state ──
   if (error && !doc) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center font-sans bg-surface text-app">
-        <p className="text-red-500 text-sm max-w-[400px] text-center leading-relaxed">
+      <div className="min-h-screen flex flex-col items-center justify-center px-6 font-sans bg-background bg-paper text-foreground">
+        <LostPageIllustration className="w-56 h-auto text-primary" />
+        <h1 className="mt-4 text-xl font-extrabold tracking-tight">We couldn&apos;t open this PDF</h1>
+        <p role="alert" className="mt-2 text-destructive text-sm max-w-[420px] text-center leading-relaxed">
           {error}
         </p>
         <button
           onClick={handleClose}
-          className="mt-6 px-4 py-2 rounded-lg border border-app text-app-muted hover:bg-panel-elevated transition-colors flex items-center gap-2"
+          className="mt-6 h-10 px-5 rounded-full bg-primary text-primary-foreground text-[13px] font-semibold shadow-sm hover:brightness-105 transition flex items-center gap-1.5"
         >
           <ChevronLeft size={16} /> Go Back
         </button>
@@ -5390,7 +5501,7 @@ export default function EditorPage() {
 
   // ── Main editor UI ──
   return (
-    <div className="flex flex-col h-screen font-sans bg-surface text-app selection:bg-[#E8607A]/30 overflow-hidden">
+    <div className="flex flex-col h-screen font-sans bg-surface text-app selection:bg-primary/30 overflow-hidden">
 
       {/* ── Top toolbar ── */}
       <Toolbar
@@ -5476,8 +5587,6 @@ export default function EditorPage() {
           setTextColor={handleTextColor}
           textAlign={textAlign}
           setTextAlign={handleTextAlign}
-          textOpacity={textOpacity}
-          setTextOpacity={setTextOpacity}
           replacingImageIdRef={replacingImageIdRef}
           fileInputRef={fileInputRef}
           drawColor={drawColor}
@@ -5703,15 +5812,15 @@ export default function EditorPage() {
           {/* Floating Search & OCR Panel (viewport-fixed) */}
           {isSearchOpen && (
             <div className="absolute top-4 left-4 right-4 md:left-auto z-40 flex flex-col items-end gap-3 pointer-events-none animate-in fade-in slide-in-from-top-4 duration-200">
-              <div className="pointer-events-auto flex items-center justify-between gap-2 bg-zinc-900/95 backdrop-blur-md px-3 py-2 rounded-xl border border-zinc-700/80 shadow-lg w-full md:w-72">
+              <div className="pointer-events-auto flex items-center justify-between gap-2 bg-popover backdrop-blur-md px-3 py-2 rounded-xl border border-border shadow-lg w-full md:w-72">
                 <button
                   onClick={() => void handleRecognizeText()}
-                  className="flex items-center gap-2 text-xs font-semibold text-zinc-300 hover:text-white transition-colors"
+                  className="flex items-center gap-2 text-xs font-semibold text-foreground/90 hover:text-primary transition-colors"
                   title="OCR recognize text"
                 >
                   <Type size={14} /> Recognize text (OCR)
                 </button>
-                {isDirty && <span className="text-[10px] text-amber-400 font-medium border-l border-zinc-700/50 pl-2">Unsaved</span>}
+                {isDirty && <span data-testid="unsaved-badge" className="text-[10px] text-amber-600 dark:text-amber-400 font-semibold border-l border-border pl-2">Unsaved</span>}
               </div>
               <div className="pointer-events-auto">
                 <FindReplacePanel
@@ -5734,8 +5843,8 @@ export default function EditorPage() {
             </div>
           )}
           {isRendering && (
-            <div className="absolute top-4 right-4 z-30 bg-zinc-900/90 backdrop-blur border border-zinc-800 shadow-lg rounded-full px-4 py-2 flex items-center gap-2 text-zinc-300 text-sm font-medium animate-in slide-in-from-top-4 fade-in">
-              <Loader2 size={16} className="animate-spin text-[#E8607A]" />
+            <div className="absolute top-4 right-4 z-30 bg-popover backdrop-blur border border-border shadow-lg rounded-full px-4 py-2 flex items-center gap-2 text-foreground/90 text-sm font-medium animate-in slide-in-from-top-4 fade-in">
+              <Loader2 size={16} className="animate-spin text-primary" />
               Rendering...
             </div>
           )}
@@ -5750,6 +5859,7 @@ export default function EditorPage() {
           >
           <div
             ref={canvasContainerRef}
+            data-testid="page-canvas"
             className="relative inline-block shrink-0 shadow-[0_20px_50px_-12px_rgba(15,23,42,0.18),0_4px_16px_-2px_rgba(0,0,0,0.06),0_0_0_1px_rgba(15,23,42,0.06)] rounded-sm bg-white transition-shadow duration-300"
             style={{ cursor: cursorForTool }}
             onDragOver={(e) => {
@@ -5991,7 +6101,7 @@ export default function EditorPage() {
               return (
                 <div
                   key={ft.id}
-                  className={`absolute z-20 cursor-move border-2 ${isActive ? 'border-[#E8607A] border-dashed' : 'border-transparent hover:border-zinc-500 hover:border-dashed'} p-1 -m-1`}
+                  className={`absolute z-20 cursor-move border-2 ${isActive ? 'border-primary border-dashed' : 'border-transparent hover:border-border-strong hover:border-dashed'} p-1 -m-1`}
                   style={{
                     left: cssX,
                     top: cssY - (ft.fontSize * scale),
@@ -6058,7 +6168,7 @@ export default function EditorPage() {
               return (
                 <div
                   key={fi.id}
-                  className={`floating-image-container absolute z-20 cursor-move border-2 ${isActive ? 'border-[#E8607A] border-dashed' : 'border-transparent hover:border-zinc-500 hover:border-dashed'} p-1 -m-1`}
+                  className={`floating-image-container absolute z-20 cursor-move border-2 ${isActive ? 'border-primary border-dashed' : 'border-transparent hover:border-border-strong hover:border-dashed'} p-1 -m-1`}
                   style={{
                     left: cssX,
                     top: cssY,
@@ -6084,10 +6194,10 @@ export default function EditorPage() {
                         onPointerDown={(e) => handleFloatingImageRotateDown(e, fi.id)}
                         title="Drag to rotate image (Hold Shift for 15° steps)"
                       >
-                        <div className="w-5 h-5 rounded-full bg-[#E8607A] text-white flex items-center justify-center shadow-md hover:scale-110 transition-transform">
+                        <div className="w-5 h-5 rounded-full bg-primary text-white flex items-center justify-center shadow-md hover:scale-110 transition-transform">
                           <RotateCw size={11} />
                         </div>
-                        <div className="w-0.5 h-3 bg-[#E8607A]" />
+                        <div className="w-0.5 h-3 bg-primary" />
                       </div>
 
                       <button
@@ -6126,7 +6236,7 @@ export default function EditorPage() {
                         <X size={12} />
                       </button>
                       <button
-                        className="absolute -top-3 -left-3 bg-zinc-800 text-zinc-200 border border-zinc-600 rounded-full p-1 shadow hover:bg-zinc-700 transition-colors z-30"
+                        className="absolute -top-3 -left-3 bg-muted text-foreground border border-border-strong rounded-full p-1 shadow hover:bg-border transition-colors z-30"
                         title="Copy Image (Duplicate & clipboard)"
                         onClick={async (e) => {
                           e.stopPropagation();
@@ -6158,7 +6268,7 @@ export default function EditorPage() {
                         <Copy size={12} />
                       </button>
                       <button
-                        className="absolute -bottom-3 -right-3 bg-[#E8607A] text-white rounded-full p-1 shadow hover:bg-[#D94D6A] transition-colors z-30"
+                        className="absolute -bottom-3 -right-3 bg-primary text-white rounded-full p-1 shadow hover:bg-bloom-600 transition-colors z-30"
                         title="Replace Image"
                         onClick={(e) => {
                           e.stopPropagation();
@@ -6171,13 +6281,13 @@ export default function EditorPage() {
 
                       {/* Dimensions panel in cm + Rotation */}
                       <div
-                        className="absolute top-0 -right-[118px] bg-zinc-900 text-white rounded p-2 shadow-xl border border-zinc-700 text-xs flex flex-col gap-2 z-30 w-28"
+                        className="absolute top-0 -right-[118px] bg-popover text-foreground rounded-lg p-2 shadow-xl border border-border text-xs flex flex-col gap-2 z-30 w-28"
                         onClick={e => e.stopPropagation()}
                         onPointerDown={e => e.stopPropagation()}
                       >
-                        <div className="text-[9px] text-zinc-400 font-bold uppercase tracking-wider mb-0.5">Transform</div>
+                        <div className="text-[9px] text-muted-foreground font-bold uppercase tracking-wider mb-0.5">Transform</div>
                         <div className="flex items-center justify-between gap-1">
-                          <span className="text-zinc-500 w-3 text-center">W</span>
+                          <span className="text-muted-foreground w-3 text-center">W</span>
                           <input
                             type="number"
                             value={Math.round((fi.pdfWidth * 2.54 * 10) / 72) / 10}
@@ -6185,13 +6295,13 @@ export default function EditorPage() {
                               const newW = (parseFloat(e.target.value) * 72) / 2.54;
                               if (newW > 0) setFloatingImages(prev => prev.map(p => p.id === fi.id ? { ...p, pdfWidth: newW } : p));
                             }}
-                            className="w-10 bg-zinc-800 rounded px-1 py-0.5 text-right no-spinners outline-none focus:ring-1 focus:ring-[#E8607A]"
+                            className="w-10 bg-muted rounded px-1 py-0.5 text-right no-spinners outline-none focus:ring-1 focus:ring-primary"
                             step="0.1"
                           />
-                          <span className="text-zinc-500 text-[10px]">cm</span>
+                          <span className="text-muted-foreground text-[10px]">cm</span>
                         </div>
                         <div className="flex items-center justify-between gap-1">
-                          <span className="text-zinc-500 w-3 text-center">H</span>
+                          <span className="text-muted-foreground w-3 text-center">H</span>
                           <input
                             type="number"
                             value={Math.round((fi.pdfHeight * 2.54 * 10) / 72) / 10}
@@ -6199,13 +6309,13 @@ export default function EditorPage() {
                               const newH = (parseFloat(e.target.value) * 72) / 2.54;
                               if (newH > 0) setFloatingImages(prev => prev.map(p => p.id === fi.id ? { ...p, pdfHeight: newH } : p));
                             }}
-                            className="w-10 bg-zinc-800 rounded px-1 py-0.5 text-right no-spinners outline-none focus:ring-1 focus:ring-[#E8607A]"
+                            className="w-10 bg-muted rounded px-1 py-0.5 text-right no-spinners outline-none focus:ring-1 focus:ring-primary"
                             step="0.1"
                           />
-                          <span className="text-zinc-500 text-[10px]">cm</span>
+                          <span className="text-muted-foreground text-[10px]">cm</span>
                         </div>
-                        <div className="flex items-center justify-between gap-1 border-t border-zinc-800 pt-1.5 mt-0.5">
-                          <span className="text-zinc-500 w-3 text-center">↻</span>
+                        <div className="flex items-center justify-between gap-1 border-t border-border pt-1.5 mt-0.5">
+                          <span className="text-muted-foreground w-3 text-center">↻</span>
                           <input
                             type="number"
                             value={Math.round(rot)}
@@ -6213,12 +6323,12 @@ export default function EditorPage() {
                               const val = (parseFloat(e.target.value) || 0) % 360;
                               setFloatingImages(prev => prev.map(p => p.id === fi.id ? { ...p, rotation: (val + 360) % 360 } : p));
                             }}
-                            className="w-10 bg-zinc-800 rounded px-1 py-0.5 text-right no-spinners outline-none focus:ring-1 focus:ring-[#E8607A]"
+                            className="w-10 bg-muted rounded px-1 py-0.5 text-right no-spinners outline-none focus:ring-1 focus:ring-primary"
                           />
                           <button
                             type="button"
                             title="Rotate 90° clockwise"
-                            className="p-1 hover:bg-zinc-800 rounded text-zinc-300 hover:text-white transition-colors"
+                            className="p-1 hover:bg-muted rounded text-foreground/90 hover:text-primary transition-colors"
                             onClick={(e) => {
                               e.stopPropagation();
                               setFloatingImages(prev => prev.map(p => p.id === fi.id ? { ...p, rotation: ((p.rotation || 0) + 90) % 360 } : p));
@@ -6233,7 +6343,7 @@ export default function EditorPage() {
 
                   {/* CSS Resize Handle (only active when hovered to avoid drag conflict) */}
                   <div
-                    className="absolute bottom-0 right-0 w-3 h-3 cursor-se-resize bg-[#E8607A]/50"
+                    className="absolute bottom-0 right-0 w-3 h-3 cursor-se-resize bg-primary/50"
                     onPointerDown={e => {
                       e.stopPropagation(); // prevent dragging
                       const startX = e.clientX;
@@ -6586,30 +6696,30 @@ export default function EditorPage() {
 
       {/* Error toast */}
       {error && (
-        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-red-500/10 backdrop-blur-md border border-red-500/30 text-red-400 px-4 py-3 rounded-xl text-sm font-medium flex items-center gap-4 shadow-xl z-[100] animate-in slide-in-from-bottom-5 fade-in">
+        <div role="alert" data-testid="error-toast" className="fixed bottom-10 left-1/2 -translate-x-1/2 w-max max-w-[calc(100vw-2rem)] bg-popover border border-destructive/30 text-destructive px-4 py-3 rounded-xl text-sm font-medium flex items-center gap-4 shadow-[0_12px_32px_-8px_rgba(0,0,0,0.25)] z-[100] animate-fade-up">
           {error}
-          <button onClick={() => setError(null)} className="text-red-400 hover:text-red-300 transition-colors">
+          <button onClick={() => setError(null)} aria-label="Dismiss" className="text-destructive/80 hover:text-destructive transition-colors shrink-0">
             <X size={16} />
           </button>
         </div>
       )}
       {isConfirmingRemoval && (
-        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 animate-in fade-in duration-200">
-          <div className="bg-zinc-900 border border-zinc-700/50 rounded-xl p-6 shadow-2xl max-w-sm w-full">
-            <h3 className="text-white font-medium text-lg mb-2">Remove Watermarks</h3>
-            <p className="text-zinc-400 text-sm mb-6">
+        <div className="fixed inset-0 z-50 bg-[var(--scrim)] backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+          <div role="dialog" aria-label="Remove watermarks" className="bg-popover border border-border rounded-2xl p-6 shadow-2xl max-w-sm w-full animate-scale-in">
+            <h3 className="text-foreground font-bold text-lg mb-2">Remove watermarks</h3>
+            <p className="text-muted-foreground text-sm mb-6">
               Do you really want to remove the detected watermarks from this document? This action cannot be undone.
             </p>
             <div className="flex gap-3 justify-end">
               <button
                 onClick={() => setIsConfirmingRemoval(false)}
-                className="px-4 py-2 rounded font-medium text-sm text-zinc-300 hover:text-white hover:bg-zinc-800 transition-colors"
+                className="px-4 py-2 rounded-lg font-semibold text-sm text-foreground/90 hover:text-foreground hover:bg-muted transition-colors"
               >
                 Cancel
               </button>
               <button
                 onClick={executeRemoveWatermarks}
-                className="px-4 py-2 rounded font-medium text-sm bg-red-600 hover:bg-red-700 text-white transition-colors"
+                className="px-4 py-2 rounded-lg font-semibold text-sm bg-destructive hover:brightness-110 text-destructive-foreground transition-colors"
               >
                 Yes, Remove
               </button>
@@ -6619,15 +6729,15 @@ export default function EditorPage() {
       )}
 
       {showApplySuccessModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 animate-in fade-in duration-200">
-          <div className="bg-zinc-900 border border-zinc-700/50 rounded-xl p-6 shadow-2xl max-w-sm w-full text-center">
-            <h3 className="text-white font-medium text-lg mb-4">Watermark Applied</h3>
-            <p className="text-zinc-400 text-sm mb-6 leading-relaxed">
+        <div className="fixed inset-0 z-50 bg-[var(--scrim)] backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+          <div role="dialog" aria-label="Watermark applied" className="bg-popover border border-border rounded-2xl p-6 shadow-2xl max-w-sm w-full text-center animate-scale-in">
+            <h3 className="text-foreground font-bold text-lg mb-4">Watermark applied</h3>
+            <p className="text-muted-foreground text-sm mb-6 leading-relaxed">
               Watermark has been applied and live preview is off. To add more watermarks, turn on the live preview to preview it live.
             </p>
             <button
               onClick={() => setShowApplySuccessModal(false)}
-              className="w-full px-4 py-2.5 rounded font-medium text-sm bg-[#E8607A] hover:bg-[#B83A57] text-white transition-colors"
+              className="w-full h-11 px-4 rounded-xl font-bold text-sm bg-primary hover:brightness-105 text-primary-foreground shadow-[0_6px_20px_-6px_rgba(232,96,122,0.6)] transition-all"
             >
               Okay
             </button>

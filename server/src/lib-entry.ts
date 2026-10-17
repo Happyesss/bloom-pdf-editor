@@ -12,3 +12,4 @@ export {
   type Job,
   type JobState,
 } from './jobs/types.js';
+export { provideZlib, type ZlibLike } from './utils/zlib.js';

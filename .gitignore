@@ -49,6 +49,9 @@ tmp*
 /server/dist
 .bloom-storage
 
-# Cloudflare Workers
-.open-next/
+# Cloudflare (wrangler pages dev)
 .wrangler/
+
+# Playwright
+/test-results/
+/playwright-report/

@@ -27,9 +27,9 @@ The project has two major subsystems:
 | Subsystem | Location | Purpose |
 |-----------|----------|---------|
 | **Client Engine** | `src/engine/` | PDF parsing, rendering, editing, signatures, security, forms, OCR layout, and more — runs in the browser |
-| **Server Engine** | `server/src/engines/` | Document intelligence pipeline — structure-preserving conversion to DOCX, XLSX, PPTX, HTML, Markdown, EPUB, and 6 more formats |
+| **Document Engine** | `server/src/engines/` | Document intelligence pipeline — structure-preserving conversion to DOCX, XLSX, PPTX, HTML, Markdown, EPUB, and 6 more formats. Runs in the editor's Web Worker, or as an optional standalone server |
 
-> **🚧 Export Engine Status:** The server-side export/conversion pipeline is **currently in progress**. The full pipeline (Parse → Layout → IDM → Semantic → Tables → Graphics → Structure → UDM → Export) is architecturally complete, and all 12 exporter plugins are wired up. Active work continues on improving conversion fidelity and edge-case handling.
+> **🚧 Export Engine Status:** The export/conversion pipeline is **currently in progress**. The full pipeline (Parse → Layout → IDM → Semantic → Tables → Graphics → Structure → UDM → Export) is architecturally complete, and all 12 exporter plugins are wired up. Active work continues on improving conversion fidelity and edge-case handling.
 
 ---
 
@@ -49,10 +49,9 @@ The project has two major subsystems:
 │                                       │  Forms → Flow → Bloom ││
 │                                       └────────────────────────┘│
 │                            │                                    │
-│                     /api/bloom/*                                │
-│                    (Route Handlers)                              │
+│                  Web Worker (in the tab)                         │
 ├─────────────────────────────────────────────────────────────────┤
-│                     Server (In-Process)                          │
+│          Bloom engine (server/dist) — no network hop            │
 │                                                                 │
 │  ┌─────────────────────────────────────────────────────────────┐│
 │  │              Bloom Document Intelligence Engine             ││
@@ -66,7 +65,7 @@ The project has two major subsystems:
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-The server engine runs **inside the Next.js process** — no separate server, no API key, no second terminal. Optional standalone HTTP mode (`npm run server:dev` on `:8787`) is available for Docker/ops deployments.
+The editor is a **fully static site** and the document engine runs **in a Web Worker inside the browser tab** — the PDF never leaves the device, and conversion needs no server, no API key and no second terminal. The same engine package can also run as an optional standalone HTTP server (`npm run server:dev` on `:8787`) for Docker/ops deployments.
 
 ---
 
@@ -222,10 +221,10 @@ Open [http://localhost:3000](http://localhost:3000) — that's it. No API keys, 
 ### How It Works
 
 ```
-Browser → /api/bloom/* (Next.js Route Handlers) → server/dist (compiled engine)
+Export panel → src/lib/bloom-api.ts → Web Worker (src/lib/bloom-engine/bloom.worker.ts) → server/dist (compiled engine)
 ```
 
-The server engine runs **in the same Node.js process** as Next.js. Route Handlers under `/api/bloom/*` call into `@bloom/document-engine` directly — no network hop, no separate service.
+The compiled engine is bundled into a Web Worker, so document conversion runs entirely in the browser. It has no static Node.js imports: zlib is handed in at runtime (`provideZlib` — pako in the browser, `node:zlib` on the server) and the disk storage backend looks up `node:fs` only when used.
 
 ### Convert a PDF
 
@@ -233,16 +232,35 @@ The server engine runs **in the same Node.js process** as Next.js. Route Handler
 2. Toolbar → **Export** → **Document Convert**
 3. Pick a target format → Convert → Download
 
-Client-side exports (PNG, JPEG, SVG render, plain text) are available directly from the export panel without the server pipeline.
+Client-side exports (PNG, JPEG, SVG render, plain text) are rendered directly by the editor engine. OCR downloads the tesseract.js worker and English language data from the jsDelivr CDN on first use; the optional RFC 3161 timestamp when digitally signing calls public timestamp servers, which browsers may block (signing then continues without a timestamp).
 
 ### Run Tests
 
 ```bash
 npm test                      # Client engine tests (Vitest)
 npm run server:test           # Server engine tests
+
+# End-to-end tests (Playwright) against a production build
+npx playwright install chromium   # once
+npm run fixtures                  # regenerate tests/fixtures (sample.pdf, form.pdf, small.png)
+npm run build                     # static export → out/
+npm run test:e2e                  # serves out/ on :4174 and runs tests/*.spec.ts
 ```
 
-### Docker (Optional)
+The end-to-end suite covers every editor feature — text editing, pages, annotations, images, forms, watermarks, signatures (visual and cryptographic), security, find & replace, OCR, exports and all 12 document conversions — plus light / dark / mobile smoke tests that fail on console errors or horizontal overflow. OCR needs network access to the jsDelivr CDN.
+
+### Deploy (Cloudflare Pages)
+
+`npm run build` produces a static site in `out/` (Next.js `output: 'export'`). Deploy it like bloompdf.app:
+
+```bash
+npm run pages:deploy          # build + wrangler pages deploy out
+npm run pages:preview         # build + serve out/ locally through wrangler
+```
+
+For Git-connected Pages builds use build command `npm run build` and output directory `out`. `public/_headers` sets the security headers and long-lived caching for `/_next/static/*`.
+
+### Docker (Optional, standalone engine server)
 
 ```bash
 cd server
@@ -281,10 +299,13 @@ bloom-pdf-editor/
 │   │   ├── qa/               #   Quality assurance tests
 │   │   ├── index.ts          #   Public API (730+ exports)
 │   │   └── types.ts          #   Core PDF object types
+│   ├── components/           # Shared art (logo, doodles, illustrations) + layout bits from bloompdf.app
 │   └── lib/                  # Shared utilities
+│       └── bloom-engine/     #   Web Worker that runs the document engine in the browser
+├── tests/                    # Playwright end-to-end tests + fixtures
 ├── server/
 │   └── src/
-│       ├── engines/          # ★ Server document intelligence engines
+│       ├── engines/          # ★ Document intelligence engines (browser worker or server)
 │       │   ├── parser/       #   PDF → RawDocument + ObjectGraph
 │       │   ├── layout/       #   Layout analysis (XY-Cut, clustering)
 │       │   ├── ocr/          #   Recognition fusion

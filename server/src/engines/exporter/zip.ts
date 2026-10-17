@@ -1,4 +1,4 @@
-import { deflateRawSync, inflateRawSync } from 'node:zlib';
+import { zlib } from '../../utils/zlib.js';
 
 interface ZipEntry {
   name: string;
@@ -33,7 +33,7 @@ export function createZip(
     const content = files[name]!;
     const data = typeof content === 'string' ? new TextEncoder().encode(content) : content;
     const forceStore = storeOnly.has(name);
-    const compressed = forceStore ? data : deflateRawSync(data);
+    const compressed = forceStore ? data : zlib().deflateRawSync(data);
     const useDeflate = !forceStore && compressed.byteLength < data.byteLength;
     entries.push({
       name,
@@ -138,7 +138,7 @@ export function readZipEntry(zip: Uint8Array, name: string): Uint8Array | null {
     const data = zip.subarray(dataStart, dataStart + compSize);
     if (entryName === name) {
       if (compression === 0) return data;
-      if (compression === 8) return new Uint8Array(inflateRawSync(data));
+      if (compression === 8) return new Uint8Array(zlib().inflateRawSync(data));
       return null;
     }
     offset = dataStart + compSize;

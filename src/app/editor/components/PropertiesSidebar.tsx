@@ -28,8 +28,6 @@ interface PropertiesSidebarProps {
   setTextColor: (v: string) => void;
   textAlign: 'left' | 'center' | 'right';
   setTextAlign: (v: 'left' | 'center' | 'right') => void;
-  textOpacity: number;
-  setTextOpacity: (v: number) => void;
 
   replacingImageIdRef: MutableRefObject<string | null>;
   fileInputRef: MutableRefObject<HTMLInputElement | null>;
@@ -175,7 +173,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
     activeTool, setActiveTool, selectedRun,
     textFontFamily, setTextFontFamily, textFontSize, setTextFontSize,
     textBold, setTextBold, textItalic, setTextItalic, textUnderline, setTextUnderline, textColor, setTextColor,
-    textAlign, setTextAlign, textOpacity, setTextOpacity,
+    textAlign, setTextAlign,
     replacingImageIdRef, fileInputRef,
     drawColor, setDrawColor, drawSize, setDrawSize,
     drawMode = 'freehand', setDrawMode,
@@ -237,6 +235,10 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
     revisionEntries = [],
   } = props;
 
+  // Hooks first: the early return below must not change the hook order.
+  const [previewImage, setPreviewImage] = useState<RemovedImageRecord | null>(null);
+  const [isRemovedImagesOpen, setIsRemovedImagesOpen] = useState(true);
+
   if (!['text', 'addtext', 'draw', 'highlight', 'erase', 'select', 'watermark', 'sign'].includes(activeTool)) return null;
 
   const FONT_FAMILIES = [
@@ -274,8 +276,6 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
 
   const isMobile = props.isMobile ?? false;
 
-  const [previewImage, setPreviewImage] = useState<RemovedImageRecord | null>(null);
-  const [isRemovedImagesOpen, setIsRemovedImagesOpen] = useState(true);
 
   const formatRelativeTime = (timestamp: number): string => {
     const diff = Date.now() - timestamp;
@@ -306,18 +306,19 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
       )}
       <div
         className={isMobile
-          ? 'fixed bottom-0 left-0 right-0 z-50 bg-panel/98 backdrop-blur-xl border-t border-app flex flex-col overflow-y-auto mobile-sheet-up shadow-[0_-8px_40px_rgba(0,0,0,0.15)]'
-          : 'w-64 bg-panel/95 backdrop-blur-md border-r border-app flex flex-col shrink-0 z-10 overflow-y-auto shadow-[4px_0_24px_rgba(0,0,0,0.08)] min-h-0 h-full'
+          ? 'fixed bottom-0 left-0 right-0 z-50 bg-card rounded-t-2xl border-t border-border flex flex-col overflow-y-auto mobile-sheet-up shadow-[0_-8px_40px_rgba(0,0,0,0.15)]'
+          : 'w-64 bg-card border-r border-border flex flex-col shrink-0 z-10 overflow-y-auto min-h-0 h-full'
         }
         style={isMobile ? { maxHeight: '65vh' } : undefined}
         data-keep-text-edit
+        data-testid="options-panel"
       >
         {/* Mobile drag handle */}
         {isMobile && <div className="sheet-handle" />}
         {/* Top Bar with Hide Panel Button */}
         {onClose && (
-          <div className="flex items-center justify-between px-4 pt-3 pb-2 border-b border-app/40 text-xs text-app-muted">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-app-muted">Options Panel</span>
+          <div className="flex items-center justify-between px-4 pt-3 pb-2 border-b border-border text-xs text-muted-foreground">
+            <span className="font-hand text-[19px] leading-none text-primary normal-case">options</span>
           <button
             onClick={onClose}
             title="Hide panel"
@@ -330,7 +331,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
       {/* TEXT TOOL PROPERTIES */}
       {(activeTool === 'text' || activeTool === 'addtext') && (
         <div className="p-4 space-y-4 animate-in fade-in slide-in-from-left-4 duration-300">
-          <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-app-muted uppercase">
+          <div className="flex items-center gap-2 text-[11px] font-bold tracking-wider text-foreground uppercase">
             <Type size={14} />
             Text Properties
           </div>
@@ -345,7 +346,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
 
           {/* Font Family */}
           <div className="space-y-1.5">
-            <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Font</label>
+            <label className="text-[10.5px] font-bold tracking-wider text-muted-foreground uppercase">Font</label>
             {(() => {
               const isResourceId = !textFontFamily || /^F\d+$/i.test(textFontFamily);
               const fontValue = isResourceId
@@ -357,7 +358,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   value={fontValue}
                   onChange={(e) => setTextFontFamily(e.target.value)}
                   onFocus={(e) => e.stopPropagation()}
-                  className="w-full bg-panel-elevated border border-app rounded-lg px-3 py-2 text-xs text-app outline-none focus:border-[#E8607A] transition-colors cursor-pointer"
+                  className="w-full bg-panel-elevated border border-app rounded-lg px-3 py-2 text-xs text-app outline-none focus:border-primary transition-colors cursor-pointer"
                 >
                   {showCurrent && (
                     <option value={fontValue}>{fontValue}</option>
@@ -372,7 +373,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
 
           {/* Font Size */}
           <div className="space-y-1.5">
-            <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Size</label>
+            <label className="text-[10.5px] font-bold tracking-wider text-muted-foreground uppercase">Size</label>
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setTextFontSize(s => Math.max(4, s - 1))}
@@ -386,7 +387,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 value={textFontSize}
                 onChange={(e) => setTextFontSize(Math.max(4, Math.min(200, parseInt(e.target.value) || 12)))}
                 onMouseDown={(e) => e.preventDefault()}
-                className="w-16 bg-panel-elevated border border-app rounded-lg px-2 py-1.5 text-xs text-app text-center outline-none focus:border-[#E8607A]"
+                className="w-16 bg-panel-elevated border border-app rounded-lg px-2 py-1.5 text-xs text-app text-center outline-none focus:border-primary"
               />
               <button
                 onClick={() => setTextFontSize(s => Math.min(200, s + 1))}
@@ -402,7 +403,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   key={s}
                   onClick={() => setTextFontSize(s)}
                   onMouseDown={(e) => e.preventDefault()}
-                  className={`px-2 py-0.5 rounded text-[10px] font-medium transition-all ${textFontSize === s ? 'bg-[#E8607A] text-white shadow-sm' : 'bg-panel-elevated text-app-muted hover:text-app hover:bg-panel-elevated/80 border border-app'}`}
+                  className={`px-2 py-0.5 rounded text-[10px] font-medium transition-all ${textFontSize === s ? 'bg-primary text-white shadow-sm' : 'bg-panel-elevated text-app-muted hover:text-app hover:bg-panel-elevated/80 border border-app'}`}
                 >
                   {s}
                 </button>
@@ -412,12 +413,12 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
 
           {/* Style */}
           <div className="space-y-1.5">
-            <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Style</label>
+            <label className="text-[10.5px] font-bold tracking-wider text-muted-foreground uppercase">Style</label>
             <div className="flex gap-2">
               <button
                 onClick={() => setTextBold(b => !b)}
                 onMouseDown={(e) => e.preventDefault()}
-                className={`flex-1 py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${textBold ? 'bg-[#E8607A]/20 text-[#E8607A] border border-[#E8607A]/50' : 'bg-panel-elevated text-app-muted border border-app hover:text-app hover:bg-panel-elevated/80'}`}
+                className={`flex-1 py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${textBold ? 'bg-primary/20 text-primary border border-primary/50' : 'bg-panel-elevated text-app-muted border border-app hover:text-app hover:bg-panel-elevated/80'}`}
                 title="Bold"
               >
                 <Bold size={16} />
@@ -425,7 +426,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
               <button
                 onClick={() => setTextItalic(i => !i)}
                 onMouseDown={(e) => e.preventDefault()}
-                className={`flex-1 py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${textItalic ? 'bg-[#E8607A]/20 text-[#E8607A] border border-[#E8607A]/50' : 'bg-panel-elevated text-app-muted border border-app hover:text-app hover:bg-panel-elevated/80'}`}
+                className={`flex-1 py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${textItalic ? 'bg-primary/20 text-primary border border-primary/50' : 'bg-panel-elevated text-app-muted border border-app hover:text-app hover:bg-panel-elevated/80'}`}
                 title="Italic"
               >
                 <Italic size={16} />
@@ -433,7 +434,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
               <button
                 onClick={() => setTextUnderline(u => !u)}
                 onMouseDown={(e) => e.preventDefault()}
-                className={`flex-1 py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${textUnderline ? 'bg-[#E8607A]/20 text-[#E8607A] border border-[#E8607A]/50' : 'bg-panel-elevated text-app-muted border border-app hover:text-app hover:bg-panel-elevated/80'}`}
+                className={`flex-1 py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${textUnderline ? 'bg-primary/20 text-primary border border-primary/50' : 'bg-panel-elevated text-app-muted border border-app hover:text-app hover:bg-panel-elevated/80'}`}
                 title="Underline"
               >
                 <Underline size={16} />
@@ -443,7 +444,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
 
           {/* Color */}
           <div className="space-y-1.5">
-            <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Color</label>
+            <label className="text-[10.5px] font-bold tracking-wider text-muted-foreground uppercase">Color</label>
             <div className="flex items-center gap-2">
               <input
                 type="color"
@@ -459,7 +460,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   if (!val.startsWith('#')) val = '#' + val;
                   setTextColor(val);
                 }}
-                className="w-16 bg-transparent border-b border-app text-[11px] text-app font-mono focus:outline-none focus:border-[#E8607A] uppercase pb-0.5"
+                className="w-16 bg-transparent border-b border-app text-[11px] text-app font-mono focus:outline-none focus:border-primary uppercase pb-0.5"
                 maxLength={7}
               />
             </div>
@@ -467,9 +468,12 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
               {['#000000', '#ffffff', '#ef4444', '#3b82f6', '#22c55e', '#f59e0b', '#a855f7', '#6b7280'].map(c => (
                 <button
                   key={c}
+                  type="button"
+                  aria-label={`Text colour ${c}`}
+                  aria-pressed={textColor.toLowerCase() === c}
                   onClick={() => setTextColor(c)}
                   onMouseDown={(e) => e.preventDefault()}
-                  className={`w-5 h-5 rounded-full border-2 transition-transform ${textColor.toLowerCase() === c ? 'scale-125 border-[#FF9BB3]' : 'border-app hover:scale-110'}`}
+                  className={`w-5 h-5 rounded-full border-2 transition-transform ${textColor.toLowerCase() === c ? 'scale-125 border-bloom-300' : 'border-app hover:scale-110'}`}
                   style={{ backgroundColor: c }}
                 />
               ))}
@@ -478,7 +482,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
 
           {/* Alignment */}
           <div className="space-y-1.5">
-            <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Alignment</label>
+            <label className="text-[10.5px] font-bold tracking-wider text-muted-foreground uppercase">Alignment</label>
             <div className="flex gap-1 bg-panel-elevated p-1 rounded-lg border border-app">
               {([
                 { val: 'left' as const, icon: <AlignLeft size={14} /> },
@@ -487,9 +491,12 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
               ]).map(a => (
                 <button
                   key={a.val}
+                  type="button"
+                  aria-label={`Align ${a.val}`}
+                  aria-pressed={textAlign === a.val}
                   onClick={() => setTextAlign(a.val)}
                   onMouseDown={(e) => e.preventDefault()}
-                  className={`flex-1 py-1.5 rounded-md flex items-center justify-center transition-all ${textAlign === a.val ? 'bg-[#E8607A] text-white shadow-sm' : 'text-app-muted hover:text-app'}`}
+                  className={`flex-1 py-1.5 rounded-md flex items-center justify-center transition-all ${textAlign === a.val ? 'bg-primary text-white shadow-sm' : 'text-app-muted hover:text-app'}`}
                 >
                   {a.icon}
                 </button>
@@ -499,7 +506,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
 
           {/* Links — scan highlights on the PDF; edit/open via page hover popover */}
           <div className="space-y-1.5">
-            <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">
+            <label className="text-[10.5px] font-bold tracking-wider text-muted-foreground uppercase">
               Links {pageLinkCount > 0 ? `(${pageLinkCount})` : ''}
             </label>
 
@@ -510,7 +517,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 onMouseDown={(e) => e.preventDefault()}
                 className={`w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-semibold transition-colors border ${
                   linksHighlighted
-                    ? 'bg-[#E8607A]/25 text-[#E8607A] border-[#E8607A]/40'
+                    ? 'bg-primary/25 text-primary border-primary/40'
                     : 'bg-panel-elevated text-app border-app hover:bg-panel-elevated/80'
                 }`}
               >
@@ -520,14 +527,14 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             )}
 
             {linkCreatePending ? (
-              <div className="space-y-2 rounded-lg border border-[#E8607A]/30 bg-[#E8607A]/5 p-2.5">
-                <p className="text-[10px] text-[#E8607A] font-medium">New link URL</p>
+              <div className="space-y-2 rounded-lg border border-primary/30 bg-primary/5 p-2.5">
+                <p className="text-[10px] text-primary font-medium">New link URL</p>
                 <input
                   type="url"
                   value={selectedLinkUrl}
                   onChange={(e) => onSelectedLinkUrlChange?.(e.target.value)}
                   placeholder="https://example.com"
-                  className="w-full bg-panel-elevated border border-app rounded-lg px-3 py-2 text-xs text-app outline-none focus:border-[#E8607A]"
+                  className="w-full bg-panel-elevated border border-app rounded-lg px-3 py-2 text-xs text-app outline-none focus:border-primary"
                   autoFocus
                 />
                 <div className="flex gap-2">
@@ -535,7 +542,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                     type="button"
                     onClick={onSaveSelectedLink}
                     onMouseDown={(e) => e.preventDefault()}
-                    className="flex-1 py-1.5 rounded-lg bg-[#E8607A] text-white text-[11px] font-semibold hover:bg-[#D94D6A]"
+                    className="flex-1 py-1.5 rounded-lg bg-primary text-white text-[11px] font-semibold hover:bg-bloom-600"
                   >
                     Save
                   </button>
@@ -543,7 +550,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                     type="button"
                     onClick={onRemoveSelectedLink}
                     onMouseDown={(e) => e.preventDefault()}
-                    className="flex-1 py-1.5 rounded-lg bg-red-500/15 text-red-400 border border-red-500/30 text-[11px] font-semibold hover:bg-red-500/25"
+                    className="flex-1 py-1.5 rounded-lg bg-red-500/15 text-red-600 dark:text-red-400 border border-red-500/30 text-[11px] font-semibold hover:bg-red-500/25"
                   >
                     Cancel
                   </button>
@@ -556,7 +563,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                     type="button"
                     onClick={onAddLink}
                     onMouseDown={(e) => e.preventDefault()}
-                    className="w-full flex items-center justify-center gap-2 py-2 rounded-lg bg-[#E8607A]/15 text-[#E8607A] border border-[#E8607A]/30 hover:bg-[#D94D6A]/25 text-xs font-semibold transition-colors"
+                    className="w-full flex items-center justify-center gap-2 py-2 rounded-lg bg-primary/15 text-primary border border-primary/30 hover:bg-bloom-600/25 text-xs font-semibold transition-colors"
                   >
                     <Link2 size={14} />
                     Add link to selection
@@ -571,29 +578,14 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             )}
           </div>
 
-          {/* Opacity */}
-          <div className="space-y-1.5">
-            <label className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase">Opacity</label>
-            <div className="flex items-center gap-2">
-              <input
-                type="range"
-                min="0" max="100"
-                value={textOpacity}
-                onChange={(e) => setTextOpacity(parseInt(e.target.value))}
-                className="flex-1 accent-[#E8607A]"
-              />
-              <span className="text-[11px] text-zinc-400 w-8 text-right font-mono">{textOpacity}%</span>
-            </div>
-          </div>
-
           {/* Add Content */}
           <div className="pt-4 mt-4 border-t border-app space-y-2">
-            <div className="text-[10px] font-bold tracking-widest text-app-faint uppercase mb-2">
+            <div className="text-[10.5px] font-bold tracking-wider text-muted-foreground uppercase mb-2">
               Add Content
             </div>
             <button
               onClick={() => setActiveTool('addtext')}
-              className={`w-full flex items-center justify-center gap-2 py-2 rounded-md transition-colors text-xs font-semibold ${activeTool === 'addtext' ? 'bg-[#E8607A]/20 text-[#E8607A] border border-[#E8607A]/30' : 'bg-panel-elevated text-app hover:bg-panel-elevated/80'}`}
+              className={`w-full flex items-center justify-center gap-2 py-2 rounded-md transition-colors text-xs font-semibold ${activeTool === 'addtext' ? 'bg-primary/20 text-primary border border-primary/30' : 'bg-panel-elevated text-app hover:bg-panel-elevated/80'}`}
             >
               <TextCursorInput size={14} />
               Add Text Box
@@ -610,7 +602,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             )}
             {tableInfo && (
               <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-2.5 space-y-2">
-                <div className="text-[10px] font-bold tracking-widest text-emerald-400 uppercase">
+                <div className="text-[10px] font-bold tracking-widest text-emerald-600 dark:text-emerald-400 uppercase">
                   Table {tableInfo.rows}×{tableInfo.cols}
                 </div>
                 <p className="text-[10px] text-app-faint leading-relaxed">
@@ -620,7 +612,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   <button
                     type="button"
                     onClick={onAddTableRow}
-                    className="w-full flex items-center justify-center gap-2 py-2 rounded-md bg-emerald-600/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-600/25 text-xs font-semibold"
+                    className="w-full flex items-center justify-center gap-2 py-2 rounded-md bg-emerald-600/15 text-emerald-600 dark:text-emerald-300 border border-emerald-500/30 hover:bg-emerald-600/25 text-xs font-semibold"
                   >
                     <Plus size={14} />
                     Add Row Below
@@ -630,7 +622,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   <button
                     type="button"
                     onClick={onAddTableColumn}
-                    className="w-full flex items-center justify-center gap-2 py-2 rounded-md bg-emerald-600/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-600/25 text-xs font-semibold"
+                    className="w-full flex items-center justify-center gap-2 py-2 rounded-md bg-emerald-600/15 text-emerald-600 dark:text-emerald-300 border border-emerald-500/30 hover:bg-emerald-600/25 text-xs font-semibold"
                   >
                     <Plus size={14} />
                     Add Column Right
@@ -658,13 +650,13 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
       {/* DRAW TOOL PROPERTIES */}
       {activeTool === 'draw' && (
         <div className="p-4 space-y-4 animate-in fade-in slide-in-from-left-4 duration-300">
-          <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-app-muted uppercase">
+          <div className="flex items-center gap-2 text-[11px] font-bold tracking-wider text-foreground uppercase">
             <PenTool size={14} />
             Draw Properties
           </div>
           {setDrawMode && (
             <div className="space-y-1.5">
-              <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Shape</label>
+              <label className="text-[10.5px] font-bold tracking-wider text-muted-foreground uppercase">Shape</label>
               <div className="grid grid-cols-5 gap-1.5">
                 {([
                   { id: 'freehand' as DrawMode, icon: PenTool, title: 'Freehand' },
@@ -680,7 +672,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                     onClick={() => setDrawMode(id)}
                     className={`flex items-center justify-center h-9 rounded-lg border transition-colors ${
                       drawMode === id
-                        ? 'bg-[#E8607A]/20 text-[#E8607A] border-[#E8607A]/50'
+                        ? 'bg-primary/20 text-primary border-primary/50'
                         : 'bg-panel-elevated text-app-muted border-app hover:text-app hover:bg-panel-elevated/80'
                     }`}
                   >
@@ -691,7 +683,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             </div>
           )}
           <div className="space-y-1.5">
-            <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Color</label>
+            <label className="text-[10.5px] font-bold tracking-wider text-muted-foreground uppercase">Color</label>
             <div className="flex items-center gap-2">
               <input
                 type="color"
@@ -707,7 +699,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   if (!val.startsWith('#')) val = '#' + val;
                   setDrawColor(val);
                 }}
-                className="w-16 bg-transparent border-b border-app text-[11px] text-app font-mono focus:outline-none focus:border-[#E8607A] uppercase pb-0.5"
+                className="w-16 bg-transparent border-b border-app text-[11px] text-app font-mono focus:outline-none focus:border-primary uppercase pb-0.5"
                 maxLength={7}
               />
             </div>
@@ -723,14 +715,14 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             </div>
           </div>
           <div className="space-y-1.5">
-            <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Brush Size</label>
+            <label className="text-[10.5px] font-bold tracking-wider text-muted-foreground uppercase">Brush Size</label>
             <div className="flex items-center gap-2">
               <input
                 type="range"
                 min="1" max="20"
                 value={drawSize}
                 onChange={(e) => setDrawSize(parseInt(e.target.value))}
-                className="flex-1 accent-[#E8607A]"
+                className="flex-1 accent-primary"
               />
               <span className="text-[11px] text-app-muted w-8 text-right font-mono">{drawSize}px</span>
             </div>
@@ -748,12 +740,12 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
       {/* HIGHLIGHT TOOL PROPERTIES */}
       {activeTool === 'highlight' && (
         <div className="p-4 space-y-4 animate-in fade-in slide-in-from-left-4 duration-300">
-          <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-app-muted uppercase">
+          <div className="flex items-center gap-2 text-[11px] font-bold tracking-wider text-foreground uppercase">
             <Highlighter size={14} />
             Highlight Properties
           </div>
           <div className="space-y-1.5">
-            <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Color</label>
+            <label className="text-[10.5px] font-bold tracking-wider text-muted-foreground uppercase">Color</label>
             <div className="flex items-center gap-2">
               <input
                 type="color"
@@ -769,7 +761,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   if (!val.startsWith('#')) val = '#' + val;
                   setHighlightColor(val);
                 }}
-                className="w-16 bg-transparent border-b border-app text-[11px] text-app font-mono focus:outline-none focus:border-[#E8607A] uppercase pb-0.5"
+                className="w-16 bg-transparent border-b border-app text-[11px] text-app font-mono focus:outline-none focus:border-primary uppercase pb-0.5"
                 maxLength={7}
               />
             </div>
@@ -785,7 +777,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             </div>
           </div>
           <div className="space-y-1.5">
-            <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Thickness</label>
+            <label className="text-[10.5px] font-bold tracking-wider text-muted-foreground uppercase">Thickness</label>
             <div className="flex items-center gap-2">
               <input
                 type="range"
@@ -806,12 +798,12 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
       {/* ERASER PROPERTIES */}
       {activeTool === 'erase' && (
         <div className="p-4 space-y-4 animate-in fade-in slide-in-from-left-4 duration-300">
-          <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-app-muted uppercase">
+          <div className="flex items-center gap-2 text-[11px] font-bold tracking-wider text-foreground uppercase">
             <Eraser size={14} />
             Eraser Properties
           </div>
           <div className="space-y-1.5">
-            <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Eraser Size</label>
+            <label className="text-[10.5px] font-bold tracking-wider text-muted-foreground uppercase">Eraser Size</label>
             <div className="flex items-center gap-2">
               <input
                 type="range"
@@ -836,7 +828,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
       {/* SELECT TOOL — SELECTED IMAGE/SIGNATURE INFO */}
       {activeTool === 'select' && selectedDisplayItem && (
         <div className="p-4 space-y-4 animate-in fade-in slide-in-from-left-4 duration-300">
-          <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-app-muted uppercase">
+          <div className="flex items-center gap-2 text-[11px] font-bold tracking-wider text-foreground uppercase">
             {selectedDisplayItem.type === 'image' ? <Image size={14} /> : <PenTool size={14} />}
             {selectedDisplayItem.type === 'image' ? 'Image Properties' : 'Drawing / Signature'}
           </div>
@@ -859,14 +851,14 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
               <>
                 <button
                   onClick={() => onReplaceSelectedImage?.()}
-                  className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-medium bg-[#E8607A]/10 text-[#E8607A] border border-[#E8607A]/30 hover:bg-[#D94D6A]/20 transition-colors"
+                  className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-medium bg-primary/10 text-primary border border-primary/30 hover:bg-bloom-600/20 transition-colors"
                 >
                   <Image size={12} /> Replace Image
                 </button>
                 {onCopySelectedImage && (
                   <button
                     onClick={() => onCopySelectedImage()}
-                    className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-medium bg-zinc-800 text-zinc-200 border border-zinc-700 hover:bg-zinc-700 transition-colors"
+                    className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-medium bg-muted text-foreground border border-border hover:bg-border transition-colors"
                   >
                     <Copy size={12} /> Copy Image
                   </button>
@@ -881,7 +873,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             </button>
             <button
               onClick={() => onDeleteSelectedDisplayItem?.()}
-              className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-medium bg-red-500/10 text-red-400 border border-red-500/30 hover:bg-red-500/20 transition-colors"
+              className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-medium bg-red-500/10 text-red-600 dark:text-red-400 border border-red-500/30 hover:bg-red-500/20 transition-colors"
             >
               <Trash2 size={12} /> Delete (Save to Bin)
             </button>
@@ -893,7 +885,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
               <button
                 type="button"
                 onClick={() => setIsRemovedImagesOpen(!isRemovedImagesOpen)}
-                className="w-full flex items-center justify-between text-[10px] font-bold tracking-widest text-app-muted uppercase hover:text-app transition-colors"
+                className="w-full flex items-center justify-between text-[11px] font-bold tracking-wider text-foreground uppercase hover:text-app transition-colors"
               >
                 <div className="flex items-center gap-1.5">
                   <History size={13} className="text-[#38BDF8]" />
@@ -951,7 +943,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
       {/* SELECT TOOL — NO SELECTION */}
       {activeTool === 'select' && !selectedDisplayItem && (
         <div className="p-4 space-y-4 animate-in fade-in slide-in-from-left-4 duration-300">
-          <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-app-muted uppercase">
+          <div className="flex items-center gap-2 text-[11px] font-bold tracking-wider text-foreground uppercase">
             <MousePointer2 size={14} />
             Select Tool
           </div>
@@ -960,9 +952,9 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
           </p>
           {displayItems.length > 0 && (
             <div className="bg-panel-elevated rounded-lg p-2.5 border border-app">
-              <span className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Detected</span>
+              <span className="text-[10.5px] font-bold tracking-wider text-muted-foreground uppercase">Detected</span>
               <div className="flex gap-3 mt-2">
-                <span className="text-[11px] text-[#E8607A]">
+                <span className="text-[11px] text-primary">
                   {displayItems.filter(d => d.type === 'image').length} images
                 </span>
                 <span className="text-[11px] text-emerald-500">
@@ -975,7 +967,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
           {/* REMOVED IMAGES SECTION */}
           <div className="pt-2 border-t border-app space-y-3">
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-1.5 text-[10px] font-bold tracking-widest text-app-muted uppercase">
+              <div className="flex items-center gap-1.5 text-[11px] font-bold tracking-wider text-foreground uppercase">
                 <History size={14} className="text-[#38BDF8]" />
                 <span>Removed Images</span>
                 {removedImages.length > 0 && (
@@ -1094,13 +1086,13 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
       {(activeTool === 'select' || activeTool === 'text' || activeTool === 'addtext') && (
       <div className="p-4 space-y-3 border-t border-app animate-in fade-in slide-in-from-left-4 duration-300">
           <div className="flex items-center justify-between">
-            <span className="text-[10px] font-bold tracking-widest text-app-muted uppercase">
+            <span className="text-[11px] font-bold tracking-wider text-foreground uppercase">
               Form Fields {formFields.length > 0 ? `(${formFields.length})` : ''}
             </span>
             {onFlattenForms && formFields.length > 0 && (
               <button
                 onClick={onFlattenForms}
-                className="text-[10px] font-medium px-2 py-1 rounded bg-amber-500/10 text-amber-500 border border-amber-500/30 hover:bg-amber-500/20 transition-colors"
+                className="text-[10px] font-medium px-2 py-1 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/30 hover:bg-amber-500/20 transition-colors"
               >
                 Flatten All
               </button>
@@ -1123,7 +1115,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 onClick={() => onFormFieldSelect?.(field)}
                 className={`w-full text-left px-2.5 py-2 rounded-lg text-[11px] transition-colors ${
                   selectedFormField?.ref.toKey() === field.ref.toKey()
-                    ? 'bg-[#E8607A]/15 text-[#E8607A] border border-[#E8607A]/30'
+                    ? 'bg-primary/15 text-primary border border-primary/30'
                     : 'bg-panel-elevated text-app-muted border border-app hover:bg-panel-elevated/80'
                 }`}
               >
@@ -1135,19 +1127,20 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
 
           {selectedFormField && selectedFormField.fieldType === 'Tx' && onFormFieldChange && (
             <div className="space-y-2">
-              <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Value</label>
+              <label className="text-[10.5px] font-bold tracking-wider text-muted-foreground uppercase">Value</label>
               <input
                 type="text"
                 value={formFieldDraft}
+                aria-label="Field value"
                 onChange={(e) => onFormFieldChange(e.target.value)}
-                className="w-full px-3 py-2 text-sm bg-panel-elevated border border-app rounded-lg text-app focus:outline-none focus:border-[#E8607A]"
+                className="w-full px-3 py-2 text-sm bg-panel-elevated border border-app rounded-lg text-app focus:outline-none focus:border-primary"
               />
             </div>
           )}
 
           {selectedFormField && selectedFormField.fieldType === 'Btn' && onFormFieldChange && (
             <div className="space-y-2">
-              <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Checkbox / Radio</label>
+              <label className="text-[10.5px] font-bold tracking-wider text-muted-foreground uppercase">Checkbox / Radio</label>
               <button
                 onClick={() => {
                   const checked = !(selectedFormField.value === true || selectedFormField.value === 'Yes' || selectedFormField.value === 'On');
@@ -1164,13 +1157,14 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
 
           {selectedFormField && selectedFormField.fieldType === 'Ch' && onFormFieldChange && (
             <div className="space-y-2">
-              <label className="text-[10px] font-bold tracking-widest text-app-faint uppercase">Choice value</label>
+              <label className="text-[10.5px] font-bold tracking-wider text-muted-foreground uppercase">Choice value</label>
               <input
                 type="text"
                 value={formFieldDraft}
                 onChange={(e) => onFormFieldChange(e.target.value)}
+                aria-label="Choice value"
                 placeholder="Enter option value"
-                className="w-full px-3 py-2 text-sm bg-panel-elevated border border-app rounded-lg text-app focus:outline-none focus:border-[#E8607A]"
+                className="w-full px-3 py-2 text-sm bg-panel-elevated border border-app rounded-lg text-app focus:outline-none focus:border-primary"
               />
             </div>
           )}
@@ -1183,7 +1177,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
       {activeTool === 'watermark' && (
         <div className="flex flex-col h-full bg-panel/95 animate-in fade-in slide-in-from-left-4 duration-300">
           <div className="p-4 pb-2">
-            <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-app-muted uppercase">
+            <div className="flex items-center gap-2 text-[11px] font-bold tracking-wider text-foreground uppercase">
               <Stamp size={14} />
               Watermark options
             </div>
@@ -1216,9 +1210,13 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
           {/* Live Preview Toggle */}
           <div className="p-4 border-b border-app flex items-center justify-between bg-panel/80">
             <span className="text-xs font-semibold text-app">Live Preview</span>
-            <button 
+            <button
+              type="button"
+              role="switch"
+              aria-checked={!!watermarkLivePreview}
+              aria-label="Live preview"
               onClick={() => setWatermarkLivePreview?.(!watermarkLivePreview)}
-              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${watermarkLivePreview ? 'bg-[#E8607A]' : 'bg-panel-elevated border border-app'}`}
+              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${watermarkLivePreview ? 'bg-primary' : 'bg-panel-elevated border border-app'}`}
             >
               <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${watermarkLivePreview ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
             </button>
@@ -1232,8 +1230,9 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   <input
                     type="text"
                     value={watermarkText}
+                    aria-label="Watermark text"
                     onChange={(e) => setWatermarkText?.(e.target.value)}
-                    className="w-full bg-panel-elevated border border-app rounded px-3 py-2 text-xs text-app outline-none focus:border-[#E8607A] transition-colors"
+                    className="w-full bg-panel-elevated border border-app rounded px-3 py-2 text-xs text-app outline-none focus:border-primary transition-colors"
                   />
                 </div>
 
@@ -1242,7 +1241,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   <select
                     value={watermarkFontName}
                     onChange={(e) => setWatermarkFontName?.(e.target.value)}
-                    className="w-full bg-panel-elevated border border-app rounded px-3 py-2 text-xs text-app outline-none focus:border-[#E8607A] transition-colors appearance-none cursor-pointer"
+                    className="w-full bg-panel-elevated border border-app rounded px-3 py-2 text-xs text-app outline-none focus:border-primary transition-colors appearance-none cursor-pointer"
                   >
                     <option value="Arial">Arial</option>
                     <option value="Helvetica">Helvetica</option>
@@ -1271,7 +1270,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   <select
                     value={watermarkShapeType}
                     onChange={(e) => setWatermarkShapeType?.(e.target.value as any)}
-                    className="w-full bg-panel-elevated border border-app rounded px-3 py-2 text-xs text-app outline-none focus:border-[#E8607A] transition-colors appearance-none cursor-pointer"
+                    className="w-full bg-panel-elevated border border-app rounded px-3 py-2 text-xs text-app outline-none focus:border-primary transition-colors appearance-none cursor-pointer"
                   >
                     <option value="rectangle">Rectangle</option>
                     <option value="circle">Circle</option>
@@ -1283,8 +1282,9 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   <input
                     type="text"
                     value={watermarkText}
+                    aria-label="Watermark text"
                     onChange={(e) => setWatermarkText?.(e.target.value)}
-                    className="w-full bg-panel-elevated border border-app rounded px-3 py-2 text-xs text-app outline-none focus:border-[#E8607A] transition-colors"
+                    className="w-full bg-panel-elevated border border-app rounded px-3 py-2 text-xs text-app outline-none focus:border-primary transition-colors"
                   />
                 </div>
                 <div className="flex gap-4">
@@ -1323,7 +1323,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                       fileInput.onchange = (e) => onWatermarkImageUpload?.(e as any);
                       fileInput.click();
                     }}
-                    className="flex items-center gap-2 bg-[#E8607A] hover:bg-[#D94D6A] text-white px-8 py-3 rounded text-xs font-medium transition-colors"
+                    className="flex items-center gap-2 bg-primary hover:brightness-105 text-primary-foreground px-8 py-3 rounded-xl text-xs font-bold transition-all"
                   >
                     <Image size={16} /> ADD IMAGE
                   </button>
@@ -1336,7 +1336,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 {watermarkImageFile && (
                   <button 
                     onClick={onWatermarkImageClear}
-                    className="w-full py-1.5 bg-red-500/10 text-red-400 border border-red-500/30 rounded text-[11px] hover:bg-red-500/20 transition-colors"
+                    className="w-full py-1.5 bg-red-500/10 text-red-600 dark:text-red-400 border border-red-500/30 rounded text-[11px] hover:bg-red-500/20 transition-colors"
                   >
                     Remove Image
                   </button>
@@ -1354,7 +1354,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                       onClick={() => setWatermarkPosition?.(pos)}
                       className="border border-app flex items-center justify-center hover:bg-panel-elevated transition-colors"
                     >
-                      {(watermarkPosition === pos || watermarkMosaic) && <div className="w-3 h-3 bg-[#E8607A] rounded-full" />}
+                      {(watermarkPosition === pos || watermarkMosaic) && <div className="w-3 h-3 bg-primary rounded-full" />}
                     </button>
                   ))}
                 </div>
@@ -1363,7 +1363,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                     type="checkbox"
                     checked={watermarkMosaic}
                     onChange={(e) => setWatermarkMosaic?.(e.target.checked)}
-                    className="rounded border-app bg-panel-elevated text-[#E8607A] cursor-pointer"
+                    className="rounded border-app bg-panel-elevated text-primary cursor-pointer"
                   />
                   Mosaic
                 </label>
@@ -1380,7 +1380,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                     if (val === 'No transparency') setWatermarkOpacity?.(100);
                     else setWatermarkOpacity?.(100 - parseInt(val));
                   }}
-                  className="w-full bg-panel-elevated border border-app rounded px-2 py-2 text-[11px] text-app outline-none focus:border-[#E8607A] transition-colors appearance-none cursor-pointer"
+                  className="w-full bg-panel-elevated border border-app rounded px-2 py-2 text-[11px] text-app outline-none focus:border-primary transition-colors appearance-none cursor-pointer"
                 >
                   <option value="No transparency">No transparency</option>
                   <option value="25%">25%</option>
@@ -1397,7 +1397,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                     if (val === 'Do not rotate') setWatermarkRotation?.(0);
                     else setWatermarkRotation?.(parseInt(val));
                   }}
-                  className="w-full bg-panel-elevated border border-app rounded px-2 py-2 text-[11px] text-app outline-none focus:border-[#E8607A] transition-colors appearance-none cursor-pointer"
+                  className="w-full bg-panel-elevated border border-app rounded px-2 py-2 text-[11px] text-app outline-none focus:border-primary transition-colors appearance-none cursor-pointer"
                 >
                   <option value="Do not rotate">Do not rotate</option>
                   <option value="45 degrees">45 degrees</option>
@@ -1413,7 +1413,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
               <select
                 value={watermarkBlendMode}
                 onChange={(e) => setWatermarkBlendMode?.(e.target.value)}
-                className="w-full bg-panel-elevated border border-app rounded px-2 py-2 text-[11px] text-app outline-none focus:border-[#E8607A] transition-colors appearance-none cursor-pointer"
+                className="w-full bg-panel-elevated border border-app rounded px-2 py-2 text-[11px] text-app outline-none focus:border-primary transition-colors appearance-none cursor-pointer"
               >
                 <option value="Normal">Normal (source-over)</option>
                 <option value="Multiply">Multiply</option>
@@ -1445,7 +1445,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 max="300"
                 value={watermarkSize}
                 onChange={(e) => setWatermarkSize?.(parseInt(e.target.value))}
-                className="w-full accent-[#E8607A]"
+                className="w-full accent-primary"
               />
             </div>
 
@@ -1480,14 +1480,14 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
               <div className="flex gap-2">
                 <button
                   onClick={() => setWatermarkLayer?.('above')}
-                  className={`flex-1 py-6 flex flex-col items-center justify-center gap-2 rounded border transition-colors ${watermarkLayer === 'above' ? 'bg-[#E8607A]/15 border-[#E8607A]/50 text-[#E8607A]' : 'bg-panel-elevated border-app text-app-muted hover:text-app'}`}
+                  className={`flex-1 py-6 flex flex-col items-center justify-center gap-2 rounded border transition-colors ${watermarkLayer === 'above' ? 'bg-primary/15 border-primary/50 text-primary' : 'bg-panel-elevated border-app text-app-muted hover:text-app'}`}
                 >
                   <div className="rotate-45 w-4 h-4 bg-current" />
                   <span className="text-[10px] text-center px-2">Over the PDF content</span>
                 </button>
                 <button
                   onClick={() => setWatermarkLayer?.('below')}
-                  className={`flex-1 py-6 flex flex-col items-center justify-center gap-2 rounded border transition-colors ${watermarkLayer === 'below' ? 'bg-[#E8607A]/15 border-[#E8607A]/50 text-[#E8607A]' : 'bg-panel-elevated border-app text-app-muted hover:text-app'}`}
+                  className={`flex-1 py-6 flex flex-col items-center justify-center gap-2 rounded border transition-colors ${watermarkLayer === 'below' ? 'bg-primary/15 border-primary/50 text-primary' : 'bg-panel-elevated border-app text-app-muted hover:text-app'}`}
                 >
                   <div className="rotate-45 w-4 h-4 border-2 border-current" />
                   <span className="text-[10px] text-center px-2">Below the PDF content</span>
@@ -1498,7 +1498,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             <div className="pt-2 flex flex-col gap-2 pb-4">
               <button
                 onClick={onApplyWatermark}
-                className="w-full bg-[#E8607A] hover:bg-[#D94D6A] text-white rounded py-2.5 text-xs font-semibold transition-colors"
+                className="w-full h-10 bg-primary hover:brightness-105 text-primary-foreground rounded-xl text-[13px] font-bold shadow-[0_6px_20px_-6px_rgba(232,96,122,0.6)] transition-all"
               >
                 Add watermark
               </button>
@@ -1530,7 +1530,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   </div>
                   {detectedWatermarksCount === 0 && (
                     <div className="text-center p-3 bg-amber-500/10 border border-amber-500/20 rounded-md">
-                      <p className="text-amber-500 text-xs font-medium mb-1">no watermark found in scan process</p>
+                      <p className="text-amber-600 dark:text-amber-400 text-xs font-medium mb-1">no watermark found in scan process</p>
                       <p className="text-app-faint text-[10px]">if you are seeing any watermark, it may be image, so please go to image section to remove</p>
                     </div>
                   )}
@@ -1545,12 +1545,12 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
       {activeTool === 'sign' && (
         <div className="flex flex-col h-full bg-panel/95 animate-in fade-in slide-in-from-left-4 duration-300">
           <div className="p-4 pb-2">
-            <div className="flex items-center gap-2 text-[10px] font-bold tracking-widest text-app-muted uppercase">
+            <div className="flex items-center gap-2 text-[11px] font-bold tracking-wider text-foreground uppercase">
               <PenLine size={14} />
               Signature
             </div>
             <p className="text-[10px] text-app-faint mt-1">
-              Click the page to place. Create or pick a library signature first.
+              Create a signature, then drag it from the library onto the page.
             </p>
           </div>
 
@@ -1558,7 +1558,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
             <button
               type="button"
               onClick={onOpenSignatureCreate}
-              className="w-full flex items-center justify-center gap-2 py-2 rounded-md bg-[#E8607A] hover:bg-[#D94D6A] text-white text-xs font-semibold transition-colors"
+              className="w-full flex items-center justify-center gap-2 py-2 rounded-md bg-primary hover:bg-bloom-600 text-white text-xs font-semibold transition-colors"
             >
               <PenLine size={14} /> Create signature
             </button>
@@ -1566,7 +1566,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
 
           {pdfSignatureFields.length > 0 && (
             <div className="px-4 pb-3 space-y-2 border-b border-app">
-              <div className="text-[10px] font-bold tracking-widest text-app-muted uppercase">
+              <div className="text-[11px] font-bold tracking-wider text-foreground uppercase">
                 PDF fields on page
               </div>
               {pdfSignatureFields.map((field) => {
@@ -1603,7 +1603,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
           )}
 
           <div className="px-4 pb-3 space-y-2 border-b border-app">
-            <div className="text-[10px] font-bold tracking-widest text-app-muted uppercase flex items-center gap-1.5">
+            <div className="text-[11px] font-bold tracking-wider text-foreground uppercase flex items-center gap-1.5">
               <KeyRound size={12} /> Certificate
             </div>
             <button
@@ -1628,7 +1628,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                       onClick={() => onSelectCertificate?.(id.id)}
                       className={`w-full text-left rounded-md border px-2 py-1.5 text-[11px] transition-colors ${
                         active
-                          ? 'border-[#E8607A] bg-[#E8607A]/10 text-[#E8607A]'
+                          ? 'border-primary bg-primary/10 text-primary'
                           : 'border-app text-app hover:border-app-strong'
                       }`}
                     >
@@ -1664,7 +1664,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
           </div>
 
           <div className="px-4 pb-3 space-y-2 border-b border-app">
-            <div className="text-[10px] font-bold tracking-widest text-app-muted uppercase flex items-center gap-1.5">
+            <div className="text-[11px] font-bold tracking-wider text-foreground uppercase flex items-center gap-1.5">
               <ShieldCheck size={12} /> Validation & LTV
             </div>
             <button
@@ -1680,12 +1680,13 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                 <div className="flex items-center justify-between text-[11px]">
                   <span className="text-app-muted">Document</span>
                   <span
+                    data-testid="validation-status"
                     className={
                       validationReport.documentStatus === 'Valid'
-                        ? 'text-emerald-500 font-semibold'
+                        ? 'text-emerald-600 dark:text-emerald-400 font-semibold'
                         : validationReport.documentStatus === 'Modified'
                           ? 'text-red-500 font-semibold'
-                          : 'text-amber-500 font-semibold'
+                          : 'text-amber-600 dark:text-amber-400 font-semibold'
                     }
                   >
                     {validationReport.documentStatus}
@@ -1701,10 +1702,10 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                       <span
                         className={
                           s.status === 'Valid'
-                            ? 'text-emerald-500'
+                            ? 'text-emerald-600 dark:text-emerald-400'
                             : s.status === 'Modified' || s.status === 'Revoked'
                               ? 'text-red-500'
-                              : 'text-amber-500'
+                              : 'text-amber-600 dark:text-amber-400'
                         }
                       >
                         {s.status}
@@ -1729,7 +1730,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
 
           {(managedSignatures.length > 0 || revisionEntries.length > 0) && (
             <div className="px-4 pb-3 space-y-2 border-b border-app">
-              <div className="text-[10px] font-bold tracking-widest text-app-muted uppercase">
+              <div className="text-[11px] font-bold tracking-wider text-foreground uppercase">
                 Signatures & revisions
               </div>
               {managedSignatures.map((m) => (
@@ -1765,7 +1766,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
 
           {selectedSignature && (
             <div className="px-4 pb-4 space-y-3 border-b border-app">
-              <div className="text-[10px] font-bold tracking-widest text-app-muted uppercase">Selected</div>
+              <div className="text-[11px] font-bold tracking-wider text-foreground uppercase">Selected</div>
               <div className="space-y-1.5">
                 <label className="text-[11px] text-app">Opacity</label>
                 <input
@@ -1776,7 +1777,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   onChange={(e) =>
                     onSignatureOpacity?.(selectedSignature.id, Number(e.target.value) / 100)
                   }
-                  className="w-full accent-[#E8607A]"
+                  className="w-full accent-primary"
                 />
               </div>
               <div className="flex gap-2">
@@ -1813,7 +1814,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
 
           <div className="p-4 flex-1 overflow-y-auto space-y-2">
             <div className="flex items-center justify-between mb-2">
-              <div className="text-[10px] font-bold tracking-widest text-app-muted uppercase">
+              <div className="text-[11px] font-bold tracking-wider text-foreground uppercase">
                 Library
               </div>
               <div className="text-[10px] text-app-faint">
@@ -1837,7 +1838,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   }}
                   className={`rounded-lg border p-2 cursor-grab active:cursor-grabbing transition-colors ${
                     active
-                      ? 'border-[#E8607A] bg-[#E8607A]/10'
+                      ? 'border-primary bg-primary/10'
                       : 'border-app hover:border-app-strong bg-panel-elevated/60'
                   }`}
                   onClick={() => setActiveLibraryId?.(entry.id)}
@@ -1852,6 +1853,7 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                   </div>
                   <input
                     value={entry.name}
+                    aria-label="Signature name"
                     onClick={(e) => e.stopPropagation()}
                     onChange={(e) => onLibraryRename?.(entry.id, e.target.value)}
                     className="w-full bg-transparent text-[11px] text-app outline-none border-b border-transparent focus:border-app-strong"
@@ -1860,7 +1862,8 @@ export function PropertiesSidebar(props: PropertiesSidebarProps) {
                     <button
                       type="button"
                       title="Favorite"
-                      className={`p-1 rounded ${entry.favorite ? 'text-amber-500' : 'text-app-faint hover:text-app'}`}
+                      aria-pressed={entry.favorite}
+                      className={`p-1 rounded ${entry.favorite ? 'text-amber-600 dark:text-amber-400' : 'text-app-faint hover:text-app'}`}
                       onClick={(e) => {
                         e.stopPropagation();
                         onLibraryFavorite?.(entry.id);

@@ -12,6 +12,7 @@ import {
   PDFObject,
   PDFRef,
   PDFString,
+  PDFHexString,
   type PDFDocumentData,
   type PDFPageInfo,
   type PDFRectangle,
@@ -25,9 +26,26 @@ import type {
 } from './types';
 import { parseWidgetRect } from './flatten-field';
 
+/** PDF text strings are UTF-16BE (BOM FE FF), UTF-8 (BOM EF BB BF) or PDFDocEncoding. */
+function decodeTextString(bytes: Uint8Array): string {
+  if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
+    let s = '';
+    for (let i = 2; i + 1 < bytes.length; i += 2) s += String.fromCharCode((bytes[i] << 8) | bytes[i + 1]);
+    return s;
+  }
+  if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
+    return new TextDecoder().decode(bytes.subarray(3));
+  }
+  let s = '';
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  return s;
+}
+
 function strVal(obj: PDFObject | undefined): string {
   if (obj instanceof PDFName) return obj.name;
-  if (obj instanceof PDFString) return obj.value;
+  // pdf-lib and many other writers store field names/values as hex or UTF-16 strings.
+  if (obj instanceof PDFString) return decodeTextString(obj.toBytes());
+  if (obj instanceof PDFHexString) return decodeTextString(obj.toBytes());
   if (obj instanceof PDFNumber) return String(obj.value);
   return '';
 }
@@ -60,7 +78,7 @@ function buildWidget(
   const rect = parseWidgetRect(dict);
   const v = dict.get('V');
   let value: string | boolean | string[] | null = null;
-  if (v instanceof PDFString || v instanceof PDFName) value = strVal(v);
+  if (v instanceof PDFString || v instanceof PDFHexString || v instanceof PDFName) value = strVal(v);
   else if (v instanceof PDFArray) value = v.items.map(i => strVal(i));
   else if (v instanceof PDFRef) {
     // Signature fields store /V → Sig dictionary ref
@@ -151,10 +169,18 @@ function walkField(
       const kidSubtype = kidObj.get('Subtype');
       if (kidSubtype instanceof PDFName && kidSubtype.name === 'Widget') {
         const kidFt = fieldTypeFromFT(kidObj.get('FT') ?? obj.get('FT'));
-        widgets.push(buildWidget(
+        const widget = buildWidget(
           kidObj, kidRef, fullName || partial, kidFt,
           resolvePageRef(kidObj, objects), objects,
-        ));
+        );
+        // Split field/widget pairs keep /V on the parent field.
+        if (widget.value === null) {
+          const parentV = obj.get('V');
+          if (parentV instanceof PDFString || parentV instanceof PDFHexString || parentV instanceof PDFName) {
+            widget.value = strVal(parentV);
+          }
+        }
+        widgets.push(widget);
       } else {
         const child = walkField(kidRef, objects, fullName);
         if (child) kids.push(child);
@@ -165,7 +191,7 @@ function walkField(
 
   const v = obj.get('V');
   let value: string | boolean | string[] | null = null;
-  if (v instanceof PDFString || v instanceof PDFName) value = strVal(v);
+  if (v instanceof PDFString || v instanceof PDFHexString || v instanceof PDFName) value = strVal(v);
   else if (v instanceof PDFArray) value = v.items.map(i => strVal(i));
   else if (v instanceof PDFRef && ft === 'Sig') {
     value = `[Sig:${v.toKey()}]`;

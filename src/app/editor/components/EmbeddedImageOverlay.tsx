@@ -141,7 +141,7 @@ export function EmbeddedImageOverlay(props: EmbeddedImageOverlayProps) {
         <button
           type="button"
           title="Replace image (keep size)"
-          className="flex items-center gap-1 px-1.5 py-0.5 bg-zinc-800 text-zinc-200 text-[10px] rounded border border-zinc-600 hover:bg-zinc-700 shadow"
+          className="flex items-center gap-1 px-1.5 py-0.5 bg-muted text-foreground text-[10px] rounded border border-border-strong hover:bg-border shadow"
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();
@@ -157,7 +157,7 @@ export function EmbeddedImageOverlay(props: EmbeddedImageOverlayProps) {
             className={`flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded border shadow transition-colors ${
               copied
                 ? 'bg-emerald-900/90 text-emerald-200 border-emerald-600'
-                : 'bg-zinc-800 text-zinc-200 border-zinc-600 hover:bg-zinc-700'
+                : 'bg-muted text-foreground border-border-strong hover:bg-border'
             }`}
             onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => {
@@ -167,7 +167,7 @@ export function EmbeddedImageOverlay(props: EmbeddedImageOverlayProps) {
               setTimeout(() => setCopied(false), 1500);
             }}
           >
-            {copied ? <Check size={10} className="text-emerald-300" /> : <Copy size={10} />}
+            {copied ? <Check size={10} className="text-emerald-600 dark:text-emerald-300" /> : <Copy size={10} />}
             {copied ? 'Copied' : 'Copy'}
           </button>
         )}
@@ -175,7 +175,7 @@ export function EmbeddedImageOverlay(props: EmbeddedImageOverlayProps) {
           <button
             type="button"
             title="Delete image (saved to Removed Images bin)"
-            className="flex items-center gap-1 px-1.5 py-0.5 bg-red-950/80 text-red-300 text-[10px] rounded border border-red-700 hover:bg-red-800 hover:text-white shadow transition-colors"
+            className="flex items-center gap-1 px-1.5 py-0.5 bg-red-600 text-white text-[10px] rounded border border-red-500 hover:bg-red-500 shadow transition-colors"
             onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => {
               e.stopPropagation();
@@ -188,7 +188,7 @@ export function EmbeddedImageOverlay(props: EmbeddedImageOverlayProps) {
         <button
           type="button"
           title="Deselect"
-          className="p-0.5 bg-zinc-800 text-zinc-300 rounded border border-zinc-600 hover:bg-zinc-700 shadow"
+          className="p-0.5 bg-muted text-foreground/90 rounded border border-border-strong hover:bg-border shadow"
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();

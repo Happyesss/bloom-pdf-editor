@@ -232,9 +232,12 @@ export async function hashRevision6(
   userKey?: Uint8Array,
 ): Promise<Uint8Array> {
   let k = await sha256(concatBytes(password, salt, userKey ?? new Uint8Array(0)));
+  let e: Uint8Array = new Uint8Array(0);
   let round = 0;
 
-  while (round < 64 || k[k.length - 1] > round - 32) {
+  // Run at least 64 rounds, then stop once the last byte of the latest E is
+  // <= round - 32 (it is E's last byte, not K's). This always ends by round 288.
+  while (round < 64 || e[e.length - 1] > round - 32) {
     const k1Parts: Uint8Array[] = [];
     const block = concatBytes(password, k, userKey ?? new Uint8Array(0));
     // Repeat to 64 repetitions
@@ -243,7 +246,7 @@ export async function hashRevision6(
 
     const aesKey = k.subarray(0, 16);
     const iv = k.subarray(16, 32);
-    const e = await aesEncryptRaw(aesKey, iv, k1, false);
+    e = await aesEncryptRaw(aesKey, iv, k1, false);
 
     // Choose next hash based on first 16 bytes of E as big-endian mod 3
     let remainder = 0;
@@ -255,7 +258,6 @@ export async function hashRevision6(
     else k = await sha512(e);
 
     round++;
-    if (round > 64 + 32) break; // safety
   }
 
   return k.subarray(0, 32);

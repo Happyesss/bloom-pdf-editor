@@ -417,6 +417,9 @@ function removeContentStreamWatermarks(
       streamObj.rawBytes = newBytes;
       streamObj.decodedBytes = newBytes;
       streamObj.dict.set('Length', new PDFNumber(newBytes.length));
+      // The bytes are now stored uncompressed — drop the old filter chain.
+      streamObj.dict.delete('Filter');
+      streamObj.dict.delete('DecodeParms');
     }
 
     for (const det of detections) {

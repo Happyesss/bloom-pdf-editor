@@ -46,21 +46,21 @@ const FORMAT_GRADIENTS: Record<ExportFormat, string> = {
   png: 'from-sky-500/20 to-sky-600/5',
   jpeg: 'from-amber-500/20 to-amber-600/5',
   svg: 'from-cyan-500/20 to-cyan-600/5',
-  txt: 'from-zinc-400/20 to-zinc-500/5',
+  txt: 'from-stone-400/20 to-stone-500/5',
 };
 
 const FORMAT_ACCENT: Record<ExportFormat, string> = {
-  png: 'text-sky-400',
-  jpeg: 'text-amber-400',
-  svg: 'text-cyan-400',
-  txt: 'text-zinc-400',
+  png: 'text-sky-600 dark:text-sky-400',
+  jpeg: 'text-amber-600 dark:text-amber-400',
+  svg: 'text-cyan-600 dark:text-cyan-400',
+  txt: 'text-muted-foreground',
 };
 
 const FORMAT_RING: Record<ExportFormat, string> = {
   png: 'ring-sky-500/40',
   jpeg: 'ring-amber-500/40',
   svg: 'ring-cyan-500/40',
-  txt: 'ring-zinc-500/40',
+  txt: 'ring-stone-500/40',
 };
 
 type ExportMode = 'render' | 'convert';
@@ -276,7 +276,7 @@ export function ExportPanel({
   return (
     <>
       <div
-        className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm"
+        className="fixed inset-0 z-40 bg-[var(--scrim)] backdrop-blur-sm"
         style={{ animation: 'fadeIn 0.2s ease-out' }}
         onClick={onClose}
       />
@@ -288,17 +288,18 @@ export function ExportPanel({
           animation: 'slideInRight 0.35s cubic-bezier(0.16, 1, 0.3, 1)',
         }}
       >
-        <div className="flex flex-col h-full bg-zinc-900/95 backdrop-blur-2xl border-l border-zinc-700/50 shadow-2xl">
-          <div className="flex items-center justify-between px-6 py-5 border-b border-zinc-800/80">
+        <div data-testid="export-panel" role="dialog" aria-label="Export document" className="flex flex-col h-full bg-popover border-l border-border shadow-[0_12px_48px_-8px_rgba(0,0,0,0.25)]">
+          <div className="flex items-center justify-between px-6 py-5 border-b border-border">
             <div>
-              <h2 className="text-lg font-semibold text-white tracking-tight">Export Document</h2>
-              <p className="text-xs text-zinc-500 mt-0.5">
+              <h2 className="text-lg font-extrabold text-foreground tracking-tight">Export document</h2>
+              <p className="text-xs text-muted-foreground mt-0.5 truncate max-w-[360px]">
                 {fileName} · {totalPages} page{totalPages !== 1 ? 's' : ''}
               </p>
             </div>
             <button
               onClick={onClose}
-              className="p-2 rounded-xl text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800 transition-all duration-200"
+              className="p-2 rounded-xl text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+              aria-label="Close export panel"
             >
               <X size={18} />
             </button>
@@ -306,10 +307,10 @@ export function ExportPanel({
 
           <div
             className="flex-1 overflow-y-auto px-6 py-5 space-y-6"
-            style={{ scrollbarWidth: 'thin', scrollbarColor: '#3f3f46 transparent' }}
+            style={{ scrollbarWidth: 'thin' }}
           >
             {/* Mode tabs */}
-            <div className="flex gap-1.5 p-1 bg-zinc-800/60 rounded-xl border border-zinc-800">
+            <div className="flex gap-1.5 p-1 bg-muted rounded-xl border border-border">
               {(
                 [
                   { value: 'render' as const, label: 'Images & text' },
@@ -327,8 +328,8 @@ export function ExportPanel({
                     flex-1 px-3 py-2 text-xs font-medium rounded-lg transition-all duration-200
                     ${
                       mode === opt.value
-                        ? 'bg-zinc-700 text-white shadow-sm'
-                        : 'text-zinc-500 hover:text-zinc-300'
+                        ? 'bg-card text-foreground shadow-sm font-semibold'
+                        : 'text-muted-foreground hover:text-foreground'
                     }
                   `}
                 >
@@ -339,7 +340,7 @@ export function ExportPanel({
 
             {mode === 'render' ? (
               <div>
-                <label className="text-xs font-medium text-zinc-400 uppercase tracking-widest mb-3 block">
+                <label className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider mb-3 block">
                   Render format
                 </label>
                 <div className="grid grid-cols-2 gap-2">
@@ -352,8 +353,8 @@ export function ExportPanel({
                         transition-all duration-200 ease-out
                         ${
                           selectedFormat === fmt.id
-                            ? `bg-gradient-to-br ${FORMAT_GRADIENTS[fmt.id]} border-zinc-600/80 ring-2 ${FORMAT_RING[fmt.id]} shadow-lg`
-                            : 'bg-zinc-800/40 border-zinc-800 hover:bg-zinc-800/80 hover:border-zinc-700'
+                            ? `bg-gradient-to-br ${FORMAT_GRADIENTS[fmt.id]} border-border ring-2 ${FORMAT_RING[fmt.id]} shadow-sm`
+                            : 'bg-card border-border hover:bg-muted/60 hover:border-border-strong'
                         }
                       `}
                     >
@@ -363,8 +364,8 @@ export function ExportPanel({
                         transition-all duration-200
                         ${
                           selectedFormat === fmt.id
-                            ? `${FORMAT_ACCENT[fmt.id]} bg-white/5`
-                            : 'text-zinc-500 bg-zinc-800/60 group-hover:text-zinc-300'
+                            ? `${FORMAT_ACCENT[fmt.id]} bg-card/70`
+                            : 'text-muted-foreground bg-muted group-hover:text-foreground'
                         }
                       `}
                       >
@@ -372,17 +373,17 @@ export function ExportPanel({
                       </div>
                       <div className="min-w-0 flex-1">
                         <div
-                          className={`text-sm font-medium truncate ${selectedFormat === fmt.id ? 'text-white' : 'text-zinc-300'}`}
+                          className={`text-sm font-semibold truncate ${selectedFormat === fmt.id ? 'text-foreground' : 'text-foreground/80'}`}
                         >
                           {fmt.label}
                         </div>
-                        <div className="text-[10px] text-zinc-500 truncate leading-snug mt-0.5">
+                        <div className="text-[10px] text-muted-foreground truncate leading-snug mt-0.5">
                           {fmt.extension}
                         </div>
                       </div>
                       {selectedFormat === fmt.id && (
                         <div
-                          className={`flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center ${FORMAT_ACCENT[fmt.id]} bg-white/10`}
+                          className={`flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center ${FORMAT_ACCENT[fmt.id]} bg-card`}
                         >
                           <Check size={12} strokeWidth={3} />
                         </div>
@@ -390,29 +391,25 @@ export function ExportPanel({
                     </button>
                   ))}
                 </div>
-                <p className="mt-3 text-xs text-zinc-500 leading-relaxed">{formatInfo.description}</p>
+                <p className="mt-3 text-xs text-muted-foreground leading-relaxed">{formatInfo.description}</p>
               </div>
             ) : (
               <div className="space-y-4">
                 <div className="flex items-start gap-2">
                   {engineOnline === null ? (
-                    <p className="text-xs text-zinc-500 flex items-center gap-1.5">
+                    <p className="text-xs text-muted-foreground flex items-center gap-1.5">
                       <Loader2 size={12} className="animate-spin" />
                       Checking Bloom engine…
                     </p>
                   ) : engineOnline ? (
-                    <p className="text-xs text-emerald-400/90 flex items-center gap-1.5">
+                    <p className="text-xs text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5">
                       <Check size={12} />
-                      Convert ready
-                      {enginePhase ? ` · phases ${enginePhase}` : ''} (in Next.js)
+                      Converts on your device — nothing is uploaded
                     </p>
                   ) : (
-                    <p className="text-xs text-amber-400/90 flex items-start gap-1.5">
+                    <p className="text-xs text-amber-700 dark:text-amber-400 flex items-start gap-1.5">
                       <AlertCircle size={12} className="mt-0.5 flex-shrink-0" />
-                      <span>
-                        Convert API failed to load. Restart with{' '}
-                        <code className="text-amber-300/90">npm run dev</code>.
-                      </span>
+                      <span>Document conversion needs a browser with Web Worker support.</span>
                     </p>
                   )}
                 </div>
@@ -421,7 +418,7 @@ export function ExportPanel({
                   const items = CONVERT_FORMATS.filter((f) => f.group === group);
                   return (
                     <div key={group}>
-                      <label className="text-xs font-medium text-zinc-400 uppercase tracking-widest mb-2 block">
+                      <label className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider mb-2 block">
                         {CONVERT_GROUP_LABELS[group]}
                       </label>
                       <div className="grid grid-cols-2 gap-2">
@@ -438,16 +435,16 @@ export function ExportPanel({
                     </div>
                   );
                 })}
-                <p className="text-xs text-zinc-500 leading-relaxed">{convertInfo.description}</p>
+                <p className="text-xs text-muted-foreground leading-relaxed">{convertInfo.description}</p>
               </div>
             )}
 
             {/* Page Range */}
             <div>
-              <label className="text-xs font-medium text-zinc-400 uppercase tracking-widest mb-3 block">
+              <label className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider mb-3 block">
                 Pages
               </label>
-              <div className="flex gap-1.5 p-1 bg-zinc-800/60 rounded-xl border border-zinc-800">
+              <div className="flex gap-1.5 p-1 bg-muted rounded-xl border border-border">
                 {[
                   { value: 'all' as const, label: 'All Pages' },
                   { value: 'current' as const, label: `Page ${currentPage + 1}` },
@@ -460,8 +457,8 @@ export function ExportPanel({
                       flex-1 px-3 py-2 text-xs font-medium rounded-lg transition-all duration-200
                       ${
                         pageRange === opt.value
-                          ? 'bg-zinc-700 text-white shadow-sm'
-                          : 'text-zinc-500 hover:text-zinc-300'
+                          ? 'bg-card text-foreground shadow-sm font-semibold'
+                          : 'text-muted-foreground hover:text-foreground'
                       }
                     `}
                   >
@@ -473,30 +470,32 @@ export function ExportPanel({
               {pageRange === 'custom' && (
                 <div className="flex items-center gap-3 mt-3">
                   <div className="flex-1">
-                    <label className="text-[10px] text-zinc-600 mb-1 block">From</label>
+                    <label className="text-[10px] text-muted-foreground mb-1 block">From</label>
                     <input
                       type="number"
                       min={1}
                       max={totalPages}
                       value={customFrom}
+                      aria-label="From"
                       onChange={(e) =>
                         setCustomFrom(Math.max(1, Math.min(totalPages, Number(e.target.value))))
                       }
-                      className="w-full px-3 py-2 text-sm bg-zinc-800 border border-zinc-700 rounded-lg text-zinc-200 focus:ring-2 focus:ring-[#E8607A]/40 focus:border-[#E8607A]/50 outline-none transition-all"
+                      className="w-full px-3 py-2 text-sm bg-card border border-border rounded-lg text-foreground focus:ring-2 focus:ring-primary/30 focus:border-primary/50 outline-none transition-all"
                     />
                   </div>
-                  <span className="text-zinc-600 text-xs mt-4">to</span>
+                  <span className="text-muted-foreground text-xs mt-4">to</span>
                   <div className="flex-1">
-                    <label className="text-[10px] text-zinc-600 mb-1 block">To</label>
+                    <label className="text-[10px] text-muted-foreground mb-1 block">To</label>
                     <input
                       type="number"
                       min={1}
                       max={totalPages}
                       value={customTo}
+                      aria-label="To"
                       onChange={(e) =>
                         setCustomTo(Math.max(1, Math.min(totalPages, Number(e.target.value))))
                       }
-                      className="w-full px-3 py-2 text-sm bg-zinc-800 border border-zinc-700 rounded-lg text-zinc-200 focus:ring-2 focus:ring-[#E8607A]/40 focus:border-[#E8607A]/50 outline-none transition-all"
+                      className="w-full px-3 py-2 text-sm bg-card border border-border rounded-lg text-foreground focus:ring-2 focus:ring-primary/30 focus:border-primary/50 outline-none transition-all"
                     />
                   </div>
                 </div>
@@ -505,19 +504,19 @@ export function ExportPanel({
 
             {mode === 'render' && (formatInfo.supportsDpi || formatInfo.supportsQuality) && (
               <div className="space-y-4">
-                <label className="text-xs font-medium text-zinc-400 uppercase tracking-widest block">
+                <label className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider block">
                   Quality Settings
                 </label>
 
                 {formatInfo.supportsDpi && (
                   <div>
                     <div className="flex items-center justify-between mb-2">
-                      <span className="text-xs text-zinc-400">Resolution (DPI)</span>
-                      <span className="text-xs font-mono text-zinc-300 bg-zinc-800 px-2 py-0.5 rounded">
+                      <span className="text-xs text-muted-foreground">Resolution (DPI)</span>
+                      <span className="text-xs font-mono text-foreground bg-muted px-2 py-0.5 rounded">
                         {dpi}
                       </span>
                     </div>
-                    <div className="flex gap-1.5 p-1 bg-zinc-800/60 rounded-xl border border-zinc-800">
+                    <div className="flex gap-1.5 p-1 bg-muted rounded-xl border border-border">
                       {[
                         { value: 72, label: 'Screen' },
                         { value: 150, label: 'Standard' },
@@ -531,8 +530,8 @@ export function ExportPanel({
                             flex-1 px-2 py-2 text-xs font-medium rounded-lg transition-all duration-200
                             ${
                               dpi === opt.value
-                                ? 'bg-zinc-700 text-white shadow-sm'
-                                : 'text-zinc-500 hover:text-zinc-300'
+                                ? 'bg-card text-foreground shadow-sm font-semibold'
+                                : 'text-muted-foreground hover:text-foreground'
                             }
                           `}
                         >
@@ -547,8 +546,8 @@ export function ExportPanel({
                 {formatInfo.supportsQuality && (
                   <div>
                     <div className="flex items-center justify-between mb-2">
-                      <span className="text-xs text-zinc-400">JPEG Quality</span>
-                      <span className="text-xs font-mono text-zinc-300 bg-zinc-800 px-2 py-0.5 rounded">
+                      <span className="text-xs text-muted-foreground">JPEG Quality</span>
+                      <span className="text-xs font-mono text-foreground bg-muted px-2 py-0.5 rounded">
                         {jpegQuality}%
                       </span>
                     </div>
@@ -558,12 +557,12 @@ export function ExportPanel({
                       max={100}
                       value={jpegQuality}
                       onChange={(e) => setJpegQuality(Number(e.target.value))}
-                      className="w-full accent-[#E8607A]"
+                      className="w-full accent-primary"
                       style={{ height: '4px' }}
                     />
                     <div className="flex justify-between mt-1">
-                      <span className="text-[10px] text-zinc-600">Smaller file</span>
-                      <span className="text-[10px] text-zinc-600">Best quality</span>
+                      <span className="text-[10px] text-muted-foreground">Smaller file</span>
+                      <span className="text-[10px] text-muted-foreground">Best quality</span>
                     </div>
                   </div>
                 )}
@@ -571,36 +570,36 @@ export function ExportPanel({
             )}
 
             {exportError && (
-              <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-xs">
+              <div role="alert" data-testid="export-error" className="p-3 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-xs">
                 {exportError}
               </div>
             )}
 
             {exportDone && (
-              <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs flex items-center gap-2">
+              <div data-testid="export-done" className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 dark:text-emerald-400 text-xs flex items-center gap-2">
                 <Check size={14} />
                 {mode === 'convert' ? 'Conversion complete — file downloaded!' : 'Export complete — file downloaded!'}
               </div>
             )}
           </div>
 
-          <div className="px-6 py-4 border-t border-zinc-800/80 bg-zinc-900/90">
+          <div className="px-6 py-4 border-t border-border bg-muted/40">
             {isExporting ? (
               <div className="space-y-3">
                 <div className="flex items-center justify-between text-xs">
-                  <span className="text-zinc-400 flex items-center gap-1.5">
+                  <span className="text-muted-foreground flex items-center gap-1.5">
                     <Loader2 size={12} className="animate-spin" />
                     {mode === 'convert' ? (jobLabel ?? 'Converting…') : 'Exporting…'}
                   </span>
-                  <span className="text-zinc-300 font-mono">
+                  <span className="text-foreground font-mono">
                     {mode === 'convert'
                       ? `${jobProgress}%`
                       : `${exportProgress}/${exportTotal}`}
                   </span>
                 </div>
-                <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                <div className="h-1.5 bg-muted rounded-full overflow-hidden">
                   <div
-                    className="h-full bg-gradient-to-r from-[#E8607A] to-[#FF9BB3] rounded-full transition-all duration-300 ease-out"
+                    className="h-full bg-gradient-to-r from-primary to-bloom-300 rounded-full transition-all duration-300 ease-out"
                     style={{ width: `${progressPct}%` }}
                   />
                 </div>
@@ -609,16 +608,8 @@ export function ExportPanel({
               <button
                 onClick={() => void handleExport()}
                 disabled={primaryDisabled}
-                className="
-                  w-full flex items-center justify-center gap-2.5 px-4 py-3
-                  bg-gradient-to-b from-[#E8607A] to-[#D94D6A]
-                  hover:from-[#FF6B8E] hover:to-[#E8607A]
-                  disabled:from-zinc-700 disabled:to-zinc-800 disabled:text-zinc-500
-                  text-white font-medium text-sm rounded-xl
-                  shadow-lg shadow-[#E8607A]/30
-                  transition-all duration-200 ease-out
-                  active:scale-[0.98]
-                "
+                data-testid="export-submit"
+                className="w-full h-12 flex items-center justify-center gap-2.5 px-4 rounded-xl font-bold text-[14px] bg-primary text-primary-foreground shadow-[0_6px_20px_-6px_rgba(232,96,122,0.6)] hover:brightness-105 active:scale-[0.99] disabled:opacity-50 disabled:shadow-none disabled:cursor-not-allowed transition-all"
               >
                 {mode === 'convert' ? <FileText size={16} /> : <Download size={16} />}
                 {mode === 'convert'
@@ -666,19 +657,19 @@ function ConvertFormatButton({
         transition-all duration-200 ease-out disabled:opacity-40 disabled:cursor-not-allowed
         ${
           selected
-            ? 'bg-gradient-to-br from-[#E8607A]/15 to-[#D94D6A]/5 border-zinc-600/80 ring-2 ring-[#E8607A]/35 shadow-lg'
-            : 'bg-zinc-800/40 border-zinc-800 hover:bg-zinc-800/80 hover:border-zinc-700'
+            ? 'bg-gradient-to-br from-primary/15 to-bloom-600/5 border-primary/40 ring-2 ring-primary/30 shadow-sm'
+            : 'bg-card border-border hover:bg-muted/60 hover:border-border-strong'
         }
       `}
     >
       <div className="min-w-0 flex-1">
-        <div className={`text-sm font-medium truncate ${selected ? 'text-white' : 'text-zinc-300'}`}>
+        <div className={`text-sm font-semibold truncate ${selected ? 'text-foreground' : 'text-foreground/80'}`}>
           {fmt.label}
         </div>
-        <div className="text-[10px] text-zinc-500 truncate mt-0.5">{fmt.extension}</div>
+        <div className="text-[10px] text-muted-foreground truncate mt-0.5">{fmt.extension}</div>
       </div>
       {selected && (
-        <div className="flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-[#E8607A] bg-white/10">
+        <div className="flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-primary bg-card">
           <Check size={12} strokeWidth={3} />
         </div>
       )}

@@ -1,9 +1,5 @@
-import { inflateRaw, inflate } from 'node:zlib';
-import { promisify } from 'node:util';
 import { PdfArray, PdfDict, PdfName, type PdfPrimitive } from './pdf-objects.js';
-
-const inflateRawAsync = promisify(inflateRaw);
-const inflateAsync = promisify(inflate);
+import { zlib } from '../../utils/zlib.js';
 
 /**
  * Decode PDF stream filters. Fresh Bloom implementation.
@@ -72,11 +68,11 @@ async function applyFilter(
 }
 
 async function decodeFlate(data: Uint8Array, params: PdfDict | null): Promise<Uint8Array> {
-  let inflated: Buffer;
+  let inflated: Uint8Array;
   try {
-    inflated = await inflateAsync(Buffer.from(data));
+    inflated = zlib().inflateSync(data);
   } catch {
-    inflated = await inflateRawAsync(Buffer.from(data));
+    inflated = zlib().inflateRawSync(data);
   }
 
   const predictor = params?.getNumber('Predictor') ?? 1;
